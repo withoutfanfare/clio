@@ -1,0 +1,42 @@
+<svg width="256" height="256" viewBox="0 0 256 256" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="clio-bg" x1="44" y1="28" x2="212" y2="232" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#1E1830"/>
+      <stop offset="0.56" stop-color="#171324"/>
+      <stop offset="1" stop-color="#0F1320"/>
+    </linearGradient>
+    <linearGradient id="clio-ring" x1="58" y1="62" x2="188" y2="194" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#A78BFA"/>
+      <stop offset="1" stop-color="#5EEAD4"/>
+    </linearGradient>
+    <radialGradient id="clio-node" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(181 128) rotate(90) scale(18)">
+      <stop stop-color="#ECFEFF"/>
+      <stop offset="0.38" stop-color="#C4B5FD"/>
+      <stop offset="1" stop-color="#2DD4BF"/>
+    </radialGradient>
+    <filter id="clio-glow" x="12" y="18" width="232" height="220" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feGaussianBlur stdDeviation="12"/>
+    </filter>
+  </defs>
+
+  <rect x="18" y="18" width="220" height="220" rx="56" fill="url(#clio-bg)"/>
+
+  <g opacity="0.36" filter="url(#clio-glow)">
+    <path
+      d="M176 79C162.3 64.4 143.2 56 122 56C85.5 56 56 88.2 56 128C56 167.8 85.5 200 122 200C143.2 200 162.3 191.6 176 177"
+      stroke="url(#clio-ring)"
+      stroke-width="24"
+      stroke-linecap="round"
+    />
+    <circle cx="181" cy="128" r="14" fill="url(#clio-node)"/>
+  </g>
+
+  <path
+    d="M176 79C162.3 64.4 143.2 56 122 56C85.5 56 56 88.2 56 128C56 167.8 85.5 200 122 200C143.2 200 162.3 191.6 176 177"
+    stroke="url(#clio-ring)"
+    stroke-width="24"
+    stroke-linecap="round"
+  />
+
+  <circle cx="181" cy="128" r="12" fill="url(#clio-node)"/>
+</svg>

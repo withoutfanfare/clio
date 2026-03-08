@@ -1,0 +1,10 @@
+{
+  "identifier": "default",
+  "description": "Default permissions for the Clio desktop app",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "dialog:default",
+    "global-shortcut:default"
+  ]
+}

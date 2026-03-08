@@ -1,0 +1,33 @@
+[build-system]
+requires = ["hatchling>=1.27.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "ai-shared-memory"
+version = "0.1.0"
+description = "Shared local memory system for AI tools with CLI and MCP access."
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+authors = [
+  { name = "Codex" }
+]
+dependencies = [
+  "mcp[cli]>=1.20.0",
+  "pydantic>=2.11.1",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.4.0",
+]
+
+[project.scripts]
+ai-memory = "ai_shared_memory.cli:main"
+ai-memory-mcp = "ai_shared_memory.mcp_server:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/ai_shared_memory"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

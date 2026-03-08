@@ -1,0 +1,25 @@
+[package]
+name = "clio-daemon"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Always-on local daemon for Clio memory system"
+
+[[bin]]
+name = "clio-daemon"
+path = "src/main.rs"
+
+[dependencies]
+clio-core = { workspace = true, features = ["local-embeddings", "openai-embeddings", "capture"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "signal", "sync", "net", "io-util"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+notify = { version = "7", features = ["macos_kqueue"] }
+tracing-appender = "0.2"
+rusqlite = { workspace = true }
+futures-util = "0.3"
+tokio-util = { version = "0.7", features = ["codec"] }
+uuid = { workspace = true }

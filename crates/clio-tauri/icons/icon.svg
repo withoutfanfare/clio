@@ -1,0 +1,44 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="app-bg" x1="228" y1="136" x2="820" y2="892" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#211938"/>
+      <stop offset="0.58" stop-color="#161327"/>
+      <stop offset="1" stop-color="#0C1220"/>
+    </linearGradient>
+    <linearGradient id="app-ring" x1="274" y1="252" x2="752" y2="752" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#B8A8FF"/>
+      <stop offset="0.52" stop-color="#8EC5FF"/>
+      <stop offset="1" stop-color="#5DE1CE"/>
+    </linearGradient>
+    <radialGradient id="app-node" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(724 512) rotate(90) scale(78)">
+      <stop stop-color="#F7FEFF"/>
+      <stop offset="0.34" stop-color="#D2C3FF"/>
+      <stop offset="0.68" stop-color="#98B8FF"/>
+      <stop offset="1" stop-color="#5DE1CE"/>
+    </radialGradient>
+    <filter id="app-glow" x="130" y="124" width="764" height="776" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feGaussianBlur stdDeviation="34"/>
+    </filter>
+  </defs>
+
+  <rect x="96" y="96" width="832" height="832" rx="220" fill="url(#app-bg)"/>
+
+  <g opacity="0.38" filter="url(#app-glow)">
+    <path
+      d="M704 295C650.5 236.9 577.6 204 496 204C345.8 204 224 342.2 224 512C224 681.8 345.8 820 496 820C577.6 820 650.5 787.1 704 729"
+      stroke="url(#app-ring)"
+      stroke-width="96"
+      stroke-linecap="round"
+    />
+    <circle cx="724" cy="512" r="62" fill="url(#app-node)"/>
+  </g>
+
+  <path
+    d="M704 295C650.5 236.9 577.6 204 496 204C345.8 204 224 342.2 224 512C224 681.8 345.8 820 496 820C577.6 820 650.5 787.1 704 729"
+    stroke="url(#app-ring)"
+    stroke-width="96"
+    stroke-linecap="round"
+  />
+
+  <circle cx="724" cy="512" r="54" fill="url(#app-node)"/>
+</svg>

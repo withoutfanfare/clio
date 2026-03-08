@@ -1,0 +1,30 @@
+[package]
+name = "clio-tauri"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Tauri desktop app for Clio shared memory system"
+
+[lib]
+name = "clio_tauri"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[[bin]]
+name = "clio-tauri"
+path = "src/main.rs"
+
+[dependencies]
+clio-core = { workspace = true, features = ["local-embeddings", "openai-embeddings", "capture"] }
+rusqlite = { workspace = true }
+tauri = { workspace = true }
+tauri-plugin-dialog = { workspace = true }
+tauri-plugin-global-shortcut = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[build-dependencies]
+tauri-build = { workspace = true }

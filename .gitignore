@@ -1,0 +1,23 @@
+# Rust
+target/
+*.swp
+*.swo
+
+# Node / Vue
+ui/node_modules/
+ui/dist/
+
+# ML model cache
+.fastembed_cache/
+
+# AI tooling
+.claude/
+.gemini/
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# macOS
+.DS_Store
