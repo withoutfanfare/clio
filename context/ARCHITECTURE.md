@@ -2,7 +2,7 @@
 
 ## Vision
 
-Clio is a local-first memory backbone for AI tooling. One Rust core, multiple access surfaces (CLI, MCP, future Tauri), one SQLite database.
+Clio is a local-first memory backbone for AI tooling. One Rust core, multiple access surfaces (CLI, MCP, Tauri, daemon), one SQLite database.
 
 ## Tech Stack
 
@@ -17,7 +17,7 @@ Clio is a local-first memory backbone for AI tooling. One Rust core, multiple ac
 ```text
                     +----------------------+
                     |   Tauri Desktop UI   |
-                    |      phase two       |
+                    |   Vue 3 + Pinia      |
                     +----------+-----------+
                                |
                                v
@@ -130,7 +130,21 @@ Must NOT: become the only way to use Clio, expose network listeners outside loca
 
 ### `clio-tauri`
 
-Desktop UI crate. Consumes the core for browse/edit/archive/inspect workflows.
+Desktop UI crate. Vue 3 frontend with Tauri 2 backend for browse/edit/archive/inspect workflows.
+
+**Backend commands** (in `src/commands/`):
+- `memory.rs` — CRUD, archive, unarchive, recall, recent, update
+- `search.rs` — semantic search, embedding
+- `stats.rs` — memory statistics and analytics
+- `namespaces.rs` — namespace listing
+- `clipboard.rs` — native clipboard copy (osascript with pbcopy fallback)
+
+**Frontend** (`ui/src/`):
+- Vue 3 + Pinia (state) + Vue Router, built with Vite
+- Components: AppBar, MemoryPage, MemoryDrawer, ComposeArea, CommandPalette, SidePanel, DateGroup, TagInput, LinkList, KindSelector
+- Composables: useAutoSave, useDebounce, useGroupedMemories, useKeyboard
+- Store: `stores/memories.ts` — filtering, sorting, grouping with localStorage persistence
+- Views: HomeView (memory list/grid), StatsView
 
 ## Storage Engine
 
@@ -165,18 +179,6 @@ Resolution order:
 | Archive instead of delete | Memory systems preserve history; accidental deletion is expensive |
 | Synchronous rusqlite | Simple control flow, fewer moving parts, easier testing |
 
-## Delivery Phases
+## Delivery Status
 
-- **Phase 0:** Contract lock (schema, MCP contract, plan) — DONE
-- **Phase 1:** Cargo workspace + `clio-core` + tests — DONE
-- **Phase 2:** `clio-cli` with JSON/human output + export/import — DONE
-- **Phase 3:** `clio-mcp` with stdio transport — DONE
-- **Phase 4:** Semantic search — embedding infrastructure, `memory_search` MCP tool, CLI `search`/`embed` commands — DONE
-- **Phase 5:** Capture pipeline — `capture.rs` module, `memory_capture` MCP tool, `clio capture` CLI command, `clio settings use-capture/disable-capture` — DONE
-- **Phase 6:** Cross-tool memory migration — `migrate.rs`, `clio migrate claude/chatgpt` CLI commands — DONE
-- **Phase 7:** Stats, analytics, and knowledge graph — `stats.rs` module, `memory_stats`/`memory_activity`/`memory_suggest_links` MCP tools, `clio stats`/`clio activity`/`clio suggest-links` CLI commands, `get_neighbours()` graph traversal, `suggest_links()` similarity-based link suggestions — DONE
-- **Phase 8:** Always-on daemon and lifecycle — `daemon.rs` core module, `clio-daemon` crate (Unix socket control, inbox watcher, PID management), `clio daemon` CLI subcommands, macOS LaunchAgent support — DONE
-- **Phase 9:** Capture surfaces, review queue, and context assembly — `review.rs` + migration `003_review_queue`, `assembly.rs`, `CaptureResult` enum, `clio inbox` + `clio brief` CLI commands, `memory_context` + `memory_inbox_*` MCP tools — DONE
-- **Phase 10:** `clio-tauri` desktop shell — in progress
-- **Phase 10.5:** Auto-intelligence — access tracking (migration 004, `touch_accessed()`), temporal relevance scoring (`ScoringConfig`, composite BM25 × recency × access × importance ORDER BY), auto-link inference daemon task (`auto_link_batch()`, `AutoLinkConfig`, `auto_linker.rs`) — DONE
-- **(cross-cutting):** Namespace auto-scoping — `context.rs`, `recall_scoped()`, `cwd` parameter on relevant MCP tools, `clio context` command, `clio init --namespace`, `context.auto_detect` setting — DONE
+All planned phases (0–10.5) are complete: core, CLI, MCP, semantic search, capture pipeline, migration, stats/analytics/knowledge graph, daemon, review queue, context assembly, auto-intelligence, and namespace auto-scoping. The Tauri desktop UI is actively developed.
