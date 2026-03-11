@@ -474,6 +474,34 @@ fn cosine_similarity(a: &[f32], b: &[f32]) -> f64 {
     }
 }
 
+/// Wrapper for BinaryHeap that orders by similarity ascending (min-heap).
+/// The smallest similarity sits at the top so it can be ejected when a
+/// better candidate arrives.
+#[derive(Debug, PartialEq)]
+struct ScoredEntry {
+    memory_id: String,
+    similarity: f64,
+}
+
+impl Eq for ScoredEntry {}
+
+impl PartialOrd for ScoredEntry {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for ScoredEntry {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        // Reverse ordering: smaller similarity = Greater, so BinaryHeap
+        // keeps the minimum at the top (min-heap behaviour).
+        other
+            .similarity
+            .partial_cmp(&self.similarity)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    }
+}
+
 /// Search for semantically similar memories using the query embedding.
 pub fn semantic_search(
     conn: &Connection,
@@ -511,23 +539,35 @@ pub fn semantic_search(
         Ok((memory_id, blob))
     })?;
 
-    let mut results: Vec<SemanticResult> = Vec::new();
+    let capacity = limit as usize;
+    let mut heap: std::collections::BinaryHeap<ScoredEntry> =
+        std::collections::BinaryHeap::with_capacity(capacity + 1);
+
     for row_result in rows {
         let (memory_id, blob) = row_result?;
         let embedding = decode_embedding(&blob)?;
         let similarity = cosine_similarity(query_embedding, &embedding);
-        results.push(SemanticResult {
+
+        heap.push(ScoredEntry {
             memory_id,
             similarity,
         });
+        if heap.len() > capacity {
+            heap.pop(); // Eject the lowest-scoring entry.
+        }
     }
 
-    results.sort_by(|a, b| {
-        b.similarity
-            .partial_cmp(&a.similarity)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
-    results.truncate(limit as usize);
+    // Drain heap into a vec sorted by similarity descending.
+    // The heap already contains at most `capacity` items, so no truncation needed.
+    let results: Vec<SemanticResult> = heap
+        .into_sorted_vec()
+        .into_iter()
+        .rev()
+        .map(|e| SemanticResult {
+            memory_id: e.memory_id,
+            similarity: e.similarity,
+        })
+        .collect();
 
     Ok(results)
 }
