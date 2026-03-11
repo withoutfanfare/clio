@@ -130,6 +130,7 @@ export const useMemoryStore = defineStore("memories", () => {
 
   // Live polling
   let pollInterval: ReturnType<typeof setInterval> | null = null;
+  let pollPaused = false;
 
   // Command palette
   const paletteOpen = ref(false);
@@ -316,6 +317,19 @@ export const useMemoryStore = defineStore("memories", () => {
     }
   }
 
+  function pausePolling() {
+    pollPaused = true;
+    stopPolling();
+  }
+
+  function resumePolling(intervalMs = 3000) {
+    if (pollPaused) {
+      pollPaused = false;
+      loadRecent(true);
+      startPolling(intervalMs);
+    }
+  }
+
   function closePalette() {
     paletteOpen.value = false;
     paletteQuery.value = "";
@@ -372,5 +386,7 @@ export const useMemoryStore = defineStore("memories", () => {
     closePalette,
     startPolling,
     stopPolling,
+    pausePolling,
+    resumePolling,
   };
 });

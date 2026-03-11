@@ -78,14 +78,24 @@ function onTagInputBlur() {
   setTimeout(() => { tagDropdownOpen.value = false; }, 150);
 }
 
+function onVisibilityChange() {
+  if (document.hidden) {
+    store.pausePolling();
+  } else {
+    store.resumePolling(3000);
+  }
+}
+
 onMounted(() => {
   store.loadRecent();
   store.loadStats();
   store.startPolling(3000);
+  document.addEventListener("visibilitychange", onVisibilityChange);
 });
 
 onUnmounted(() => {
   store.stopPolling();
+  document.removeEventListener("visibilitychange", onVisibilityChange);
 });
 
 watch(
