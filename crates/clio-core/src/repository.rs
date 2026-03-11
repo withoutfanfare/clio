@@ -8,40 +8,11 @@ use crate::validate;
 // Remember (insert / upsert)
 // ---------------------------------------------------------------------------
 
-/// Maximum length of an auto-generated title (in characters).
-const AUTO_TITLE_MAX_LEN: usize = 80;
-
-/// Derive a short title from the memory content.
-///
-/// Takes the first non-empty line, strips leading punctuation/whitespace,
-/// and truncates on a word boundary at [`AUTO_TITLE_MAX_LEN`] characters.
-fn generate_title(content: &str) -> String {
-    let first_line = content
-        .lines()
-        .map(str::trim)
-        .find(|l| !l.is_empty())
-        .unwrap_or(content.trim());
-
-    // Strip common leading markers (bullets, dashes, hashes).
-    let cleaned = first_line.trim_start_matches(|c: char| c == '#' || c == '-' || c == '*' || c == '>' || c.is_whitespace());
-
-    if cleaned.len() <= AUTO_TITLE_MAX_LEN {
-        return cleaned.to_string();
-    }
-
-    // Truncate on a word boundary.
-    let truncated = &cleaned[..AUTO_TITLE_MAX_LEN];
-    match truncated.rfind(' ') {
-        Some(pos) => format!("{}…", &truncated[..pos]),
-        None => format!("{truncated}…"),
-    }
-}
-
 /// Store a new memory or upsert an existing one.
 ///
 /// The insert (or update) and tag writes are wrapped in a savepoint so that
 /// a failure in any step rolls back the entire operation atomically.
-pub fn remember(conn: &Connection, input: &RememberInput) -> Result<Memory> {
+pub fn remember(conn: &Connection, input: &RememberInput, settings: &crate::settings::Settings) -> Result<Memory> {
     validate::remember_input(input)?;
 
     let tags = normalise_tags(&input.tags);
@@ -49,17 +20,14 @@ pub fn remember(conn: &Connection, input: &RememberInput) -> Result<Memory> {
     let metadata_str = serde_json::to_string(&input.metadata)?;
     let now = now_utc();
 
-    // Auto-generate a title from content when none is supplied.
-    let title = input
-        .title
-        .clone()
-        .or_else(|| Some(generate_title(&input.content)));
+    // Resolve the title: explicit > AI-generated > string-based extraction.
+    let title = crate::title::resolve_title(input.title.clone(), &input.content, settings);
 
     // Upsert path: look for existing record by source + source_ref.
     if input.upsert {
         if let (Some(source), Some(source_ref)) = (&input.source, &input.source_ref) {
             if let Some(existing_id) = find_by_source_ref(conn, source, source_ref)? {
-                return update_existing(conn, &existing_id, input, &tags, &tags_text, &metadata_str, &now);
+                return update_existing(conn, &existing_id, input, &tags, &tags_text, &metadata_str, &now, settings);
             }
         }
         // If upsert requested but source/source_ref incomplete, fall through to insert.
@@ -117,12 +85,10 @@ fn update_existing(
     tags_text: &str,
     metadata_str: &str,
     now: &str,
+    settings: &crate::settings::Settings,
 ) -> Result<Memory> {
-    // Auto-generate a title from content when none is supplied.
-    let title = input
-        .title
-        .clone()
-        .or_else(|| Some(generate_title(&input.content)));
+    // Resolve the title: explicit > AI-generated > string-based extraction.
+    let title = crate::title::resolve_title(input.title.clone(), &input.content, settings);
 
     conn.execute_batch("SAVEPOINT remember_update")?;
     let result = (|| -> Result<()> {
@@ -226,7 +192,7 @@ fn normalise_tags(tags: &[String]) -> Vec<String> {
 // ---------------------------------------------------------------------------
 
 /// Update an existing memory by ID with the provided fields.
-pub fn update(conn: &Connection, id: &str, input: &RememberInput) -> Result<Memory> {
+pub fn update(conn: &Connection, id: &str, input: &RememberInput, settings: &crate::settings::Settings) -> Result<Memory> {
     // Verify memory exists.
     get_raw(conn, id)?;
 
@@ -237,7 +203,7 @@ pub fn update(conn: &Connection, id: &str, input: &RememberInput) -> Result<Memo
     let metadata_str = serde_json::to_string(&input.metadata)?;
     let now = now_utc();
 
-    update_existing(conn, id, input, &tags, &tags_text, &metadata_str, &now)
+    update_existing(conn, id, input, &tags, &tags_text, &metadata_str, &now, settings)
 }
 
 // ---------------------------------------------------------------------------

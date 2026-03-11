@@ -45,7 +45,7 @@ pub fn cmd_remember(
         upsert: upsert.unwrap_or(false),
     };
 
-    let memory = app.cache.remember(&app.conn, &input)?;
+    let memory = app.cache.remember(&app.conn, &input, &app.settings)?;
 
     // Auto-embed using the cached backend (skipped silently if still loading).
     if app.settings.auto_embed {
@@ -99,7 +99,7 @@ pub fn cmd_update(
         upsert: false,
     };
 
-    let memory = app.cache.update(&app.conn, &memory_id, &input)?;
+    let memory = app.cache.update(&app.conn, &memory_id, &input, &app.settings)?;
 
     // Auto-embed using the cached backend.
     if app.settings.auto_embed {

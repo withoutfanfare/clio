@@ -69,7 +69,7 @@ pub fn import_jsonl(conn: &rusqlite::Connection, reader: &mut dyn Read) -> Resul
                     upsert: has_source,
                 };
 
-                match repository::remember(conn, &input) {
+                match repository::remember(conn, &input, &crate::settings::Settings::default()) {
                     Ok(_) => imported += 1,
                     Err(e) => {
                         errors.push(format!("line {}: {e}", line_num + 1));

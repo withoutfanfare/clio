@@ -911,7 +911,7 @@ fn cmd_remember(
         upsert: args.upsert,
     };
 
-    let memory = repository::remember(&conn, &input)?;
+    let memory = repository::remember(&conn, &input, &s)?;
 
     // Auto-embed if enabled.
     if s.auto_embed {
@@ -1459,7 +1459,8 @@ fn cmd_inbox(
             }
         }
         InboxSubcommand::Approve { id } => {
-            let memory = review::approve_review(&conn, &id)?;
+            let s = settings::load(&path)?;
+            let memory = review::approve_review(&conn, &id, &s)?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&memory)?);
             } else {

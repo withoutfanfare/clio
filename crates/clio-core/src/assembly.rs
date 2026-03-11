@@ -320,6 +320,7 @@ mod tests {
                 valid_until: None,
                 upsert: false,
             },
+            &crate::settings::Settings::default(),
         )
         .unwrap()
     }

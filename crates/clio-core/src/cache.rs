@@ -234,8 +234,8 @@ impl ClioCache {
     // -----------------------------------------------------------------------
 
     /// Store a new memory (or upsert), invalidating affected caches.
-    pub fn remember(&self, conn: &Connection, input: &RememberInput) -> Result<Memory> {
-        let memory = repository::remember(conn, input)?;
+    pub fn remember(&self, conn: &Connection, input: &RememberInput, settings: &crate::settings::Settings) -> Result<Memory> {
+        let memory = repository::remember(conn, input, settings)?;
         self.memory_by_id
             .insert(memory.id.clone(), memory.clone());
         self.invalidate_recall();
@@ -244,8 +244,8 @@ impl ClioCache {
     }
 
     /// Update an existing memory by ID.
-    pub fn update(&self, conn: &Connection, id: &str, input: &RememberInput) -> Result<Memory> {
-        let memory = repository::update(conn, id, input)?;
+    pub fn update(&self, conn: &Connection, id: &str, input: &RememberInput, settings: &crate::settings::Settings) -> Result<Memory> {
+        let memory = repository::update(conn, id, input, settings)?;
         self.memory_by_id
             .insert(memory.id.clone(), memory.clone());
         self.invalidate_recall();

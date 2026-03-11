@@ -120,7 +120,7 @@ fn store_entry(
     input: &RememberInput,
     settings: &crate::settings::Settings,
 ) -> Result<crate::models::Memory> {
-    let memory = crate::repository::remember(conn, input)?;
+    let memory = crate::repository::remember(conn, input, settings)?;
 
     // Auto-embed if enabled.
     if settings.auto_embed {

@@ -247,7 +247,7 @@ fn store_as_note(
         upsert: false,
     };
 
-    match clio_core::repository::remember(conn, &input) {
+    match clio_core::repository::remember(conn, &input, settings) {
         Ok(memory) => {
             tracing::info!(id = %memory.id, "stored inbox file as note");
 

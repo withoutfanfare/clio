@@ -169,7 +169,7 @@ pub fn get_review(conn: &Connection, id: &str) -> Result<ReviewItem> {
 
 /// Approve a review item: create a Memory from the suggested fields, then
 /// mark the review item as approved.
-pub fn approve_review(conn: &Connection, id: &str) -> Result<Memory> {
+pub fn approve_review(conn: &Connection, id: &str, settings: &crate::settings::Settings) -> Result<Memory> {
     let item = get_review(conn, id)?;
 
     if item.status != "pending" && item.status != "edited" {
@@ -196,7 +196,7 @@ pub fn approve_review(conn: &Connection, id: &str) -> Result<Memory> {
         upsert: false,
     };
 
-    let memory = crate::repository::remember(conn, &input)?;
+    let memory = crate::repository::remember(conn, &input, settings)?;
 
     let now = now_utc();
     conn.execute(

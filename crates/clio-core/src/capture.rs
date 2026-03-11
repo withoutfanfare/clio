@@ -332,7 +332,7 @@ pub fn capture_with_classification(
         upsert: false,
     };
 
-    let memory = crate::repository::remember(conn, &input)?;
+    let memory = crate::repository::remember(conn, &input, settings)?;
 
     // Auto-embed if enabled.
     if settings.auto_embed {

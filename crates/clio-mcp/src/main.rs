@@ -1006,7 +1006,7 @@ impl ClioServer {
                 upsert: params.upsert,
             };
             let memory =
-                cache.remember(&conn, &input).map_err(|e| format_clio_error(&e))?;
+                cache.remember(&conn, &input, &settings).map_err(|e| format_clio_error(&e))?;
 
             // Auto-embed if enabled.
             if settings.auto_embed {
@@ -1577,9 +1577,10 @@ impl ClioServer {
     ) -> Result<String, String> {
         validate_memory_id(&params.id, "id")?;
         let conn = self.conn.clone();
+        let settings = self.settings()?;
         tokio::task::spawn_blocking(move || {
             let conn = conn.lock().map_err(|e| format!("lock error: {e}"))?;
-            let memory = clio_core::review::approve_review(&conn, &params.id)
+            let memory = clio_core::review::approve_review(&conn, &params.id, &settings)
                 .map_err(|e| format_clio_error(&e))?;
             serde_json::to_string_pretty(&memory)
                 .map_err(|e| format!("Serialisation error: {e}"))

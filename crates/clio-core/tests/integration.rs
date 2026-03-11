@@ -3,6 +3,7 @@ use clio_core::error::ClioError;
 use clio_core::export;
 use clio_core::models::*;
 use clio_core::repository;
+use clio_core::settings::Settings;
 
 fn test_db() -> rusqlite::Connection {
     db::open_in_memory().expect("failed to open in-memory DB")
@@ -44,7 +45,7 @@ fn insert_basic_memory() {
         upsert: false,
     };
 
-    let mem = repository::remember(&conn, &input).unwrap();
+    let mem = repository::remember(&conn, &input, &Settings::default()).unwrap();
     assert_eq!(mem.namespace, "global");
     assert_eq!(mem.kind, "note");
     assert_eq!(mem.title, Some("Test note".into()));
@@ -75,7 +76,7 @@ fn insert_validates_empty_content() {
         upsert: false,
     };
 
-    let err = repository::remember(&conn, &input).unwrap_err();
+    let err = repository::remember(&conn, &input, &Settings::default()).unwrap_err();
     assert!(matches!(err, ClioError::Validation(_)));
 }
 
@@ -99,7 +100,7 @@ fn insert_validates_importance_range() {
         upsert: false,
     };
 
-    let err = repository::remember(&conn, &input).unwrap_err();
+    let err = repository::remember(&conn, &input, &Settings::default()).unwrap_err();
     assert!(matches!(err, ClioError::Validation(_)));
 }
 
@@ -123,7 +124,7 @@ fn insert_validates_confidence_range() {
         upsert: false,
     };
 
-    let err = repository::remember(&conn, &input).unwrap_err();
+    let err = repository::remember(&conn, &input, &Settings::default()).unwrap_err();
     assert!(matches!(err, ClioError::Validation(_)));
 }
 
@@ -147,7 +148,7 @@ fn insert_validates_metadata_must_be_object() {
         upsert: false,
     };
 
-    let err = repository::remember(&conn, &input).unwrap_err();
+    let err = repository::remember(&conn, &input, &Settings::default()).unwrap_err();
     assert!(matches!(err, ClioError::Validation(_)));
 }
 
@@ -171,7 +172,7 @@ fn tags_are_normalised_and_deduplicated() {
         upsert: false,
     };
 
-    let mem = repository::remember(&conn, &input).unwrap();
+    let mem = repository::remember(&conn, &input, &Settings::default()).unwrap();
     assert_eq!(mem.tags, vec!["rust", "sqlite"]);
 }
 
@@ -199,7 +200,7 @@ fn upsert_updates_existing_by_source_ref() {
         upsert: false,
     };
 
-    let mem1 = repository::remember(&conn, &input1).unwrap();
+    let mem1 = repository::remember(&conn, &input1, &Settings::default()).unwrap();
 
     let input2 = RememberInput {
         namespace: "project:ai".into(),
@@ -218,7 +219,7 @@ fn upsert_updates_existing_by_source_ref() {
         upsert: true,
     };
 
-    let mem2 = repository::remember(&conn, &input2).unwrap();
+    let mem2 = repository::remember(&conn, &input2, &Settings::default()).unwrap();
 
     // Same id preserved.
     assert_eq!(mem2.id, mem1.id);
@@ -252,8 +253,8 @@ fn upsert_without_source_ref_inserts_new_row() {
         upsert: true,
     };
 
-    let mem1 = repository::remember(&conn, &input).unwrap();
-    let mem2 = repository::remember(&conn, &input).unwrap();
+    let mem1 = repository::remember(&conn, &input, &Settings::default()).unwrap();
+    let mem2 = repository::remember(&conn, &input, &Settings::default()).unwrap();
     // Should create two distinct records.
     assert_ne!(mem1.id, mem2.id);
 }
@@ -294,6 +295,7 @@ fn fts_recall_finds_by_content() {
             valid_until: None,
             upsert: false,
         },
+        &Settings::default(),
     )
     .unwrap();
 
@@ -333,6 +335,7 @@ fn fts_recall_finds_by_title() {
             valid_until: None,
             upsert: false,
         },
+        &Settings::default(),
     )
     .unwrap();
 
@@ -375,6 +378,7 @@ fn recent_recall_returns_by_updated_at_desc() {
                 valid_until: None,
                 upsert: false,
             },
+        &Settings::default(),
         )
         .unwrap();
     }
@@ -413,6 +417,7 @@ fn recall_filters_by_namespace() {
                 valid_until: None,
                 upsert: false,
             },
+        &Settings::default(),
         )
         .unwrap();
     }
@@ -456,6 +461,7 @@ fn recall_filters_tags_match_all() {
             valid_until: None,
             upsert: false,
         },
+        &Settings::default(),
     )
     .unwrap();
 
@@ -477,6 +483,7 @@ fn recall_filters_tags_match_all() {
             valid_until: None,
             upsert: false,
         },
+        &Settings::default(),
     )
     .unwrap();
 
@@ -516,6 +523,7 @@ fn recall_filters_tags_match_any() {
             valid_until: None,
             upsert: false,
         },
+        &Settings::default(),
     )
     .unwrap();
 
@@ -537,6 +545,7 @@ fn recall_filters_tags_match_any() {
             valid_until: None,
             upsert: false,
         },
+        &Settings::default(),
     )
     .unwrap();
 
@@ -579,6 +588,7 @@ fn archive_hides_from_default_recall() {
             valid_until: None,
             upsert: false,
         },
+        &Settings::default(),
     )
     .unwrap();
 
@@ -623,6 +633,7 @@ fn archive_is_idempotent() {
             valid_until: None,
             upsert: false,
         },
+        &Settings::default(),
     )
     .unwrap();
 
@@ -658,6 +669,7 @@ fn unarchive_restores_memory() {
             valid_until: None,
             upsert: false,
         },
+        &Settings::default(),
     )
     .unwrap();
 
@@ -700,6 +712,7 @@ fn unarchive_is_idempotent() {
             valid_until: None,
             upsert: false,
         },
+        &Settings::default(),
     )
     .unwrap();
 
@@ -742,6 +755,7 @@ fn list_namespaces_returns_distinct_sorted() {
                 valid_until: None,
                 upsert: false,
             },
+        &Settings::default(),
         )
         .unwrap();
     }
@@ -783,6 +797,7 @@ fn link_creation_and_retrieval() {
             valid_until: None,
             upsert: false,
         },
+        &Settings::default(),
     )
     .unwrap();
 
@@ -804,6 +819,7 @@ fn link_creation_and_retrieval() {
             valid_until: None,
             upsert: false,
         },
+        &Settings::default(),
     )
     .unwrap();
 
@@ -848,6 +864,7 @@ fn link_to_nonexistent_memory_fails() {
             valid_until: None,
             upsert: false,
         },
+        &Settings::default(),
     )
     .unwrap();
 
@@ -891,6 +908,7 @@ fn export_jsonl_shape() {
             valid_until: None,
             upsert: false,
         },
+        &Settings::default(),
     )
     .unwrap();
 
@@ -942,6 +960,7 @@ fn import_jsonl_round_trip() {
                 valid_until: None,
                 upsert: false,
             },
+        &Settings::default(),
         )
         .unwrap();
     }
@@ -1002,6 +1021,7 @@ fn stats_returns_counts() {
                 valid_until: None,
                 upsert: false,
             },
+        &Settings::default(),
         )
         .unwrap();
     }
@@ -1041,6 +1061,7 @@ fn activity_shows_recent_events() {
             valid_until: None,
             upsert: false,
         },
+        &Settings::default(),
     )
     .unwrap();
 
@@ -1081,6 +1102,7 @@ fn get_neighbours_traverses_links() {
             valid_until: None,
             upsert: false,
         },
+        &Settings::default(),
     )
     .unwrap();
 
@@ -1102,6 +1124,7 @@ fn get_neighbours_traverses_links() {
             valid_until: None,
             upsert: false,
         },
+        &Settings::default(),
     )
     .unwrap();
 
@@ -1123,6 +1146,7 @@ fn get_neighbours_traverses_links() {
             valid_until: None,
             upsert: false,
         },
+        &Settings::default(),
     )
     .unwrap();
 
@@ -1189,6 +1213,7 @@ fn get_neighbours_no_links() {
             valid_until: None,
             upsert: false,
         },
+        &Settings::default(),
     )
     .unwrap();
 
@@ -1222,6 +1247,7 @@ fn recall_with_include_links_appends_linked_memories() {
             valid_until: None,
             upsert: false,
         },
+        &Settings::default(),
     )
     .unwrap();
 
@@ -1243,6 +1269,7 @@ fn recall_with_include_links_appends_linked_memories() {
             valid_until: None,
             upsert: false,
         },
+        &Settings::default(),
     )
     .unwrap();
 
