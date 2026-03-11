@@ -424,6 +424,51 @@ fn touch_accessed_chunk(conn: &Connection, ids: &[&str]) -> Result<()> {
     Ok(())
 }
 
+/// Fetch all outgoing links for multiple memory IDs in a single query.
+fn get_links_bulk(conn: &Connection, memory_ids: &[String]) -> Result<Vec<MemoryLink>> {
+    if memory_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let placeholders: String = (1..=memory_ids.len())
+        .map(|i| format!("?{i}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sql = format!(
+        "SELECT from_memory_id, to_memory_id, relationship, metadata_json, created_at
+         FROM memory_links WHERE from_memory_id IN ({placeholders}) ORDER BY created_at"
+    );
+    let params: Vec<Box<dyn rusqlite::types::ToSql>> = memory_ids
+        .iter()
+        .map(|id| -> Box<dyn rusqlite::types::ToSql> { Box::new(id.clone()) })
+        .collect();
+    let param_refs: Vec<&dyn rusqlite::types::ToSql> =
+        params.iter().map(|p| p.as_ref()).collect();
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(param_refs.as_slice(), |row| {
+        Ok(MemoryLinkRow {
+            from_memory_id: row.get(0)?,
+            to_memory_id: row.get(1)?,
+            relationship: row.get(2)?,
+            metadata_json: row.get(3)?,
+            created_at: row.get(4)?,
+        })
+    })?;
+
+    let mut links = Vec::new();
+    for row in rows {
+        let r = row?;
+        let metadata: serde_json::Value = serde_json::from_str(&r.metadata_json)?;
+        links.push(MemoryLink {
+            from_memory_id: r.from_memory_id,
+            to_memory_id: r.to_memory_id,
+            relationship: r.relationship,
+            metadata,
+            created_at: r.created_at,
+        });
+    }
+    Ok(links)
+}
+
 /// Append linked memories to a recall result. For each item in the result,
 /// fetch its outgoing links and add the linked memories (if not already present).
 ///
@@ -433,17 +478,18 @@ fn append_linked_memories(conn: &Connection, result: &mut RecallResult) -> Resul
 
     let existing_ids: HashSet<String> = result.items.iter().map(|i| i.memory.id.clone()).collect();
 
-    // Collect all target IDs and their link sources in a single pass.
+    // Fetch all outgoing links for current result items in one query.
+    let source_ids: Vec<String> = result.items.iter().map(|i| i.memory.id.clone()).collect();
+    let all_links = get_links_bulk(conn, &source_ids)?;
+
+    // Collect target IDs and their link sources, deduplicating.
     let mut target_to_source: Vec<(String, String)> = Vec::new();
     let mut added_ids: HashSet<String> = HashSet::new();
 
-    for item in &result.items {
-        let links = get_links(conn, &item.memory.id)?;
-        for link in links {
-            let target_id = link.to_memory_id;
-            if !existing_ids.contains(&target_id) && added_ids.insert(target_id.clone()) {
-                target_to_source.push((target_id, item.memory.id.clone()));
-            }
+    for link in all_links {
+        let target_id = link.to_memory_id;
+        if !existing_ids.contains(&target_id) && added_ids.insert(target_id.clone()) {
+            target_to_source.push((target_id, link.from_memory_id));
         }
     }
 

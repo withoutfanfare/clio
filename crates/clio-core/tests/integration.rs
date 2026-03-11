@@ -1317,3 +1317,101 @@ fn recall_with_include_links_appends_linked_memories() {
     assert_eq!(result_no_links.items.len(), 1);
     assert!(result_no_links.items[0].linked_from.is_none());
 }
+
+#[test]
+fn bulk_link_expansion_returns_linked_memories() {
+    let conn = test_db();
+    let settings = Settings::default();
+
+    // Create three memories.
+    let a = repository::remember(&conn, &RememberInput {
+        namespace: "global".into(),
+        kind: "note".into(),
+        title: Some("Memory A".into()),
+        summary: None,
+        content: "First memory about apples".into(),
+        tags: vec![],
+        source: None,
+        source_ref: None,
+        confidence: None,
+        importance: 3,
+        metadata: serde_json::json!({}),
+        valid_from: None,
+        valid_until: None,
+        upsert: false,
+    }, &settings).unwrap();
+
+    let b = repository::remember(&conn, &RememberInput {
+        namespace: "global".into(),
+        kind: "note".into(),
+        title: Some("Memory B".into()),
+        summary: None,
+        content: "Second memory about bananas".into(),
+        tags: vec![],
+        source: None,
+        source_ref: None,
+        confidence: None,
+        importance: 3,
+        metadata: serde_json::json!({}),
+        valid_from: None,
+        valid_until: None,
+        upsert: false,
+    }, &settings).unwrap();
+
+    let c = repository::remember(&conn, &RememberInput {
+        namespace: "global".into(),
+        kind: "note".into(),
+        title: Some("Memory C".into()),
+        summary: None,
+        content: "Third memory about cherries".into(),
+        tags: vec![],
+        source: None,
+        source_ref: None,
+        confidence: None,
+        importance: 3,
+        metadata: serde_json::json!({}),
+        valid_from: None,
+        valid_until: None,
+        upsert: false,
+    }, &settings).unwrap();
+
+    // Link A -> B and A -> C.
+    repository::link(&conn, &LinkInput {
+        from_memory_id: a.id.clone(),
+        to_memory_id: b.id.clone(),
+        relationship: "relates_to".into(),
+        metadata: serde_json::json!({}),
+    }).unwrap();
+    repository::link(&conn, &LinkInput {
+        from_memory_id: a.id.clone(),
+        to_memory_id: c.id.clone(),
+        relationship: "relates_to".into(),
+        metadata: serde_json::json!({}),
+    }).unwrap();
+
+    // Recall with include_links — should return A plus linked B and C.
+    let result = repository::recall(&conn, &RecallQuery {
+        query: Some("apples".into()),
+        namespace: None,
+        kind: None,
+        tags: vec![],
+        match_all_tags: true,
+        include_archived: false,
+        include_links: true,
+        importance_min: None,
+        importance_max: None,
+        sort_by: None,
+        offset: 0,
+        limit: 50,
+        scoring: None,
+    }).unwrap();
+
+    let ids: Vec<&str> = result.items.iter().map(|i| i.memory.id.as_str()).collect();
+    assert!(ids.contains(&a.id.as_str()), "should contain source memory A");
+    assert!(ids.contains(&b.id.as_str()), "should contain linked memory B");
+    assert!(ids.contains(&c.id.as_str()), "should contain linked memory C");
+
+    // Verify linked_from is set on the linked items.
+    let b_item = result.items.iter().find(|i| i.memory.id == b.id).unwrap();
+    assert_eq!(b_item.linked_from.as_deref(), Some(a.id.as_str()));
+}
