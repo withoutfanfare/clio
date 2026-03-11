@@ -165,6 +165,10 @@ export const useMemoryStore = defineStore("memories", () => {
     }
   }
 
+  function fingerprint(list: RecallItem[]): string {
+    return list.map((i) => `${i.id}:${i.updated_at}`).join("|");
+  }
+
   async function loadRecent(silent = false) {
     if (!silent) {
       loading.value = true;
@@ -181,7 +185,7 @@ export const useMemoryStore = defineStore("memories", () => {
         limit: 50,
       });
       // Only update if data actually changed to avoid unnecessary re-renders.
-      if (JSON.stringify(result.items) !== JSON.stringify(items.value)) {
+      if (fingerprint(result.items) !== fingerprint(items.value)) {
         items.value = result.items;
       }
       total.value = result.total;
