@@ -152,6 +152,37 @@ impl Default for ContextConfig {
     }
 }
 
+/// Configuration for AI-powered automatic title generation.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct AutoTitleConfig {
+    /// Whether AI title generation is enabled.
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// API key. Falls back to capture.api_key if None.
+    #[serde(default)]
+    pub api_key: Option<String>,
+
+    /// Base URL for the API. Falls back to capture.base_url if None.
+    #[serde(default)]
+    pub base_url: Option<String>,
+
+    /// Model to use. Falls back to capture.model if None.
+    #[serde(default)]
+    pub model: Option<String>,
+}
+
+impl Default for AutoTitleConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            api_key: None,
+            base_url: None,
+            model: None,
+        }
+    }
+}
+
 /// All configurable Clio settings.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Settings {
@@ -166,6 +197,10 @@ pub struct Settings {
     /// Capture pipeline configuration.
     #[serde(default)]
     pub capture: CaptureConfig,
+
+    /// Automatic title generation configuration.
+    #[serde(default)]
+    pub auto_title: AutoTitleConfig,
 
     /// Context detection configuration.
     #[serde(default)]
@@ -190,10 +225,32 @@ impl Default for Settings {
             embeddings: EmbeddingConfig::default(),
             auto_embed: true,
             capture: CaptureConfig::default(),
+            auto_title: AutoTitleConfig::default(),
             context: ContextConfig::default(),
             scoring: ScoringConfig::default(),
             daemon: DaemonConfig::default(),
         }
+    }
+}
+
+impl Settings {
+    /// Resolve the API key for auto-title, falling back to capture config.
+    pub fn auto_title_api_key(&self) -> Option<String> {
+        self.auto_title.api_key.clone()
+            .or_else(|| self.capture.api_key.clone())
+            .or_else(|| std::env::var("OPENAI_API_KEY").ok())
+    }
+
+    /// Resolve the base URL for auto-title, falling back to capture config.
+    pub fn auto_title_base_url(&self) -> String {
+        self.auto_title.base_url.clone()
+            .unwrap_or_else(|| self.capture.base_url.clone())
+    }
+
+    /// Resolve the model for auto-title, falling back to capture config.
+    pub fn auto_title_model(&self) -> String {
+        self.auto_title.model.clone()
+            .unwrap_or_else(|| self.capture.model.clone())
     }
 }
 
