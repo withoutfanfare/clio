@@ -1,4 +1,4 @@
-import { ref } from "vue";
+import { ref, onUnmounted } from "vue";
 import * as api from "@/api/memory";
 import type { Memory, RememberInput } from "@/api/types";
 
@@ -52,6 +52,10 @@ export function useAutoSave(delay = 2000) {
     clearTimeout(savedTimeout);
     dirty.value = false;
   }
+
+  onUnmounted(() => {
+    cancel();
+  });
 
   return { saving, dirty, saved, error, scheduleAutoSave, cancel };
 }
