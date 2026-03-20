@@ -22,7 +22,7 @@ The database is local and portable. MCP is just an access surface over the same 
 ## Features
 
 - `uuid7`-style sortable IDs when available
-- namespaced memories such as `global`, `project:scooda`, `person:danny`
+- namespaced memories such as `global`, `project:my-app`, `person:danny`
 - memory kinds such as `note`, `fact`, `decision`, `summary`, `task`
 - tags and typed links between memories
 - FTS5 search over title, summary, content, and tags

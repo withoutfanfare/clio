@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { SModal, SKbd } from "@stuntrocket/ui";
 import { useMemoryStore } from "@/stores/memories";
 
 const store = useMemoryStore();
@@ -23,89 +24,31 @@ function close() {
 </script>
 
 <template>
-  <Teleport to="body">
-    <Transition name="fade">
-      <div v-if="store.shortcutHelpOpen" class="help-backdrop" @click="close" />
-    </Transition>
-    <Transition name="scale">
-      <div v-if="store.shortcutHelpOpen" class="help-modal">
-        <div class="help-header">
-          <h2 class="help-title">Keyboard shortcuts</h2>
-          <button class="help-close" @click="close" aria-label="Close">
-            <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
-              <path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-            </svg>
-          </button>
-        </div>
-        <div class="help-list">
-          <div v-for="s in shortcuts" :key="s.description" class="help-row">
-            <span class="help-desc">{{ s.description }}</span>
-            <span class="help-keys">
-              <kbd v-for="key in s.keys" :key="key">{{ key }}</kbd>
-            </span>
-          </div>
-        </div>
+  <SModal
+    :open="store.shortcutHelpOpen"
+    max-width="380px"
+    @close="close"
+  >
+    <template #header>
+      <h2 class="help-title">Keyboard shortcuts</h2>
+    </template>
+
+    <div class="help-list">
+      <div v-for="s in shortcuts" :key="s.description" class="help-row">
+        <span class="help-desc">{{ s.description }}</span>
+        <span class="help-keys">
+          <SKbd v-for="key in s.keys" :key="key">{{ key }}</SKbd>
+        </span>
       </div>
-    </Transition>
-  </Teleport>
+    </div>
+  </SModal>
 </template>
 
 <style scoped>
-.help-backdrop {
-  position: fixed;
-  inset: 0;
-  background: color-mix(in srgb, var(--grey-950) 60%, transparent);
-  backdrop-filter: blur(2px);
-  z-index: 400;
-}
-
-.help-modal {
-  position: fixed;
-  top: 50%;
-  left: 50%;
-  transform: translate(-50%, -50%);
-  width: 380px;
-  max-width: 90vw;
-  background: var(--colour-surface-dropdown);
-  backdrop-filter: var(--glass-blur);
-  -webkit-backdrop-filter: var(--glass-blur);
-  border: 1px solid var(--colour-border);
-  border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-overlay);
-  z-index: 401;
-  padding: var(--space-5);
-}
-
-.help-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: var(--space-4);
-}
-
 .help-title {
-  font-size: var(--text-base);
-  font-weight: var(--font-semibold);
-  color: var(--colour-text);
-}
-
-.help-close {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 28px;
-  height: 28px;
-  background: none;
-  border: none;
-  border-radius: var(--radius-sm);
-  color: var(--colour-text-muted);
-  cursor: pointer;
-  transition: color 150ms, background 150ms;
-}
-
-.help-close:hover {
-  color: var(--colour-text);
-  background: var(--colour-surface-overlay);
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--color-text-primary);
 }
 
 .help-list {
@@ -119,7 +62,7 @@ function close() {
   align-items: center;
   justify-content: space-between;
   padding: var(--space-2) 0;
-  border-bottom: 1px solid var(--colour-border);
+  border-bottom: 1px solid var(--color-border-subtle);
 }
 
 .help-row:last-child {
@@ -127,28 +70,12 @@ function close() {
 }
 
 .help-desc {
-  font-size: var(--text-sm);
-  color: var(--colour-text-secondary);
+  font-size: 13px;
+  color: var(--color-text-secondary);
 }
 
 .help-keys {
   display: flex;
   gap: 4px;
-}
-
-.help-keys kbd {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 24px;
-  padding: 2px 6px;
-  font-size: var(--text-xs);
-  font-family: inherit;
-  font-weight: var(--font-medium);
-  color: var(--colour-text-muted);
-  background: var(--colour-surface-overlay);
-  border: 1px solid var(--colour-border);
-  border-radius: var(--radius-sm);
-  line-height: 1.4;
 }
 </style>

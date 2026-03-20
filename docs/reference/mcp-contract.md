@@ -576,7 +576,7 @@ No input parameters.
 ### Response
 
 ```json
-["global", "project:ai", "project:scooda", "tool:codex"]
+["global", "project:ai", "project:my-app", "tool:codex"]
 ```
 
 A JSON array of namespace strings, sorted lexicographically.

@@ -128,7 +128,7 @@ function onBlur() {
   gap: var(--space-1);
   padding: var(--space-1) var(--space-2);
   background: var(--colour-surface-input);
-  border: 1px solid var(--colour-border);
+  border: 1px solid var(--color-border);
   border-radius: var(--radius-md);
   min-height: 36px;
   align-items: center;
@@ -136,12 +136,12 @@ function onBlur() {
 }
 
 .tag-input:focus-within {
-  border-color: var(--colour-border-focus);
-  box-shadow: var(--shadow-focus);
+  border-color: var(--color-accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-accent) 22%, transparent);
 }
 
 .tag-input:hover:not(:focus-within) {
-  border-color: var(--colour-border-hover);
+  border-color: var(--color-border-strong);
 }
 
 .chip {
@@ -149,11 +149,11 @@ function onBlur() {
   align-items: center;
   gap: 2px;
   padding: 2px var(--space-2);
-  background: var(--colour-accent-muted);
-  color: var(--colour-accent);
+  background: var(--color-accent-subtle);
+  color: var(--color-accent);
   border-radius: 99px;
-  font-size: var(--text-xs);
-  font-weight: var(--font-medium);
+  font-size: 11px;
+  font-weight: 500;
 }
 
 .chip-remove {
@@ -165,7 +165,7 @@ function onBlur() {
   background: none;
   border: none;
   border-radius: 9999px;
-  color: var(--colour-accent);
+  color: var(--color-accent);
   cursor: pointer;
   opacity: 0;
   transition: opacity 150ms;
@@ -185,14 +185,14 @@ function onBlur() {
   background: none;
   border: none;
   outline: none;
-  color: var(--colour-text);
-  font-size: var(--text-sm);
+  color: var(--color-text-primary);
+  font-size: 13px;
   font-family: inherit;
   padding: 2px var(--space-1);
 }
 
 .chip-input::placeholder {
-  color: var(--colour-text-disabled);
+  color: var(--color-text-tertiary);
 }
 
 .tag-dropdown {
@@ -207,7 +207,7 @@ function onBlur() {
   background: var(--colour-surface-dropdown);
   border: 1px solid var(--glass-border);
   border-radius: var(--radius-md);
-  box-shadow: var(--shadow-overlay);
+  box-shadow: var(--shadow-sheet);
   padding: 4px;
 }
 
@@ -220,19 +220,19 @@ function onBlur() {
   background: transparent;
   border: none;
   border-radius: var(--radius-sm);
-  color: var(--colour-text-secondary);
-  font-size: var(--text-sm);
+  color: var(--color-text-secondary);
+  font-size: 13px;
   cursor: pointer;
   text-align: left;
 }
 
 .tag-option:hover {
-  background: var(--colour-surface-overlay);
-  color: var(--colour-text);
+  background: var(--color-surface-hover);
+  color: var(--color-text-primary);
 }
 
 .tag-option-hash {
-  color: var(--colour-accent);
-  font-weight: var(--font-medium);
+  color: var(--color-accent);
+  font-weight: 500;
 }
 </style>

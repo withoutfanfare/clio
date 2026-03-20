@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, watch, nextTick } from "vue";
+import { SButton, SFormField, SInput, SBadge, SDropdownMenu } from "@stuntrocket/ui";
+import type { SDropdownMenuItem } from "@stuntrocket/ui";
 import { useMemoryStore } from "@/stores/memories";
 import { useAutoSave } from "@/composables/useAutoSave";
 import TagInput from "./TagInput.vue";
@@ -24,7 +26,6 @@ const editNamespace = ref("global");
 const editTags = ref<string[]>([]);
 const editImportance = ref(3);
 const metaOpen = ref(false);
-const menuOpen = ref(false);
 const copied = ref(false);
 const confirmingDelete = ref(false);
 const contentRef = ref<HTMLTextAreaElement | null>(null);
@@ -71,8 +72,8 @@ watch(
       editTags.value = [...memory.tags];
       editImportance.value = memory.importance;
       metaOpen.value = false;
-      menuOpen.value = false;
       revisionsOpen.value = false;
+      confirmingDelete.value = false;
       loadRevisions(memory.id);
       cancel();
       nextTick(() => contentRef.value?.focus());
@@ -117,19 +118,16 @@ async function onCopy() {
     copied.value = true;
     setTimeout(() => (copied.value = false), 1500);
   }
-  menuOpen.value = false;
 }
 
 function onDownload() {
   if (!store.drawerMemory) return;
   downloadMarkdown(store.drawerMemory);
-  menuOpen.value = false;
 }
 
 function onTogglePin() {
   if (!store.drawerMemory) return;
   store.togglePin(store.drawerMemory.id);
-  menuOpen.value = false;
 }
 
 async function archiveMemory() {
@@ -164,6 +162,53 @@ async function deleteMemory() {
   }
 }
 
+const menuItems = computed<SDropdownMenuItem[]>(() => {
+  if (!store.drawerMemory) return [];
+  return [
+    {
+      label: store.isPinned(store.drawerMemory.id) ? "Unpin" : "Pin to top",
+      value: "pin",
+    },
+    {
+      label: copied.value ? "Copied!" : "Copy as Markdown",
+      value: "copy",
+    },
+    {
+      label: "Download .md",
+      value: "download",
+    },
+    {
+      label: store.drawerMemory.archived_at ? "Unarchive" : "Archive",
+      value: "archive",
+    },
+    {
+      label: confirmingDelete.value ? "Confirm delete" : "Delete",
+      value: "delete",
+      danger: true,
+    },
+  ];
+});
+
+function handleMenuSelect(value: string) {
+  switch (value) {
+    case "pin":
+      onTogglePin();
+      break;
+    case "copy":
+      onCopy();
+      break;
+    case "download":
+      onDownload();
+      break;
+    case "archive":
+      archiveMemory();
+      break;
+    case "delete":
+      deleteMemory();
+      break;
+  }
+}
+
 function close() {
   cancel();
   confirmingDelete.value = false;
@@ -195,76 +240,33 @@ function formatDate(iso: string): string {
         <div class="drawer-header">
           <div class="drawer-status">
             <Transition name="status-fade" mode="out-in">
-              <span v-if="saveError" key="error" class="status-pill status-error">
-                <svg width="12" height="12" viewBox="0 0 16 16" fill="none">
-                  <circle cx="8" cy="8" r="7" stroke="currentColor" stroke-width="1.5"/>
-                  <path d="M8 5v3.5M8 10.5v.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-                </svg>
-                Save failed
-              </span>
-              <span v-else-if="saving" key="saving" class="status-pill status-saving">
-                <svg width="12" height="12" viewBox="0 0 16 16" fill="none" class="spin">
-                  <path d="M8 2a6 6 0 105.292 3.143" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-                </svg>
-                Saving&hellip;
-              </span>
-              <span v-else-if="saved" key="saved" class="status-pill status-saved">
-                <svg width="12" height="12" viewBox="0 0 16 16" fill="none">
-                  <path d="M3.5 8.5l3 3 6-7" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-                </svg>
-                Saved
-              </span>
-              <span v-else-if="dirty" key="dirty" class="status-pill status-dirty">
-                <svg width="8" height="8" viewBox="0 0 8 8" fill="none">
-                  <circle cx="4" cy="4" r="4" fill="currentColor"/>
-                </svg>
-                Unsaved changes
-              </span>
+              <SBadge v-if="saveError" key="error" variant="error">Save failed</SBadge>
+              <SBadge v-else-if="saving" key="saving" variant="default">Saving&hellip;</SBadge>
+              <SBadge v-else-if="saved" key="saved" variant="success">Saved</SBadge>
+              <SBadge v-else-if="dirty" key="dirty" variant="warning">Unsaved changes</SBadge>
             </Transition>
           </div>
           <div class="drawer-actions">
-            <div class="menu-wrapper">
-              <button
-                class="drawer-btn"
-                @click="menuOpen = !menuOpen; if (!menuOpen) confirmingDelete = false"
-                aria-label="More options"
-              >
-                <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-                  <circle cx="8" cy="3" r="1.5" fill="currentColor"/>
-                  <circle cx="8" cy="8" r="1.5" fill="currentColor"/>
-                  <circle cx="8" cy="13" r="1.5" fill="currentColor"/>
-                </svg>
-              </button>
-              <Transition name="fade">
-                <div v-if="menuOpen" class="overflow-menu">
-                  <button class="menu-item" @click="onTogglePin">
-                    {{ store.drawerMemory && store.isPinned(store.drawerMemory.id) ? "Unpin" : "Pin to top" }}
-                  </button>
-                  <button class="menu-item" @click="onCopy">
-                    {{ copied ? "Copied!" : "Copy as Markdown" }}
-                  </button>
-                  <button class="menu-item" @click="onDownload">
-                    Download .md
-                  </button>
-                  <div class="menu-sep" />
-                  <button class="menu-item" @click="archiveMemory">
-                    {{ store.drawerMemory.archived_at ? "Unarchive" : "Archive" }}
-                  </button>
-                  <button
-                    class="menu-item"
-                    :class="confirmingDelete ? 'menu-item--danger-confirm' : 'menu-item--danger'"
-                    @click="deleteMemory"
-                  >
-                    {{ confirmingDelete ? "Confirm delete" : "Delete" }}
-                  </button>
-                </div>
-              </Transition>
-            </div>
-            <button class="drawer-btn" @click="close" aria-label="Close">
+            <SDropdownMenu
+              :items="menuItems"
+              align="right"
+              @select="handleMenuSelect"
+            >
+              <template #trigger="{ toggle }">
+                <SButton variant="icon" size="sm" @click="toggle" aria-label="More options">
+                  <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                    <circle cx="8" cy="3" r="1.5" fill="currentColor"/>
+                    <circle cx="8" cy="8" r="1.5" fill="currentColor"/>
+                    <circle cx="8" cy="13" r="1.5" fill="currentColor"/>
+                  </svg>
+                </SButton>
+              </template>
+            </SDropdownMenu>
+            <SButton variant="icon" size="sm" @click="close" aria-label="Close">
               <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
                 <path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
               </svg>
-            </button>
+            </SButton>
           </div>
         </div>
 
@@ -301,34 +303,29 @@ function formatDate(iso: string): string {
 
             <Transition name="fade">
               <div v-if="metaOpen" class="meta-fields">
-                <div class="meta-row">
-                  <label class="meta-label">Kind</label>
+                <SFormField label="Kind">
                   <KindSelector
                     v-model="editKind"
                     @update:model-value="onMetaChange"
                   />
-                </div>
+                </SFormField>
 
-                <div class="meta-row">
-                  <label class="meta-label">Namespace</label>
-                  <input
+                <SFormField label="Namespace">
+                  <SInput
                     v-model="editNamespace"
-                    class="meta-input"
-                    @input="onMetaChange"
+                    @update:model-value="onMetaChange"
                   />
-                </div>
+                </SFormField>
 
-                <div class="meta-row">
-                  <label class="meta-label">Tags</label>
+                <SFormField label="Tags">
                   <TagInput
                     v-model="editTags"
                     :suggestions="availableTags"
                     @update:model-value="onMetaChange"
                   />
-                </div>
+                </SFormField>
 
-                <div class="meta-row">
-                  <label class="meta-label">Importance</label>
+                <SFormField label="Importance">
                   <div class="importance-dots">
                     <button
                       v-for="n in 5"
@@ -339,7 +336,7 @@ function formatDate(iso: string): string {
                       :aria-label="`Importance ${n}`"
                     />
                   </div>
-                </div>
+                </SFormField>
 
                 <div class="meta-row" v-if="store.drawerMemory.source">
                   <label class="meta-label">Source</label>
@@ -392,7 +389,7 @@ function formatDate(iso: string): string {
 .drawer-backdrop {
   position: fixed;
   inset: 0;
-  background: color-mix(in srgb, var(--grey-950) 60%, transparent);
+  background: rgba(0, 0, 0, 0.6);
   backdrop-filter: blur(2px);
   z-index: 300;
 }
@@ -408,8 +405,8 @@ function formatDate(iso: string): string {
   background: var(--colour-surface-panel);
   backdrop-filter: var(--glass-blur);
   -webkit-backdrop-filter: var(--glass-blur);
-  border-left: 1px solid var(--colour-border);
-  box-shadow: var(--shadow-panel), var(--glass-glow-strong);
+  border-left: 1px solid var(--color-border-subtle);
+  box-shadow: var(--shadow-sheet), var(--glass-glow-strong);
   z-index: 301;
   display: flex;
   flex-direction: column;
@@ -421,7 +418,7 @@ function formatDate(iso: string): string {
   align-items: center;
   justify-content: space-between;
   padding: var(--space-3) var(--space-5);
-  border-bottom: 1px solid var(--colour-border);
+  border-bottom: 1px solid var(--color-border-subtle);
   min-height: 48px;
 }
 
@@ -429,46 +426,6 @@ function formatDate(iso: string): string {
   display: flex;
   align-items: center;
   min-height: 24px;
-}
-
-.status-pill {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  font-size: var(--text-xs);
-  font-weight: var(--font-medium);
-  padding: 2px 10px 2px 7px;
-  border-radius: 99px;
-  line-height: 1;
-  white-space: nowrap;
-}
-
-.status-saving {
-  color: var(--colour-text-muted);
-  background: var(--colour-surface-overlay);
-}
-
-.status-saved {
-  color: var(--colour-success);
-  background: color-mix(in srgb, var(--colour-success) 12%, transparent);
-}
-
-.status-dirty {
-  color: var(--colour-warning);
-  background: color-mix(in srgb, var(--colour-warning) 12%, transparent);
-}
-
-.status-error {
-  color: var(--colour-danger);
-  background: color-mix(in srgb, var(--colour-danger) 12%, transparent);
-}
-
-@keyframes spin {
-  to { transform: rotate(360deg); }
-}
-
-.spin {
-  animation: spin 0.8s linear infinite;
 }
 
 .status-fade-enter-active {
@@ -491,88 +448,6 @@ function formatDate(iso: string): string {
   gap: 2px;
 }
 
-.drawer-btn {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 32px;
-  height: 32px;
-  background: none;
-  border: none;
-  border-radius: var(--radius-sm);
-  color: var(--colour-text-muted);
-  cursor: pointer;
-  transition: color 150ms, background 150ms;
-}
-
-.drawer-btn:hover {
-  color: var(--colour-text);
-  background: var(--colour-surface-overlay);
-}
-
-.menu-wrapper {
-  position: relative;
-}
-
-.overflow-menu {
-  position: absolute;
-  right: 0;
-  top: 100%;
-  margin-top: var(--space-1);
-  background: var(--colour-surface-dropdown);
-  backdrop-filter: var(--glass-blur);
-  -webkit-backdrop-filter: var(--glass-blur);
-  border: 1px solid var(--colour-border);
-  border-radius: var(--radius-md);
-  padding: var(--space-1);
-  min-width: 180px;
-  box-shadow: var(--shadow-overlay);
-  z-index: 10;
-}
-
-.menu-item {
-  width: 100%;
-  white-space: nowrap;
-  padding: var(--space-2) var(--space-3);
-  background: none;
-  border: none;
-  border-radius: var(--radius-sm);
-  color: var(--colour-text-secondary);
-  font-size: var(--text-sm);
-  text-align: left;
-  cursor: pointer;
-  transition: background 150ms, color 150ms;
-}
-
-.menu-item:hover {
-  background: var(--colour-surface-overlay);
-  color: var(--colour-text);
-}
-
-.menu-sep {
-  height: 1px;
-  background: var(--colour-border);
-  margin: var(--space-1) var(--space-2);
-}
-
-.menu-item--danger {
-  color: var(--colour-text-secondary);
-}
-
-.menu-item--danger:hover {
-  background: color-mix(in srgb, var(--colour-danger) 12%, transparent);
-  color: var(--colour-danger);
-}
-
-.menu-item--danger-confirm {
-  color: var(--colour-danger);
-  font-weight: var(--font-medium);
-}
-
-.menu-item--danger-confirm:hover {
-  background: color-mix(in srgb, var(--colour-danger) 12%, transparent);
-}
-
 .drawer-body {
   flex: 1;
   overflow-y: auto;
@@ -587,16 +462,16 @@ function formatDate(iso: string): string {
   background: none;
   border: none;
   outline: none;
-  font-size: var(--text-lg);
-  font-weight: var(--font-medium);
-  letter-spacing: var(--tracking-tight);
-  line-height: var(--leading-tight);
-  color: var(--colour-text);
+  font-size: 17px;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+  line-height: 1.3;
+  color: var(--color-text-primary);
   font-family: inherit;
 }
 
 .drawer-title::placeholder {
-  color: var(--colour-text-disabled);
+  color: var(--color-text-tertiary);
 }
 
 .drawer-content {
@@ -606,20 +481,20 @@ function formatDate(iso: string): string {
   background: none;
   border: none;
   outline: none;
-  font-size: var(--text-sm);
-  line-height: var(--leading-relaxed);
-  color: var(--colour-text);
+  font-size: 13px;
+  line-height: 1.65;
+  color: var(--color-text-primary);
   resize: none;
   font-family: inherit;
   padding-top: var(--space-2);
 }
 
 .drawer-content::placeholder {
-  color: var(--colour-text-disabled);
+  color: var(--color-text-tertiary);
 }
 
 .drawer-meta {
-  border-top: 1px solid var(--colour-border);
+  border-top: 1px solid var(--color-border-subtle);
   padding-top: var(--space-3);
   margin-top: var(--space-5);
 }
@@ -630,11 +505,11 @@ function formatDate(iso: string): string {
   gap: var(--space-2);
   background: none;
   border: none;
-  color: var(--colour-text-muted);
-  font-size: var(--text-xs);
-  font-weight: var(--font-semibold);
+  color: var(--color-text-tertiary);
+  font-size: 11px;
+  font-weight: 600;
   text-transform: uppercase;
-  letter-spacing: var(--tracking-caps);
+  letter-spacing: 0.06em;
   cursor: pointer;
   transition: color 150ms;
   padding: var(--space-1) 0;
@@ -649,7 +524,7 @@ function formatDate(iso: string): string {
 }
 
 .meta-toggle:hover {
-  color: var(--colour-text);
+  color: var(--color-text-primary);
 }
 
 .meta-fields {
@@ -657,41 +532,6 @@ function formatDate(iso: string): string {
   flex-direction: column;
   gap: var(--space-3);
   margin-top: var(--space-3);
-}
-
-.meta-row {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
-}
-
-.meta-label {
-  font-size: var(--text-xs);
-  font-weight: var(--font-semibold);
-  text-transform: uppercase;
-  letter-spacing: var(--tracking-caps);
-  color: var(--colour-text-muted);
-}
-
-.meta-input {
-  padding: var(--space-2) var(--space-3);
-  background: var(--colour-surface-input);
-  border: 1px solid var(--colour-border);
-  border-radius: var(--radius-md);
-  color: var(--colour-text);
-  font-size: var(--text-sm);
-  font-family: inherit;
-  outline: none;
-  transition: border-color 150ms;
-}
-
-.meta-input:hover {
-  border-color: var(--colour-border-hover);
-}
-
-.meta-input:focus {
-  border-color: var(--colour-border-focus);
-  box-shadow: var(--shadow-focus);
 }
 
 .importance-dots {
@@ -703,7 +543,7 @@ function formatDate(iso: string): string {
   width: 14px;
   height: 14px;
   border-radius: 9999px;
-  border: 2px solid var(--colour-border-hover);
+  border: 2px solid var(--color-border-strong);
   background: transparent;
   cursor: pointer;
   transition: border-color 150ms, background 150ms;
@@ -711,20 +551,20 @@ function formatDate(iso: string): string {
 }
 
 .importance-dot.active {
-  background: var(--colour-accent);
-  border-color: var(--colour-accent);
+  background: var(--color-accent);
+  border-color: var(--color-accent);
 }
 
 .importance-dot:hover {
-  border-color: var(--colour-accent);
+  border-color: var(--color-accent);
 }
 
 .meta-info {
   display: flex;
   flex-direction: column;
   gap: 2px;
-  font-size: var(--text-xs);
-  color: var(--colour-text-disabled);
+  font-size: 11px;
+  color: var(--color-text-tertiary);
   font-variant-numeric: tabular-nums;
   margin-top: var(--space-2);
 }

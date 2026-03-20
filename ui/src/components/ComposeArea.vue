@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, nextTick, watch } from "vue";
+import { SButton, SCard, SFormField, SInput, SKbd } from "@stuntrocket/ui";
 import { useMemoryStore } from "@/stores/memories";
 import TagInput from "./TagInput.vue";
 import KindSelector from "./KindSelector.vue";
@@ -66,7 +67,7 @@ function autoResize(e: Event) {
 
 <template>
   <Transition name="fade">
-    <div v-if="store.composeOpen" class="compose-area glass">
+    <SCard v-if="store.composeOpen" variant="glass" class="compose-area">
       <textarea
         ref="textareaRef"
         v-model="text"
@@ -93,47 +94,45 @@ function autoResize(e: Event) {
         </button>
 
         <div class="compose-actions">
-          <button
-            class="btn-ghost"
+          <SButton
+            variant="ghost"
+            size="sm"
             @click="store.composeOpen = false"
           >
             Cancel
-          </button>
-          <button
-            class="btn-primary"
+          </SButton>
+          <SButton
+            variant="primary"
+            size="sm"
             @click="submit"
             :disabled="!text.trim() || submitting"
+            :loading="submitting"
           >
             {{ submitting ? "Saving\u2026" : "Save" }}
-            <kbd class="kbd">&#8984;&#9166;</kbd>
-          </button>
+            <SKbd>&#8984;&#9166;</SKbd>
+          </SButton>
         </div>
       </div>
 
       <Transition name="fade">
         <div v-if="detailsOpen" class="compose-details">
-          <div class="detail-row">
-            <label class="detail-label">Title</label>
-            <input v-model="title" class="detail-input" placeholder="Optional title" />
-          </div>
+          <SFormField label="Title">
+            <SInput v-model="title" placeholder="Optional title" />
+          </SFormField>
 
-          <div class="detail-row">
-            <label class="detail-label">Kind</label>
+          <SFormField label="Kind">
             <KindSelector v-model="kind" />
-          </div>
+          </SFormField>
 
-          <div class="detail-row">
-            <label class="detail-label">Namespace</label>
-            <input v-model="namespace" class="detail-input" placeholder="global" />
-          </div>
+          <SFormField label="Namespace">
+            <SInput v-model="namespace" placeholder="global" />
+          </SFormField>
 
-          <div class="detail-row">
-            <label class="detail-label">Tags</label>
+          <SFormField label="Tags">
             <TagInput v-model="tags" />
-          </div>
+          </SFormField>
 
-          <div class="detail-row">
-            <label class="detail-label">Importance</label>
+          <SFormField label="Importance">
             <div class="importance-dots">
               <button
                 v-for="n in 5"
@@ -143,10 +142,10 @@ function autoResize(e: Event) {
                 @click="importance = n"
               />
             </div>
-          </div>
+          </SFormField>
         </div>
       </Transition>
-    </div>
+    </SCard>
   </Transition>
 </template>
 
@@ -161,16 +160,16 @@ function autoResize(e: Event) {
   background: none;
   border: none;
   outline: none;
-  font-size: var(--text-base);
-  line-height: var(--leading-relaxed);
-  color: var(--colour-text);
+  font-size: 15px;
+  line-height: 1.65;
+  color: var(--color-text-primary);
   resize: none;
   font-family: inherit;
   min-height: 72px;
 }
 
 .compose-input::placeholder {
-  color: var(--colour-text-disabled);
+  color: var(--color-text-tertiary);
 }
 
 .compose-footer {
@@ -179,7 +178,7 @@ function autoResize(e: Event) {
   justify-content: space-between;
   margin-top: var(--space-3);
   padding-top: var(--space-3);
-  border-top: 1px solid var(--colour-border);
+  border-top: 1px solid var(--color-border-subtle);
 }
 
 .details-toggle {
@@ -188,14 +187,14 @@ function autoResize(e: Event) {
   gap: var(--space-1);
   background: none;
   border: none;
-  color: var(--colour-text-muted);
-  font-size: var(--text-sm);
+  color: var(--color-text-tertiary);
+  font-size: 13px;
   cursor: pointer;
   transition: color 150ms;
 }
 
 .details-toggle:hover {
-  color: var(--colour-text);
+  color: var(--color-text-primary);
 }
 
 .toggle-chevron {
@@ -212,103 +211,13 @@ function autoResize(e: Event) {
   align-items: center;
 }
 
-.btn-ghost {
-  padding: var(--space-2) var(--space-3);
-  background: none;
-  border: none;
-  border-radius: var(--radius-md);
-  color: var(--colour-text-muted);
-  font-size: var(--text-sm);
-  cursor: pointer;
-  transition: color 150ms, background 150ms;
-}
-
-.btn-ghost:hover {
-  color: var(--colour-text);
-  background: var(--colour-surface-overlay);
-}
-
-.btn-primary {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  padding: var(--space-2) var(--space-4);
-  background: var(--colour-accent);
-  border: none;
-  border-radius: var(--radius-md);
-  color: white;
-  font-size: var(--text-sm);
-  font-weight: var(--font-medium);
-  cursor: pointer;
-  transition: background 150ms;
-}
-
-.btn-primary:hover:not(:disabled) {
-  background: var(--colour-accent-hover);
-}
-
-.btn-primary:disabled {
-  opacity: 0.4;
-  cursor: default;
-}
-
-.btn-primary:focus-visible {
-  outline: 2px solid var(--colour-border-focus);
-  outline-offset: 2px;
-}
-
-.kbd {
-  font-size: var(--text-xs);
-  opacity: 0.6;
-  font-family: inherit;
-}
-
 .compose-details {
   display: flex;
   flex-direction: column;
   gap: var(--space-3);
   margin-top: var(--space-3);
   padding-top: var(--space-3);
-  border-top: 1px solid var(--colour-border);
-}
-
-.detail-row {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
-}
-
-.detail-label {
-  font-size: var(--text-xs);
-  font-weight: var(--font-semibold);
-  text-transform: uppercase;
-  letter-spacing: var(--tracking-caps);
-  color: var(--colour-text-muted);
-}
-
-.detail-input {
-  padding: var(--space-2) var(--space-3);
-  background: var(--colour-surface-input);
-  border: 1px solid var(--colour-border);
-  border-radius: var(--radius-md);
-  color: var(--colour-text);
-  font-size: var(--text-sm);
-  font-family: inherit;
-  outline: none;
-  transition: border-color 150ms;
-}
-
-.detail-input:hover {
-  border-color: var(--colour-border-hover);
-}
-
-.detail-input:focus {
-  border-color: var(--colour-border-focus);
-  box-shadow: var(--shadow-focus);
-}
-
-.detail-input::placeholder {
-  color: var(--colour-text-disabled);
+  border-top: 1px solid var(--color-border-subtle);
 }
 
 .importance-dots {
@@ -320,7 +229,7 @@ function autoResize(e: Event) {
   width: 14px;
   height: 14px;
   border-radius: 9999px;
-  border: 2px solid var(--colour-border-hover);
+  border: 2px solid var(--color-border-strong);
   background: transparent;
   cursor: pointer;
   transition: border-color 150ms, background 150ms;
@@ -328,11 +237,11 @@ function autoResize(e: Event) {
 }
 
 .importance-dot.active {
-  background: var(--colour-accent);
-  border-color: var(--colour-accent);
+  background: var(--color-accent);
+  border-color: var(--color-accent);
 }
 
 .importance-dot:hover {
-  border-color: var(--colour-accent);
+  border-color: var(--color-accent);
 }
 </style>

@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, nextTick, onMounted, onUnmounted } from "vue";
+import { SCard, SBadge, STag, SDropdownMenu, SButton } from "@stuntrocket/ui";
+import type { SDropdownMenuItem } from "@stuntrocket/ui";
 import { useMemoryStore } from "@/stores/memories";
 import { copyToClipboard, downloadMarkdown } from "@/utils/memoryExport";
 import * as api from "@/api/memory";
@@ -12,35 +14,10 @@ const props = defineProps<{
 }>();
 
 const store = useMemoryStore();
-const menuOpen = ref(false);
-const confirmingDelete = ref(false);
 const copied = ref(false);
-const btnRef = ref<HTMLElement | null>(null);
-const dropdownRef = ref<HTMLElement | null>(null);
-const menuStyle = ref({ top: "0px", left: "0px" });
-
-function positionMenu() {
-  if (!btnRef.value) return;
-  const rect = btnRef.value.getBoundingClientRect();
-  menuStyle.value = {
-    top: `${rect.bottom + 4}px`,
-    left: `${rect.right}px`,
-  };
-}
-
-function handleClickOutside(e: MouseEvent) {
-  if (!menuOpen.value) return;
-  const target = e.target as Node;
-  if (btnRef.value?.contains(target)) return;
-  if (dropdownRef.value?.contains(target)) return;
-  closeMenu();
-}
-
-onMounted(() => document.addEventListener("pointerdown", handleClickOutside, true));
-onUnmounted(() => document.removeEventListener("pointerdown", handleClickOutside, true));
+const confirmingDelete = ref(false);
 
 function open(e: MouseEvent) {
-  if (menuOpen.value) return;
   // Cmd/Ctrl+click toggles selection
   if (e.metaKey || e.ctrlKey) {
     e.preventDefault();
@@ -52,7 +29,6 @@ function open(e: MouseEvent) {
     e.preventDefault();
     const myIndex = store.items.findIndex((i) => i.id === props.memory.id);
     if (myIndex >= 0) {
-      // Find the last selected item's index
       const lastSelected = store.items.findIndex(
         (i) => store.isSelected(i.id) && i.id !== props.memory.id,
       );
@@ -74,46 +50,23 @@ function open(e: MouseEvent) {
 
 const isItemSelected = computed(() => store.isSelected(props.memory.id));
 
-function toggleMenu(e: Event) {
-  e.stopPropagation();
-  if (menuOpen.value) {
-    closeMenu();
-  } else {
-    positionMenu();
-    menuOpen.value = true;
-    confirmingDelete.value = false;
-  }
-}
-
-function closeMenu() {
-  menuOpen.value = false;
-  confirmingDelete.value = false;
-}
-
-async function onCopy(e: Event) {
-  e.stopPropagation();
+async function onCopy() {
   const ok = await copyToClipboard(props.memory);
   if (ok) {
     copied.value = true;
     setTimeout(() => (copied.value = false), 1500);
   }
-  closeMenu();
 }
 
-function onDownload(e: Event) {
-  e.stopPropagation();
+function onDownload() {
   downloadMarkdown(props.memory);
-  closeMenu();
 }
 
-function onTogglePin(e: Event) {
-  e.stopPropagation();
+function onTogglePin() {
   store.togglePin(props.memory.id);
-  closeMenu();
 }
 
-async function onArchive(e: Event) {
-  e.stopPropagation();
+async function onArchive() {
   try {
     if (props.memory.archived_at) {
       await api.unarchive(props.memory.id);
@@ -124,11 +77,9 @@ async function onArchive(e: Event) {
   } catch {
     // Archive failed
   }
-  closeMenu();
 }
 
-async function onDelete(e: Event) {
-  e.stopPropagation();
+async function onDelete() {
   if (!confirmingDelete.value) {
     confirmingDelete.value = true;
     return;
@@ -139,7 +90,51 @@ async function onDelete(e: Event) {
   } catch {
     // Delete failed
   }
-  closeMenu();
+  confirmingDelete.value = false;
+}
+
+const menuItems = computed<SDropdownMenuItem[]>(() => [
+  {
+    label: store.isPinned(props.memory.id) ? "Unpin" : "Pin to top",
+    value: "pin",
+  },
+  {
+    label: copied.value ? "Copied!" : "Copy as Markdown",
+    value: "copy",
+  },
+  {
+    label: "Download .md",
+    value: "download",
+  },
+  {
+    label: props.memory.archived_at ? "Unarchive" : "Archive",
+    value: "archive",
+  },
+  {
+    label: confirmingDelete.value ? "Confirm delete" : "Delete",
+    value: "delete",
+    danger: true,
+  },
+]);
+
+function handleMenuSelect(value: string) {
+  switch (value) {
+    case "pin":
+      onTogglePin();
+      break;
+    case "copy":
+      onCopy();
+      break;
+    case "download":
+      onDownload();
+      break;
+    case "archive":
+      onArchive();
+      break;
+    case "delete":
+      onDelete();
+      break;
+  }
 }
 
 function formatTime(iso: string): string {
@@ -149,7 +144,9 @@ function formatTime(iso: string): string {
 </script>
 
 <template>
-  <article
+  <SCard
+    variant="glass"
+    hoverable
     class="memory-page"
     :class="[mode === 'grid' ? 'mode-grid' : 'mode-list', { 'kb-focused': focused, 'is-selected': isItemSelected }]"
     @click="open"
@@ -159,24 +156,33 @@ function formatTime(iso: string): string {
     <div class="page-header">
       <div class="page-header-row">
         <h3 class="page-title" v-if="memory.title">{{ memory.title }}</h3>
-        <div class="page-menu-wrapper">
-          <button
-            ref="btnRef"
-            class="page-menu-btn"
-            :class="{ 'menu-visible': menuOpen }"
-            @click="toggleMenu"
-            aria-label="More options"
+        <div class="page-menu-wrapper" @click.stop>
+          <SDropdownMenu
+            :items="menuItems"
+            align="right"
+            @select="handleMenuSelect"
           >
-            <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
-              <circle cx="8" cy="3" r="1.5" fill="currentColor"/>
-              <circle cx="8" cy="8" r="1.5" fill="currentColor"/>
-              <circle cx="8" cy="13" r="1.5" fill="currentColor"/>
-            </svg>
-          </button>
+            <template #trigger="{ toggle, open: menuOpen }">
+              <SButton
+                variant="icon"
+                size="sm"
+                class="page-menu-btn"
+                :class="{ 'menu-visible': menuOpen }"
+                @click="toggle"
+                aria-label="More options"
+              >
+                <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+                  <circle cx="8" cy="3" r="1.5" fill="currentColor"/>
+                  <circle cx="8" cy="8" r="1.5" fill="currentColor"/>
+                  <circle cx="8" cy="13" r="1.5" fill="currentColor"/>
+                </svg>
+              </SButton>
+            </template>
+          </SDropdownMenu>
         </div>
       </div>
       <div class="page-meta">
-        <span class="meta-kind-pill">{{ memory.kind }}</span>
+        <SBadge variant="default">{{ memory.kind }}</SBadge>
         <span class="meta-importance" :title="`Importance ${memory.importance}/5`">
           <span
             v-for="n in 5"
@@ -195,72 +201,20 @@ function formatTime(iso: string): string {
     <p class="page-content">{{ memory.content }}</p>
 
     <div class="page-tags" v-if="memory.tags.length">
-      <span v-for="tag in memory.tags" :key="tag" class="tag">#{{ tag }}</span>
+      <STag v-for="tag in memory.tags" :key="tag">#{{ tag }}</STag>
     </div>
-  </article>
-
-  <Teleport to="body">
-    <Transition name="fade">
-      <div
-        v-if="menuOpen"
-        ref="dropdownRef"
-        class="page-overflow-menu"
-        :style="menuStyle"
-        @click.stop
-      >
-        <button class="pmenu-item" @click="onTogglePin">
-          {{ store.isPinned(memory.id) ? "Unpin" : "Pin to top" }}
-        </button>
-        <button class="pmenu-item" @click="onCopy">
-          {{ copied ? "Copied!" : "Copy as Markdown" }}
-        </button>
-        <button class="pmenu-item" @click="onDownload">
-          Download .md
-        </button>
-        <div class="pmenu-sep" />
-        <button class="pmenu-item" @click="onArchive">
-          {{ memory.archived_at ? "Unarchive" : "Archive" }}
-        </button>
-        <button
-          class="pmenu-item"
-          :class="confirmingDelete ? 'pmenu-item--danger-confirm' : 'pmenu-item--danger'"
-          @click="onDelete"
-        >
-          {{ confirmingDelete ? "Confirm delete" : "Delete" }}
-        </button>
-      </div>
-    </Transition>
-  </Teleport>
+  </SCard>
 </template>
 
 <style scoped>
 .memory-page {
   cursor: pointer;
-  position: relative;
-  background: var(--colour-surface-card);
-  backdrop-filter: var(--glass-blur);
-  -webkit-backdrop-filter: var(--glass-blur);
-  border: 1px solid var(--glass-border);
-  border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-card), var(--glass-glow);
-  transition: border-color 150ms cubic-bezier(0.4, 0, 0.2, 1),
-              box-shadow 150ms cubic-bezier(0.4, 0, 0.2, 1);
-}
-
-.memory-page:hover {
-  border-color: var(--glass-border-hover);
-  box-shadow: var(--shadow-card), var(--glass-glow-strong);
-}
-
-.memory-page:active {
-  box-shadow: var(--shadow-sm);
 }
 
 .memory-page:focus-visible,
 .memory-page.kb-focused {
-  outline: 2px solid var(--colour-border-focus);
+  outline: 2px solid color-mix(in srgb, var(--color-accent) 55%, transparent);
   outline-offset: 2px;
-  box-shadow: var(--shadow-focus);
 }
 
 .memory-page.is-selected {
@@ -293,7 +247,7 @@ function formatTime(iso: string): string {
 }
 
 .mode-grid .page-title {
-  font-size: var(--text-xs);
+  font-size: 11px;
   margin-bottom: 2px;
   white-space: nowrap;
   overflow: hidden;
@@ -311,9 +265,9 @@ function formatTime(iso: string): string {
 }
 
 .mode-grid .page-content {
-  font-size: var(--text-xs);
+  font-size: 11px;
   -webkit-line-clamp: 2;
-  line-height: var(--leading-normal);
+  line-height: 1.5;
   flex: 1;
   min-height: 0;
 }
@@ -324,11 +278,6 @@ function formatTime(iso: string): string {
   flex-shrink: 0;
   overflow: hidden;
   white-space: nowrap;
-}
-
-.mode-grid .page-tags .tag {
-  font-size: var(--text-xs);
-  display: inline;
 }
 
 /* ── Header ── */
@@ -344,11 +293,11 @@ function formatTime(iso: string): string {
 }
 
 .page-title {
-  font-size: var(--text-base);
-  font-weight: var(--font-medium);
-  line-height: var(--leading-tight);
-  letter-spacing: var(--tracking-tight);
-  color: var(--colour-text);
+  font-size: 15px;
+  font-weight: 500;
+  line-height: 1.3;
+  letter-spacing: -0.01em;
+  color: var(--color-text-primary);
   margin-bottom: var(--space-1);
   flex: 1;
   min-width: 0;
@@ -361,18 +310,8 @@ function formatTime(iso: string): string {
 }
 
 .page-menu-btn {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 28px;
-  height: 28px;
-  background: none;
-  border: none;
-  border-radius: var(--radius-sm);
-  color: var(--colour-text-disabled);
-  cursor: pointer;
   opacity: 0;
-  transition: opacity 150ms, color 150ms, background 150ms;
+  transition: opacity 150ms;
 }
 
 .memory-page:hover .page-menu-btn,
@@ -380,35 +319,12 @@ function formatTime(iso: string): string {
   opacity: 1;
 }
 
-.page-menu-btn:hover,
-.page-menu-btn.menu-visible {
-  color: var(--colour-text);
-  background: var(--colour-surface-overlay);
-}
-
-/* Dropdown menu styles are below in unscoped block (Teleported to body) */
-
 .page-meta {
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: var(--text-xs);
-  color: var(--colour-text-disabled);
-}
-
-/* ── Kind pill ── */
-.meta-kind-pill {
-  display: inline-flex;
-  align-items: center;
-  padding: 1px 6px;
-  border-radius: 99px;
-  background: var(--colour-surface-overlay);
-  color: var(--colour-text-muted);
-  font-size: 10px;
-  font-weight: var(--font-semibold);
-  text-transform: uppercase;
-  letter-spacing: var(--tracking-caps);
-  line-height: 1.4;
+  font-size: 11px;
+  color: var(--color-text-tertiary);
 }
 
 /* ── Importance dots ── */
@@ -426,7 +342,7 @@ function formatTime(iso: string): string {
 }
 
 .imp-off {
-  background: var(--colour-surface-overlay);
+  background: var(--color-surface-hover);
 }
 
 .imp-5 { background: #f87171; }
@@ -459,14 +375,13 @@ function formatTime(iso: string): string {
 .meta-time {
   margin-left: auto;
   font-variant-numeric: tabular-nums;
-  color: var(--colour-text-disabled);
 }
 
 /* ── Content ── */
 .page-content {
-  font-size: var(--text-sm);
-  line-height: var(--leading-relaxed);
-  color: var(--colour-text-secondary);
+  font-size: 13px;
+  line-height: 1.65;
+  color: var(--color-text-secondary);
   white-space: pre-wrap;
   word-break: break-word;
   display: -webkit-box;
@@ -479,68 +394,5 @@ function formatTime(iso: string): string {
   flex-wrap: wrap;
   gap: var(--space-2);
   margin-top: var(--space-3);
-}
-
-.tag {
-  font-size: var(--text-xs);
-  color: var(--colour-accent);
-}
-</style>
-
-<style>
-.page-overflow-menu {
-  position: fixed;
-  transform: translateX(-100%);
-  background: var(--colour-surface-dropdown);
-  backdrop-filter: var(--glass-blur);
-  -webkit-backdrop-filter: var(--glass-blur);
-  border: 1px solid var(--colour-border);
-  border-radius: var(--radius-md);
-  padding: var(--space-1);
-  min-width: 160px;
-  box-shadow: var(--shadow-overlay);
-  z-index: 9999;
-}
-
-.pmenu-item {
-  width: 100%;
-  padding: var(--space-2) var(--space-3);
-  background: none;
-  border: none;
-  border-radius: var(--radius-sm);
-  color: var(--colour-text-secondary);
-  font-size: var(--text-sm);
-  text-align: left;
-  cursor: pointer;
-  transition: background 150ms, color 150ms;
-}
-
-.pmenu-item:hover {
-  background: var(--colour-surface-overlay);
-  color: var(--colour-text);
-}
-
-.pmenu-sep {
-  height: 1px;
-  background: var(--colour-border);
-  margin: var(--space-1) var(--space-2);
-}
-
-.pmenu-item--danger {
-  color: var(--colour-text-secondary);
-}
-
-.pmenu-item--danger:hover {
-  background: color-mix(in srgb, var(--colour-danger) 12%, transparent);
-  color: var(--colour-danger);
-}
-
-.pmenu-item--danger-confirm {
-  color: var(--colour-danger);
-  font-weight: var(--font-medium);
-}
-
-.pmenu-item--danger-confirm:hover {
-  background: color-mix(in srgb, var(--colour-danger) 12%, transparent);
 }
 </style>

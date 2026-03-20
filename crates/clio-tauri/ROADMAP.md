@@ -221,7 +221,7 @@ Local-first AI memory backbone — desktop UI for managing persistent, searchabl
 
 ## Design System Adoption
 
-These items implement the Scooda design system (derived from the Dalil app styleguide) to achieve premium visual uniformity across all Tauri applications. Items are ordered by dependency — foundation must complete before migration, migration before polish.
+These items implement the @stuntrocket/ui design system (derived from the Dalil app styleguide) to achieve premium visual uniformity across all Tauri applications. Items are ordered by dependency — foundation must complete before migration, migration before polish.
 
 ### [Foundation] Integrate @stuntrocket/ui shared component library and design tokens
 - **Priority:** P1 (critical)
@@ -229,15 +229,15 @@ These items implement the Scooda design system (derived from the Dalil app style
 - **Added:** 2026-03-19
 - **Status:** completed
 - **Completed:** 2026-03-20
-- **Description:** Clio's Vue 3 + Pinia frontend already uses Tailwind CSS, but with its own token set and component styles. Adopting the Scooda design system requires installing @stuntrocket/ui from the local Verdaccio registry, replacing the current Tailwind @theme block with Scooda's shared tokens (colours, typography, spacing, shadows), and loading Poppins as the primary font. This foundational step ensures the colour palette, type scale, and spacing grid match the Dalil reference exactly.
+- **Description:** Clio's Vue 3 + Pinia frontend already uses Tailwind CSS, but with its own token set and component styles. Adopting the @stuntrocket/ui design system requires installing @stuntrocket/ui from the local Verdaccio registry, replacing the current Tailwind @theme block with @stuntrocket/ui shared tokens (colours, typography, spacing, shadows), and loading Poppins as the primary font. This foundational step ensures the colour palette, type scale, and spacing grid match the Dalil reference exactly.
 - **Acceptance criteria:**
   - .npmrc configured with @stuntrocket:registry=http://localhost:4873
   - @stuntrocket/ui installed as a dependency
-  - Existing Tailwind @theme block replaced with Scooda tokens.css import
+  - Existing Tailwind @theme block replaced with @stuntrocket/ui tokens.css import
   - Poppins font loaded as primary sans font
   - Colour palette matches Dalil: surface #FFFFFF/#171717, accent #2563EB/#60A5FA, etc.
   - Typography scale matches: body 15px, H1 1.95-2.15rem, labels 14px
-  - Dark mode toggle continues working with Scooda token values
+  - Dark mode toggle continues working with @stuntrocket/ui token values
 
 ### [UI Migration] Replace bespoke components with @stuntrocket/ui shared components
 - **Priority:** P1 (critical)
@@ -257,12 +257,12 @@ These items implement the Scooda design system (derived from the Dalil app style
   - No locally-defined UI primitive components remain
   - Dark mode renders correctly with all shared components
 
-### [Polish] Achieve full Scooda styleguide visual conformance
+### [Polish] Achieve full @stuntrocket/ui styleguide visual conformance
 - **Priority:** P2 (important)
 - **Size:** L (3-8hrs)
 - **Added:** 2026-03-19
 - **Status:** pending
-- **Description:** After component migration, apply the remaining Scooda styleguide specifications: ambient background blobs, custom accent-tinted scrollbars, micro-animations on all interactive elements, macOS native titlebar integration, correct z-index layering, and accessibility compliance. Visual QA against the Dalil reference to verify the apps are visually indistinguishable in their shared UI patterns.
+- **Description:** After component migration, apply the remaining @stuntrocket/ui styleguide specifications: ambient background blobs, custom accent-tinted scrollbars, micro-animations on all interactive elements, macOS native titlebar integration, correct z-index layering, and accessibility compliance. Visual QA against the Dalil reference to verify the apps are visually indistinguishable in their shared UI patterns.
 - **Acceptance criteria:**
   - Ambient background blobs with accent/violet/cyan colours and 20-30s drift animations
   - Custom scrollbars with accent-tinted thumb styling

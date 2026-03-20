@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed } from "vue";
+import { SButton, SFormField, SInput, SSidebarLink, SKbd } from "@stuntrocket/ui";
 import { useMemoryStore } from "@/stores/memories";
 import { useRouter } from "vue-router";
 import { open } from "@tauri-apps/plugin-dialog";
@@ -102,100 +103,101 @@ async function createProject() {
     <div class="section-label">Namespaces</div>
 
     <nav class="panel-nav">
-      <button
-        class="ns-item"
-        :class="{ active: store.selectedNamespace === null }"
+      <SSidebarLink
+        :active="store.selectedNamespace === null"
         @click="selectNamespace(null)"
       >
         <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
           <path d="M2 4.5h12M2 8h12M2 11.5h12" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
         </svg>
         <span>All memories</span>
-      </button>
-      <button
+      </SSidebarLink>
+      <SSidebarLink
         v-for="ns in store.allNamespaces"
         :key="ns"
-        class="ns-item"
-        :class="{ active: store.selectedNamespace === ns }"
+        :active="store.selectedNamespace === ns"
         @click="selectNamespace(ns)"
       >
         <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
           <path d="M2 4.5A1.5 1.5 0 013.5 3h3.379a1.5 1.5 0 011.06.44l.622.62a1.5 1.5 0 001.06.44H12.5A1.5 1.5 0 0114 6v5.5a1.5 1.5 0 01-1.5 1.5h-9A1.5 1.5 0 012 11.5v-7z" stroke="currentColor" stroke-width="1.1"/>
         </svg>
         <span>{{ ns }}</span>
-      </button>
+      </SSidebarLink>
     </nav>
 
     <div class="panel-actions">
-      <button class="action-btn" @click="toggleNewProject">
+      <SButton variant="ghost" size="sm" @click="toggleNewProject" class="action-btn-full">
         <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
           <path d="M8 3v10M3 8h10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
         </svg>
         {{ showNewProject ? "Cancel" : "New project" }}
-      </button>
+      </SButton>
     </div>
 
     <Transition name="expand">
       <div v-if="showNewProject" class="new-project-form">
-        <label class="form-label">Project name</label>
-        <input
-          v-model="newProjectName"
-          class="form-input"
-          type="text"
-          placeholder="e.g. my-app"
-          @keydown.enter="createProject"
-        />
+        <SFormField label="Project name">
+          <SInput
+            v-model="newProjectName"
+            type="text"
+            placeholder="e.g. my-app"
+            @keydown.enter="createProject"
+          />
+        </SFormField>
 
-        <label class="form-label">Base folder</label>
-        <button class="browse-btn" @click="pickFolder">
-          <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
-            <path d="M2 4.5A1.5 1.5 0 013.5 3h3.379a1.5 1.5 0 011.06.44l.622.62a1.5 1.5 0 001.06.44H12.5A1.5 1.5 0 0114 6v5.5a1.5 1.5 0 01-1.5 1.5h-9A1.5 1.5 0 012 11.5v-7z" stroke="currentColor" stroke-width="1.2"/>
-          </svg>
-          {{ newProjectDir ? "" : "Choose folder\u2026" }}
-        </button>
+        <SFormField label="Base folder">
+          <SButton variant="secondary" size="sm" @click="pickFolder" class="browse-btn">
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+              <path d="M2 4.5A1.5 1.5 0 013.5 3h3.379a1.5 1.5 0 011.06.44l.622.62a1.5 1.5 0 001.06.44H12.5A1.5 1.5 0 0114 6v5.5a1.5 1.5 0 01-1.5 1.5h-9A1.5 1.5 0 012 11.5v-7z" stroke="currentColor" stroke-width="1.2"/>
+            </svg>
+            {{ newProjectDir ? "" : "Choose folder\u2026" }}
+          </SButton>
+        </SFormField>
         <span v-if="newProjectDir" class="folder-path">{{ newProjectDir }}</span>
 
         <p v-if="projectError" class="form-error">{{ projectError }}</p>
 
-        <button
-          class="create-btn"
+        <SButton
+          variant="primary"
+          size="sm"
           :disabled="projectCreating"
+          :loading="projectCreating"
           @click="createProject"
         >
           {{ projectCreating ? "Creating\u2026" : "Create project" }}
-        </button>
+        </SButton>
       </div>
     </Transition>
 
     <div class="panel-footer">
-      <button class="footer-btn" @click="goToStats">
+      <SSidebarLink @click="goToStats">
         <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
           <rect x="2" y="9" width="3" height="5" rx="0.5" stroke="currentColor" stroke-width="1.2"/>
           <rect x="6.5" y="5" width="3" height="9" rx="0.5" stroke="currentColor" stroke-width="1.2"/>
           <rect x="11" y="2" width="3" height="12" rx="0.5" stroke="currentColor" stroke-width="1.2"/>
         </svg>
         Statistics
-      </button>
-      <button class="footer-btn" @click="router.push({ name: 'namespaces' })">
+      </SSidebarLink>
+      <SSidebarLink @click="router.push({ name: 'namespaces' })">
         <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
           <path d="M2 4.5A1.5 1.5 0 013.5 3h3.379a1.5 1.5 0 011.06.44l.622.62a1.5 1.5 0 001.06.44H12.5A1.5 1.5 0 0114 6v5.5a1.5 1.5 0 01-1.5 1.5h-9A1.5 1.5 0 012 11.5v-7z" stroke="currentColor" stroke-width="1.1"/>
         </svg>
         Manage namespaces
-      </button>
-      <button class="footer-btn" @click="router.push({ name: 'tools' })">
+      </SSidebarLink>
+      <SSidebarLink @click="router.push({ name: 'tools' })">
         <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
           <path d="M6 2L4.5 5.5 2 6l2 2-.5 3.5L6 10l2.5 1.5L9 8l2-2-2.5-.5L6 2z" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/>
           <circle cx="12" cy="12" r="2" stroke="currentColor" stroke-width="1.2"/>
         </svg>
         Tools
-      </button>
-      <button class="footer-btn" @click="store.toggleCompose()">
+      </SSidebarLink>
+      <SSidebarLink @click="store.toggleCompose()">
         <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
           <path d="M8 3v10M3 8h10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
         </svg>
         New memory
-        <kbd class="footer-kbd">N</kbd>
-      </button>
+        <SKbd>N</SKbd>
+      </SSidebarLink>
     </div>
   </aside>
 </template>
@@ -207,9 +209,9 @@ async function createProject() {
   background: var(--colour-surface-panel);
   backdrop-filter: var(--glass-blur);
   -webkit-backdrop-filter: var(--glass-blur);
-  border: 1px solid var(--colour-border);
-  border-radius: var(--radius-xl);
-  box-shadow: var(--shadow-panel), var(--glass-glow-strong);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg), var(--glass-glow-strong);
   display: flex;
   flex-direction: column;
   padding: var(--space-4) var(--space-3);
@@ -233,8 +235,8 @@ async function createProject() {
   width: 32px;
   height: 32px;
   border-radius: var(--radius-md);
-  background: var(--colour-accent-muted);
-  color: var(--colour-accent);
+  background: var(--color-accent-subtle);
+  color: var(--color-accent);
   flex-shrink: 0;
 }
 
@@ -246,15 +248,15 @@ async function createProject() {
 }
 
 .brand-name {
-  font-size: var(--text-sm);
-  font-weight: var(--font-semibold);
-  color: var(--colour-text);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-text-primary);
   line-height: 1;
 }
 
 .brand-count {
   font-size: 10px;
-  color: var(--colour-text-disabled);
+  color: var(--color-text-tertiary);
   font-variant-numeric: tabular-nums;
   line-height: 1;
 }
@@ -267,17 +269,17 @@ async function createProject() {
   padding: 4px var(--space-2);
   margin-bottom: var(--space-2);
   font-size: 10px;
-  color: var(--colour-accent);
+  color: var(--color-accent);
   font-variant-numeric: tabular-nums;
 }
 
 /* ── Section Label ── */
 .section-label {
   font-size: 10px;
-  font-weight: var(--font-semibold);
+  font-weight: 600;
   text-transform: uppercase;
-  letter-spacing: var(--tracking-caps);
-  color: var(--colour-text-disabled);
+  letter-spacing: 0.06em;
+  color: var(--color-text-tertiary);
   padding: 0 var(--space-2);
   margin-bottom: var(--space-2);
 }
@@ -292,77 +294,14 @@ async function createProject() {
   min-height: 0;
 }
 
-.ns-item {
-  width: 100%;
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  padding: 6px var(--space-2);
-  background: transparent;
-  border: none;
-  border-radius: var(--radius-md);
-  color: var(--colour-text-muted);
-  cursor: pointer;
-  font-size: var(--text-sm);
-  text-align: left;
-  transition: color 150ms, background 150ms;
-}
-
-.ns-item svg {
-  flex-shrink: 0;
-  opacity: 0.5;
-  transition: opacity 150ms;
-}
-
-.ns-item span {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.ns-item:hover {
-  color: var(--colour-text);
-  background: var(--colour-surface-overlay);
-}
-
-.ns-item:hover svg {
-  opacity: 0.8;
-}
-
-.ns-item.active {
-  color: var(--colour-accent);
-  background: var(--colour-accent-muted);
-  font-weight: var(--font-medium);
-}
-
-.ns-item.active svg {
-  opacity: 1;
-}
-
 /* ── Actions ── */
 .panel-actions {
   padding: var(--space-2) 0;
 }
 
-.action-btn {
+.action-btn-full {
   width: 100%;
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  padding: 6px var(--space-2);
-  background: transparent;
-  border: none;
-  border-radius: var(--radius-md);
-  color: var(--colour-text-muted);
-  cursor: pointer;
-  font-size: var(--text-sm);
-  text-align: left;
-  transition: color 150ms, background 150ms;
-}
-
-.action-btn:hover {
-  color: var(--colour-accent);
-  background: var(--colour-accent-muted);
+  justify-content: flex-start;
 }
 
 /* ── New Project Form ── */
@@ -373,92 +312,25 @@ async function createProject() {
   gap: var(--space-2);
 }
 
-.form-label {
-  font-size: 10px;
-  font-weight: var(--font-semibold);
-  text-transform: uppercase;
-  letter-spacing: var(--tracking-caps);
-  color: var(--colour-text-disabled);
-}
-
-.form-input {
-  width: 100%;
-  padding: 6px var(--space-2);
-  background: var(--colour-surface-input);
-  border: 1px solid var(--colour-border);
-  border-radius: var(--radius-md);
-  color: var(--colour-text);
-  font-size: var(--text-sm);
-  font-family: inherit;
-  outline: none;
-  transition: border-color 150ms;
-}
-
-.form-input::placeholder {
-  color: var(--colour-text-disabled);
-}
-
-.form-input:focus {
-  border-color: var(--colour-accent);
-  box-shadow: var(--shadow-focus);
-}
-
 .browse-btn {
   width: 100%;
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  padding: 6px var(--space-2);
-  background: var(--colour-surface-input);
-  border: 1px dashed var(--colour-border);
-  border-radius: var(--radius-md);
-  color: var(--colour-text-muted);
-  font-size: var(--text-sm);
-  font-family: inherit;
-  cursor: pointer;
-  transition: border-color 150ms, color 150ms;
-}
-
-.browse-btn:hover {
-  border-color: var(--colour-accent);
-  color: var(--colour-accent);
+  justify-content: flex-start;
 }
 
 .folder-path {
   display: block;
   font-size: 10px;
-  color: var(--colour-text-secondary);
+  color: var(--color-text-secondary);
   word-break: break-all;
-  line-height: var(--leading-normal);
+  line-height: 1.5;
   padding: 0 var(--space-2);
 }
 
 .form-error {
   font-size: 10px;
-  color: var(--colour-danger);
+  color: var(--color-danger);
   margin: 0;
   padding: 0 var(--space-2);
-}
-
-.create-btn {
-  padding: 6px var(--space-3);
-  background: var(--colour-accent);
-  border: none;
-  border-radius: var(--radius-md);
-  color: #fff;
-  font-size: var(--text-sm);
-  font-weight: var(--font-medium);
-  cursor: pointer;
-  transition: opacity 150ms;
-}
-
-.create-btn:hover {
-  opacity: 0.9;
-}
-
-.create-btn:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
 }
 
 /* ── Expand Transition ── */
@@ -484,42 +356,9 @@ async function createProject() {
 .panel-footer {
   margin-top: auto;
   padding-top: var(--space-3);
-  border-top: 1px solid var(--colour-border);
+  border-top: 1px solid var(--color-border-subtle);
   display: flex;
   flex-direction: column;
   gap: 1px;
-}
-
-.footer-btn {
-  width: 100%;
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  padding: 6px var(--space-2);
-  background: transparent;
-  border: none;
-  border-radius: var(--radius-md);
-  color: var(--colour-text-muted);
-  cursor: pointer;
-  font-size: var(--text-sm);
-  text-align: left;
-  transition: color 150ms, background 150ms;
-}
-
-.footer-btn:hover {
-  color: var(--colour-text);
-  background: var(--colour-surface-overlay);
-}
-
-.footer-kbd {
-  margin-left: auto;
-  font-size: 10px;
-  font-family: inherit;
-  font-weight: var(--font-medium);
-  padding: 1px 5px;
-  border-radius: 4px;
-  border: 1px solid var(--colour-border);
-  color: var(--colour-text-disabled);
-  line-height: 1;
 }
 </style>

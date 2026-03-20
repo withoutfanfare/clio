@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { SSectionHeader } from "@stuntrocket/ui";
+
 defineProps<{
   label: string;
   mode?: "list" | "grid";
@@ -7,7 +9,7 @@ defineProps<{
 
 <template>
   <div class="date-group">
-    <span class="date-label">{{ label }}</span>
+    <SSectionHeader :title="label" />
     <div class="date-items" :class="mode === 'grid' ? 'layout-grid' : 'layout-list'">
       <slot />
     </div>
@@ -21,16 +23,6 @@ defineProps<{
 
 .date-group:first-child {
   margin-top: 0;
-}
-
-.date-label {
-  display: block;
-  font-size: var(--text-xs);
-  font-weight: var(--font-semibold);
-  text-transform: uppercase;
-  letter-spacing: var(--tracking-caps);
-  color: var(--colour-text-disabled);
-  margin-bottom: var(--space-3);
 }
 
 .layout-list {

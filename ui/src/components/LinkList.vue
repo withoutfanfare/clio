@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, watch } from "vue";
+import { SButton, SSpinner, SProgressBar } from "@stuntrocket/ui";
 import * as api from "@/api/memory";
 import { useMemoryStore } from "@/stores/memories";
 import type { MemoryLink, SuggestionResult } from "@/api/types";
@@ -99,41 +100,22 @@ function openLinked(id: string) {
         <span class="links-title">Links</span>
         <span v-if="links.length && !expanded" class="links-count">{{ links.length }}</span>
       </button>
-      <button
+      <SButton
         v-if="expanded"
-        class="suggest-btn"
+        variant="ghost"
+        size="sm"
         @click="suggestLinks"
         :disabled="loadingSuggestions"
+        :loading="loadingSuggestions"
       >
-        <svg
-          v-if="loadingSuggestions"
-          class="spinner"
-          width="14"
-          height="14"
-          viewBox="0 0 14 14"
-          fill="none"
-        >
-          <circle
-            cx="7" cy="7" r="5.5"
-            stroke="currentColor"
-            stroke-width="1.5"
-            stroke-dasharray="24 10"
-            stroke-linecap="round"
-          />
-        </svg>
         {{ loadingSuggestions ? "Finding links\u2026" : "Suggest links" }}
-      </button>
+      </SButton>
     </div>
 
     <Transition name="fade">
       <div v-if="expanded" class="links-body">
-        <div v-if="loadingLinks" class="loading-bar">
-          <div class="loading-bar-track" />
-        </div>
-
-        <div v-if="loadingSuggestions" class="loading-bar">
-          <div class="loading-bar-track" />
-        </div>
+        <SProgressBar v-if="loadingLinks" :value="0" indeterminate size="sm" class="loading-bar" />
+        <SProgressBar v-if="loadingSuggestions" :value="0" indeterminate size="sm" class="loading-bar" />
 
         <div v-if="links.length" class="links-items">
           <button
@@ -179,7 +161,7 @@ function openLinked(id: string) {
 <style scoped>
 .link-list {
   padding-top: var(--space-4);
-  border-top: 1px solid var(--colour-border);
+  border-top: 1px solid var(--color-border-subtle);
   margin-top: var(--space-4);
 }
 
@@ -195,14 +177,14 @@ function openLinked(id: string) {
   gap: var(--space-2);
   background: none;
   border: none;
-  color: var(--colour-text-muted);
+  color: var(--color-text-tertiary);
   cursor: pointer;
   transition: color 150ms;
   padding: var(--space-1) 0;
 }
 
 .links-toggle:hover {
-  color: var(--colour-text);
+  color: var(--color-text-primary);
 }
 
 .links-chevron {
@@ -214,15 +196,15 @@ function openLinked(id: string) {
 }
 
 .links-title {
-  font-size: var(--text-xs);
-  font-weight: var(--font-semibold);
+  font-size: 11px;
+  font-weight: 600;
   text-transform: uppercase;
-  letter-spacing: var(--tracking-caps);
+  letter-spacing: 0.06em;
 }
 
 .links-count {
-  font-size: var(--text-xs);
-  color: var(--colour-text-disabled);
+  font-size: 11px;
+  color: var(--color-text-tertiary);
   font-variant-numeric: tabular-nums;
 }
 
@@ -230,65 +212,14 @@ function openLinked(id: string) {
   margin-top: var(--space-3);
 }
 
-.suggest-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-1);
-  padding: 0;
-  background: none;
-  border: none;
-  color: var(--colour-accent);
-  font-size: var(--text-sm);
-  cursor: pointer;
-  transition: color 150ms;
-}
-
-.suggest-btn:hover:not(:disabled) {
-  color: var(--colour-accent-hover);
-}
-
-.suggest-btn:disabled {
-  opacity: 0.7;
-  cursor: default;
-  color: var(--colour-text-secondary);
-}
-
-/* ── Spinner ── */
-.spinner {
-  animation: spin 0.8s linear infinite;
-  flex-shrink: 0;
-}
-
-@keyframes spin {
-  to { transform: rotate(360deg); }
-}
-
-/* ── Loading Bar ── */
 .loading-bar {
-  height: 2px;
-  border-radius: 1px;
-  background: var(--colour-surface-overlay);
-  overflow: hidden;
   margin-bottom: var(--space-3);
-}
-
-.loading-bar-track {
-  height: 100%;
-  width: 40%;
-  background: var(--colour-accent);
-  border-radius: 1px;
-  animation: slide 1.2s ease-in-out infinite;
-}
-
-@keyframes slide {
-  0% { transform: translateX(-100%); }
-  100% { transform: translateX(350%); }
 }
 
 /* ── Error ── */
 .suggest-error {
-  font-size: var(--text-sm);
-  color: var(--colour-danger);
+  font-size: 13px;
+  color: var(--color-danger);
   margin-bottom: var(--space-3);
 }
 
@@ -305,7 +236,7 @@ function openLinked(id: string) {
   padding: var(--space-2) var(--space-1);
   background: none;
   border: none;
-  border-bottom: 1px solid var(--colour-border);
+  border-bottom: 1px solid var(--color-border-subtle);
   cursor: pointer;
   transition: background 150ms;
   width: 100%;
@@ -317,18 +248,18 @@ function openLinked(id: string) {
 }
 
 .link-item:hover {
-  background: var(--colour-surface-overlay);
+  background: var(--color-surface-hover);
 }
 
 .link-rel {
-  font-size: var(--text-xs);
-  color: var(--colour-text-disabled);
-  font-weight: var(--font-medium);
+  font-size: 11px;
+  color: var(--color-text-tertiary);
+  font-weight: 500;
 }
 
 .link-id {
-  font-size: var(--text-sm);
-  color: var(--colour-text);
+  font-size: 13px;
+  color: var(--color-text-primary);
   font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
 }
 
@@ -338,11 +269,11 @@ function openLinked(id: string) {
 }
 
 .suggestions-label {
-  font-size: var(--text-xs);
-  color: var(--colour-text-disabled);
+  font-size: 11px;
+  color: var(--color-text-tertiary);
   text-transform: uppercase;
-  letter-spacing: var(--tracking-caps);
-  font-weight: var(--font-semibold);
+  letter-spacing: 0.06em;
+  font-weight: 600;
   margin-bottom: var(--space-1);
 }
 
@@ -353,7 +284,7 @@ function openLinked(id: string) {
   padding: var(--space-2) var(--space-1);
   background: none;
   border: none;
-  border-bottom: 1px dashed var(--colour-border);
+  border-bottom: 1px dashed var(--color-border-subtle);
   cursor: pointer;
   transition: background 150ms;
   width: 100%;
@@ -365,12 +296,12 @@ function openLinked(id: string) {
 }
 
 .suggestion-item:hover {
-  background: var(--colour-accent-muted);
+  background: var(--color-accent-subtle);
 }
 
 .suggestion-title {
-  font-size: var(--text-sm);
-  color: var(--colour-text);
+  font-size: 13px;
+  color: var(--color-text-primary);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -378,14 +309,14 @@ function openLinked(id: string) {
 }
 
 .suggestion-score {
-  font-size: var(--text-xs);
-  color: var(--colour-text-disabled);
-  font-weight: var(--font-medium);
+  font-size: 11px;
+  color: var(--color-text-tertiary);
+  font-weight: 500;
   font-variant-numeric: tabular-nums;
 }
 
 .links-empty {
-  font-size: var(--text-sm);
-  color: var(--colour-text-disabled);
+  font-size: 13px;
+  color: var(--color-text-tertiary);
 }
 </style>

@@ -1,0 +1,163 @@
+@import "tailwindcss";
+@import "@stuntrocket/ui/tokens.css";
+@import "@stuntrocket/ui/base.css";
+@import "@stuntrocket/ui/scrollbar.css";
+@import "@stuntrocket/ui/ambient.css";
+@source "../";
+
+/* ── Clio Accent Override (Violet) ── */
+:root, .dark {
+  --color-accent: #8B5CF6;
+  --color-accent-hover: #7C3AED;
+  --color-accent-subtle: rgba(139, 92, 246, 0.10);
+}
+
+/* ── Clio Scrollbar Override (Violet-tinted) ── */
+.dark {
+  --scrollbar-thumb: rgba(139, 92, 246, 0.40);
+  --scrollbar-thumb-hover: rgba(139, 92, 246, 0.60);
+  --scrollbar-thumb-active: rgba(139, 92, 246, 0.75);
+}
+
+:root {
+  --scrollbar-thumb: rgba(139, 92, 246, 0.35);
+  --scrollbar-thumb-hover: rgba(139, 92, 246, 0.55);
+  --scrollbar-thumb-active: rgba(139, 92, 246, 0.72);
+}
+
+/* ── Clio-specific layout tokens ── */
+:root {
+  --content-width: 720px;
+  --appbar-height: 44px;
+
+  /* Glass recipe tokens (Clio-specific, dark-only app) */
+  --colour-surface-card: rgba(14, 13, 12, 0.6);
+  --colour-surface-panel: rgba(14, 13, 12, 0.75);
+  --colour-surface-overlay: rgba(255, 255, 255, 0.04);
+  --colour-surface-input: rgba(0, 0, 0, 0.4);
+  --colour-surface-dropdown: rgba(10, 9, 8, 0.92);
+
+  --glass-blur: blur(24px) saturate(1.5);
+  --glass-border: rgba(255, 255, 255, 0.08);
+  --glass-border-hover: rgba(255, 255, 255, 0.13);
+  --glass-glow: inset 0 1px 0 0 rgba(255, 255, 255, 0.06),
+                inset 0 0 0 0.5px rgba(255, 255, 255, 0.04);
+  --glass-glow-strong: inset 0 1px 0 0 rgba(255, 255, 255, 0.08),
+                       inset 0 0 20px rgba(139, 92, 246, 0.03);
+}
+
+/* ── App Shell ── */
+.app-shell {
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  overflow: hidden;
+}
+
+.app-body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  padding: var(--space-3);
+  gap: var(--space-3);
+}
+
+.content-area {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  border-radius: var(--radius-lg);
+  background: var(--colour-surface-card);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
+  border: 1px solid var(--glass-border);
+  box-shadow: var(--glass-glow);
+}
+
+/* ── Main Content ── */
+.main-content {
+  flex: 1;
+  padding: 0 var(--space-6) var(--space-6);
+  position: relative;
+  z-index: 1;
+  min-width: 0;
+}
+
+.content-column {
+  width: 100%;
+}
+
+/* ── Glass Utility ── */
+.glass {
+  background: var(--colour-surface-card);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-md), var(--glass-glow);
+  transition: border-color 150ms cubic-bezier(0.4, 0, 0.2, 1),
+              box-shadow 150ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.glass:hover {
+  border-color: var(--glass-border-hover);
+  box-shadow: var(--shadow-md), var(--glass-glow-strong);
+}
+
+/* ── Page Transitions ── */
+.page-enter-active {
+  transition: opacity 180ms ease, transform 180ms ease;
+}
+.page-leave-active {
+  transition: opacity 120ms ease;
+}
+.page-enter-from {
+  opacity: 0.6;
+  transform: translateY(4px);
+}
+.page-leave-to {
+  opacity: 0;
+}
+
+/* ── Generic Transitions ── */
+.fade-enter-active,
+.fade-leave-active {
+  transition: opacity 120ms ease;
+}
+.fade-enter-from,
+.fade-leave-to {
+  opacity: 0;
+}
+
+.slide-right-enter-active,
+.slide-right-leave-active {
+  transition: transform 200ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+.slide-right-enter-from,
+.slide-right-leave-to {
+  transform: translateX(100%);
+}
+
+.slide-left-enter-active,
+.slide-left-leave-active {
+  transition: transform 200ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+.slide-left-enter-from,
+.slide-left-leave-to {
+  transform: translateX(-100%);
+}
+
+.scale-enter-active {
+  transition: all 80ms ease-out;
+}
+.scale-leave-active {
+  transition: all 60ms ease-in;
+}
+.scale-enter-from,
+.scale-leave-to {
+  opacity: 0;
+  transform: scale(0.97);
+}

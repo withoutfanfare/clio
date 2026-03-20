@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, toRef, watch, type Ref } from "vue";
 import { useRoute } from "vue-router";
+import { SButton, SSelect, SFormField, SEmptyState, SSpinner, SBadge, SKbd } from "@stuntrocket/ui";
 import ComposeArea from "@/components/ComposeArea.vue";
 import DateGroup from "@/components/DateGroup.vue";
 import MemoryPage from "@/components/MemoryPage.vue";
@@ -88,6 +89,18 @@ function onVisibilityChange() {
   }
 }
 
+function handleSortChange(value: string) {
+  store.setSortBy(value);
+}
+
+function handleGroupChange(value: string) {
+  store.setGroupBy(value);
+}
+
+function handleKindChange(value: string) {
+  store.setFilterKind(value || null);
+}
+
 onMounted(() => {
   store.loadRecent();
   store.loadStats();
@@ -125,8 +138,9 @@ watch(
         </span>
       </div>
       <div class="header-controls">
-        <button
-          class="control-btn"
+        <SButton
+          variant="icon"
+          size="sm"
           :class="{ active: filtersOpen, 'has-filters': store.hasActiveFilters }"
           @click="filtersOpen = !filtersOpen"
           title="Filter &amp; sort"
@@ -136,10 +150,11 @@ watch(
             <path d="M2 3h12M4 8h8M6 13h4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
           </svg>
           <span v-if="store.hasActiveFilters" class="filter-badge" />
-        </button>
+        </SButton>
         <div class="view-toggle">
-          <button
-            class="toggle-btn"
+          <SButton
+            variant="icon"
+            size="sm"
             :class="{ active: store.viewMode === 'list' }"
             @click="store.setViewMode('list')"
             title="List view"
@@ -148,9 +163,10 @@ watch(
             <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
               <path d="M2 4h12M2 8h12M2 12h12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
             </svg>
-          </button>
-          <button
-            class="toggle-btn"
+          </SButton>
+          <SButton
+            variant="icon"
+            size="sm"
             :class="{ active: store.viewMode === 'grid' }"
             @click="store.setViewMode('grid')"
             title="Grid view"
@@ -162,7 +178,7 @@ watch(
               <rect x="2" y="9" width="5" height="5" rx="1" stroke="currentColor" stroke-width="1.3"/>
               <rect x="9" y="9" width="5" height="5" rx="1" stroke="currentColor" stroke-width="1.3"/>
             </svg>
-          </button>
+          </SButton>
         </div>
       </div>
     </div>
@@ -172,49 +188,45 @@ watch(
       <div v-if="filtersOpen" class="filter-bar">
         <div class="filter-row">
           <!-- Sort -->
-          <div class="filter-group">
-            <label class="filter-label">Sort</label>
-            <select
-              class="filter-select"
-              :value="store.sortBy"
-              @change="store.setSortBy(($event.target as HTMLSelectElement).value)"
+          <SFormField label="Sort">
+            <SSelect
+              :model-value="store.sortBy"
+              size="sm"
+              @update:model-value="handleSortChange"
             >
               <option v-for="opt in sortOptions" :key="opt.value" :value="opt.value">
                 {{ opt.label }}
               </option>
-            </select>
-          </div>
+            </SSelect>
+          </SFormField>
 
           <!-- Group -->
-          <div class="filter-group">
-            <label class="filter-label">Group</label>
-            <select
-              class="filter-select"
-              :value="store.groupBy"
-              @change="store.setGroupBy(($event.target as HTMLSelectElement).value)"
+          <SFormField label="Group">
+            <SSelect
+              :model-value="store.groupBy"
+              size="sm"
+              @update:model-value="handleGroupChange"
             >
               <option v-for="opt in groupOptions" :key="opt.value" :value="opt.value">
                 {{ opt.label }}
               </option>
-            </select>
-          </div>
+            </SSelect>
+          </SFormField>
 
           <!-- Kind -->
-          <div class="filter-group">
-            <label class="filter-label">Kind</label>
-            <select
-              class="filter-select"
-              :value="store.filterKind ?? ''"
-              @change="store.setFilterKind(($event.target as HTMLSelectElement).value || null)"
+          <SFormField label="Kind">
+            <SSelect
+              :model-value="store.filterKind ?? ''"
+              size="sm"
+              @update:model-value="handleKindChange"
             >
               <option value="">All</option>
               <option v-for="k in kinds" :key="k" :value="k">{{ k }}</option>
-            </select>
-          </div>
+            </SSelect>
+          </SFormField>
 
           <!-- Importance -->
-          <div class="filter-group">
-            <label class="filter-label">Importance</label>
+          <SFormField label="Importance">
             <div class="importance-pills">
               <button
                 v-for="n in 5"
@@ -239,11 +251,10 @@ watch(
                 {{ n }}
               </button>
             </div>
-          </div>
+          </SFormField>
 
           <!-- Tags -->
-          <div class="filter-group filter-group-tags">
-            <label class="filter-label">Tags</label>
+          <SFormField label="Tags" class="filter-group-tags">
             <div class="tag-input-wrapper">
               <input
                 ref="tagInputEl"
@@ -266,28 +277,28 @@ watch(
               </div>
             </div>
             <div class="active-tags" v-if="store.filterTags.length">
-              <span v-for="tag in store.filterTags" :key="tag" class="active-tag">
+              <SBadge v-for="tag in store.filterTags" :key="tag" variant="accent">
                 #{{ tag }}
                 <button class="tag-remove" @click="removeTag(tag)" aria-label="Remove tag">&times;</button>
-              </span>
+              </SBadge>
             </div>
-          </div>
+          </SFormField>
         </div>
 
-        <button
+        <SButton
           v-if="store.hasActiveFilters"
-          class="clear-filters-btn"
+          variant="ghost"
+          size="sm"
           @click="store.clearFilters()"
+          class="clear-filters-btn"
         >
           Clear filters
-        </button>
+        </SButton>
       </div>
     </Transition>
 
     <div v-if="store.loading" class="river-loading">
-      <div class="loading-dots">
-        <span /><span /><span />
-      </div>
+      <SSpinner size="md" />
     </div>
 
     <template v-else>
@@ -340,15 +351,23 @@ watch(
 
     <div v-if="!store.loading && !store.items.length" class="river-empty">
       <template v-if="store.hasActiveFilters">
-        <p class="empty-title">No memories match filters</p>
-        <p class="empty-hint">
-          <button class="clear-link" @click="store.clearFilters()">Clear filters</button>
-          to see all memories
-        </p>
+        <SEmptyState
+          title="No memories match filters"
+          description="Try adjusting your filters to see more results"
+        >
+          <template #action>
+            <SButton variant="ghost" size="sm" @click="store.clearFilters()">Clear filters</SButton>
+          </template>
+        </SEmptyState>
       </template>
       <template v-else>
-        <p class="empty-title">No memories yet</p>
-        <p class="empty-hint">Press <kbd>&#8984;N</kbd> to create your first one</p>
+        <SEmptyState
+          title="No memories yet"
+        >
+          <template #action>
+            <span class="empty-hint">Press <SKbd>&#8984;N</SKbd> to create your first one</span>
+          </template>
+        </SEmptyState>
       </template>
     </div>
 
@@ -373,9 +392,9 @@ watch(
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: var(--text-sm);
-  font-weight: var(--font-normal);
-  color: var(--colour-text-muted);
+  font-size: 13px;
+  font-weight: 400;
+  color: var(--color-text-tertiary);
 }
 
 .river-count {
@@ -383,12 +402,12 @@ watch(
 }
 
 .river-namespace {
-  color: var(--colour-text-secondary);
+  color: var(--color-text-secondary);
 }
 
 .river-namespace strong {
-  color: var(--colour-accent);
-  font-weight: var(--font-medium);
+  color: var(--color-accent);
+  font-weight: 500;
 }
 
 /* ── Header Controls ── */
@@ -398,30 +417,6 @@ watch(
   gap: var(--space-2);
 }
 
-.control-btn {
-  position: relative;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 28px;
-  height: 26px;
-  padding: 0;
-  background: transparent;
-  border: none;
-  border-radius: var(--radius-sm);
-  color: var(--colour-text-disabled);
-  cursor: pointer;
-  transition: color 150ms, background 150ms;
-}
-
-.control-btn:hover {
-  color: var(--colour-text-muted);
-}
-
-.control-btn.active {
-  color: var(--colour-text);
-}
-
 .filter-badge {
   position: absolute;
   top: 3px;
@@ -429,46 +424,21 @@ watch(
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: var(--colour-accent);
+  background: var(--color-accent);
 }
 
 /* ── View Toggle ── */
 .view-toggle {
   display: flex;
-  background: var(--colour-surface-overlay);
+  background: var(--color-surface-hover);
   border-radius: var(--radius-md);
   padding: 2px;
   gap: 1px;
 }
 
-.toggle-btn {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 28px;
-  height: 26px;
-  padding: 0;
-  background: transparent;
-  border: none;
-  border-radius: var(--radius-sm);
-  color: var(--colour-text-disabled);
-  cursor: pointer;
-  transition: color 150ms, background 150ms;
-}
-
-.toggle-btn:hover {
-  color: var(--colour-text-muted);
-}
-
-.toggle-btn.active {
-  color: var(--colour-text);
-  background: var(--colour-surface-overlay);
-  box-shadow: var(--shadow-sm);
-}
-
 /* ── Filter Bar ── */
 .filter-bar {
-  background: var(--colour-surface-overlay);
+  background: var(--color-surface-hover);
   border: 1px solid var(--glass-border);
   border-radius: var(--radius-lg);
   padding: var(--space-3) var(--space-4);
@@ -482,43 +452,9 @@ watch(
   align-items: flex-start;
 }
 
-.filter-group {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  min-width: 0;
-}
-
 .filter-group-tags {
   flex: 1;
   min-width: 120px;
-}
-
-.filter-label {
-  font-size: var(--text-xs);
-  font-weight: var(--font-semibold);
-  text-transform: uppercase;
-  letter-spacing: var(--tracking-caps);
-  color: var(--colour-text-disabled);
-}
-
-.filter-select {
-  appearance: none;
-  background: var(--colour-surface-input);
-  border: 1px solid var(--glass-border);
-  border-radius: var(--radius-sm);
-  padding: 4px 24px 4px 8px;
-  font-size: var(--text-sm);
-  color: var(--colour-text);
-  cursor: pointer;
-  background-image: url("data:image/svg+xml,%3Csvg width='10' height='6' viewBox='0 0 10 6' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%2378736e' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
-  background-repeat: no-repeat;
-  background-position: right 8px center;
-}
-
-.filter-select:focus {
-  outline: 2px solid var(--colour-border-focus);
-  outline-offset: 1px;
 }
 
 .filter-input {
@@ -526,18 +462,18 @@ watch(
   border: 1px solid var(--glass-border);
   border-radius: var(--radius-sm);
   padding: 4px 8px;
-  font-size: var(--text-sm);
-  color: var(--colour-text);
+  font-size: 13px;
+  color: var(--color-text-primary);
   width: 100%;
   min-width: 80px;
 }
 
 .filter-input::placeholder {
-  color: var(--colour-text-disabled);
+  color: var(--color-text-tertiary);
 }
 
 .filter-input:focus {
-  outline: 2px solid var(--colour-border-focus);
+  outline: 2px solid color-mix(in srgb, var(--color-accent) 55%, transparent);
   outline-offset: 1px;
 }
 
@@ -557,7 +493,7 @@ watch(
   background: var(--colour-surface-dropdown);
   border: 1px solid var(--glass-border);
   border-radius: var(--radius-md);
-  box-shadow: var(--shadow-overlay);
+  box-shadow: var(--shadow-sheet);
   padding: 4px;
 }
 
@@ -570,20 +506,20 @@ watch(
   background: transparent;
   border: none;
   border-radius: var(--radius-sm);
-  color: var(--colour-text-secondary);
-  font-size: var(--text-sm);
+  color: var(--color-text-secondary);
+  font-size: 13px;
   cursor: pointer;
   text-align: left;
 }
 
 .tag-option:hover {
-  background: var(--colour-surface-overlay);
-  color: var(--colour-text);
+  background: var(--color-surface-hover);
+  color: var(--color-text-primary);
 }
 
 .tag-option-hash {
-  color: var(--colour-accent);
-  font-weight: var(--font-medium);
+  color: var(--color-accent);
+  font-weight: 500;
 }
 
 .active-tags {
@@ -591,18 +527,6 @@ watch(
   flex-wrap: wrap;
   gap: 4px;
   margin-top: 4px;
-}
-
-.active-tag {
-  display: inline-flex;
-  align-items: center;
-  gap: 2px;
-  padding: 1px 6px;
-  border-radius: 99px;
-  background: var(--colour-accent-muted);
-  color: var(--colour-accent);
-  font-size: var(--text-xs);
-  font-weight: var(--font-medium);
 }
 
 .tag-remove {
@@ -614,7 +538,7 @@ watch(
   padding: 0;
   background: transparent;
   border: none;
-  color: var(--colour-accent);
+  color: var(--color-accent);
   cursor: pointer;
   font-size: 12px;
   line-height: 1;
@@ -622,7 +546,7 @@ watch(
 }
 
 .tag-remove:hover {
-  background: var(--colour-accent-muted);
+  background: var(--color-accent-subtle);
 }
 
 /* ── Importance Pills ── */
@@ -641,52 +565,27 @@ watch(
   background: var(--colour-surface-input);
   border: 1px solid var(--glass-border);
   border-radius: var(--radius-sm);
-  color: var(--colour-text-disabled);
-  font-size: var(--text-xs);
-  font-weight: var(--font-semibold);
+  color: var(--color-text-tertiary);
+  font-size: 11px;
+  font-weight: 600;
   cursor: pointer;
   transition: all 120ms;
 }
 
 .imp-pill:hover {
-  color: var(--colour-text-muted);
+  color: var(--color-text-secondary);
   border-color: var(--glass-border-hover);
 }
 
 .imp-pill.active,
 .imp-pill.solo {
-  color: var(--colour-text);
-  border-color: var(--colour-accent);
-  background: var(--colour-accent-muted);
+  color: var(--color-text-primary);
+  border-color: var(--color-accent);
+  background: var(--color-accent-subtle);
 }
 
 .clear-filters-btn {
-  display: inline-flex;
-  align-items: center;
   margin-top: var(--space-3);
-  padding: 4px 10px;
-  background: transparent;
-  border: 1px solid var(--glass-border);
-  border-radius: var(--radius-sm);
-  color: var(--colour-text-muted);
-  font-size: var(--text-xs);
-  cursor: pointer;
-  transition: color 120ms, border-color 120ms;
-}
-
-.clear-filters-btn:hover {
-  color: var(--colour-text);
-  border-color: var(--glass-border-hover);
-}
-
-.clear-link {
-  background: none;
-  border: none;
-  color: var(--colour-accent);
-  cursor: pointer;
-  font-size: inherit;
-  text-decoration: underline;
-  padding: 0;
 }
 
 /* ── Filter Transition ── */
@@ -709,32 +608,6 @@ watch(
   justify-content: center;
 }
 
-.loading-dots {
-  display: flex;
-  gap: 5px;
-}
-
-.loading-dots span {
-  width: 4px;
-  height: 4px;
-  border-radius: 50%;
-  background: var(--colour-text-disabled);
-  animation: loading-pulse 1.2s ease-in-out infinite;
-}
-
-.loading-dots span:nth-child(2) {
-  animation-delay: 0.15s;
-}
-
-.loading-dots span:nth-child(3) {
-  animation-delay: 0.3s;
-}
-
-@keyframes loading-pulse {
-  0%, 60%, 100% { opacity: 0.3; }
-  30% { opacity: 0.8; }
-}
-
 /* ── Pinned Section ── */
 .pinned-section {
   margin-bottom: var(--space-4);
@@ -746,7 +619,7 @@ watch(
   gap: var(--space-2);
   background: none;
   border: none;
-  color: var(--colour-text-muted);
+  color: var(--color-text-tertiary);
   cursor: pointer;
   transition: color 150ms;
   padding: var(--space-1) 0;
@@ -754,7 +627,7 @@ watch(
 }
 
 .pinned-header:hover {
-  color: var(--colour-text);
+  color: var(--color-text-primary);
 }
 
 .pinned-chevron {
@@ -766,19 +639,19 @@ watch(
 }
 
 .pin-icon {
-  color: var(--colour-accent);
+  color: var(--color-accent);
 }
 
 .pinned-label {
-  font-size: var(--text-xs);
-  font-weight: var(--font-semibold);
+  font-size: 11px;
+  font-weight: 600;
   text-transform: uppercase;
-  letter-spacing: var(--tracking-caps);
+  letter-spacing: 0.06em;
 }
 
 .pinned-count {
-  font-size: var(--text-xs);
-  color: var(--colour-text-disabled);
+  font-size: 11px;
+  color: var(--color-text-tertiary);
   font-variant-numeric: tabular-nums;
 }
 
@@ -804,34 +677,18 @@ watch(
   text-align: center;
 }
 
-.empty-title {
-  font-size: var(--text-lg);
-  color: var(--colour-text-secondary);
-  margin-bottom: var(--space-2);
-}
-
 .empty-hint {
-  font-size: var(--text-sm);
-  color: var(--colour-text-disabled);
-}
-
-.empty-hint kbd {
-  font-size: var(--text-xs);
-  padding: 2px 6px;
-  border-radius: var(--radius-sm);
-  border: 1px solid var(--colour-border);
-  color: var(--colour-text-muted);
-  font-family: inherit;
+  font-size: 13px;
+  color: var(--color-text-tertiary);
 }
 
 .river-error {
   padding: var(--space-3) var(--space-4);
-  background: color-mix(in srgb, var(--colour-danger) 8%, transparent);
-  border: 1px solid color-mix(in srgb, var(--colour-danger) 20%, transparent);
+  background: var(--color-danger-subtle);
+  border: 1px solid color-mix(in srgb, var(--color-danger) 20%, transparent);
   border-radius: var(--radius-md);
-  color: var(--colour-danger);
-  font-size: var(--text-sm);
+  color: var(--color-danger);
+  font-size: 13px;
   margin-top: var(--space-4);
 }
-
 </style>

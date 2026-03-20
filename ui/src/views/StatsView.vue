@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { onMounted } from "vue";
+import { SCard, SBadge, STag, SSectionHeader, SHeading } from "@stuntrocket/ui";
 import { useMemoryStore } from "@/stores/memories";
 
 const store = useMemoryStore();
@@ -12,37 +13,37 @@ onMounted(() => {
 
 <template>
   <div class="stats-view">
-    <h1 class="stats-title">Statistics</h1>
+    <SHeading :level="1">Statistics</SHeading>
 
     <div class="stats-grid" v-if="store.currentStats">
-      <div class="stat-card">
+      <SCard variant="glass" class="stat-card">
         <span class="stat-value">{{ store.currentStats.total_memories }}</span>
         <span class="stat-label">Total</span>
-      </div>
-      <div class="stat-card">
+      </SCard>
+      <SCard variant="glass" class="stat-card">
         <span class="stat-value">{{ store.currentStats.active_memories }}</span>
         <span class="stat-label">Active</span>
-      </div>
-      <div class="stat-card">
+      </SCard>
+      <SCard variant="glass" class="stat-card">
         <span class="stat-value">{{ store.currentStats.archived_memories }}</span>
         <span class="stat-label">Archived</span>
-      </div>
-      <div class="stat-card">
+      </SCard>
+      <SCard variant="glass" class="stat-card">
         <span class="stat-value">{{ store.currentStats.embedding_coverage.toFixed(0) }}%</span>
         <span class="stat-label">Embedded</span>
-      </div>
-      <div class="stat-card">
+      </SCard>
+      <SCard variant="glass" class="stat-card">
         <span class="stat-value">{{ store.currentStats.total_links }}</span>
         <span class="stat-label">Links</span>
-      </div>
-      <div class="stat-card">
+      </SCard>
+      <SCard variant="glass" class="stat-card">
         <span class="stat-value">{{ store.currentStats.link_density.toFixed(2) }}</span>
         <span class="stat-label">Link Density</span>
-      </div>
+      </SCard>
     </div>
 
     <div class="section" v-if="store.currentStats">
-      <h2 class="section-title">By Namespace</h2>
+      <SSectionHeader title="By Namespace" />
       <div class="breakdown-list">
         <div
           v-for="[ns, count] in store.currentStats.by_namespace"
@@ -56,7 +57,7 @@ onMounted(() => {
     </div>
 
     <div class="section" v-if="store.currentStats">
-      <h2 class="section-title">By Kind</h2>
+      <SSectionHeader title="By Kind" />
       <div class="breakdown-list">
         <div
           v-for="[kind, count] in store.currentStats.by_kind"
@@ -70,29 +71,27 @@ onMounted(() => {
     </div>
 
     <div class="section" v-if="store.currentStats?.top_tags?.length">
-      <h2 class="section-title">Top Tags</h2>
+      <SSectionHeader title="Top Tags" />
       <div class="tag-cloud">
-        <span
-          v-for="[tag, count] in store.currentStats.top_tags"
-          :key="tag"
-          class="tag-item"
-        >
+        <STag v-for="[tag, count] in store.currentStats.top_tags" :key="tag">
           #{{ tag }} <span class="tag-count">{{ count }}</span>
-        </span>
+        </STag>
       </div>
     </div>
 
     <div class="section" v-if="store.recentActivity.length">
-      <h2 class="section-title">Recent Activity</h2>
+      <SSectionHeader title="Recent Activity" />
       <div class="activity-list">
         <div
           v-for="entry in store.recentActivity"
           :key="entry.memory_id + entry.timestamp"
           class="activity-item"
         >
-          <span class="activity-badge" :class="entry.action">
+          <SBadge
+            :variant="entry.action === 'created' ? 'success' : entry.action === 'updated' ? 'info' : 'error'"
+          >
             {{ entry.action }}
-          </span>
+          </SBadge>
           <span class="activity-title">
             {{ entry.title || entry.memory_id.slice(0, 8) }}
           </span>
@@ -110,17 +109,7 @@ onMounted(() => {
 
 <style scoped>
 .stats-view {
-  padding-bottom: var(--space-12);
-}
-
-/* ── Page Title ── */
-.stats-title {
-  font-size: var(--text-xl);
-  font-weight: var(--font-semibold);
-  letter-spacing: var(--tracking-tight);
-  color: var(--colour-text);
-  margin-bottom: var(--space-6);
-  line-height: var(--leading-tight);
+  padding-bottom: 48px;
 }
 
 /* ── Stats Grid ── */
@@ -128,13 +117,11 @@ onMounted(() => {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
   gap: var(--space-3);
+  margin-top: var(--space-6);
   margin-bottom: var(--space-8);
 }
 
 .stat-card {
-  background: var(--colour-surface-card);
-  border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-sm);
   padding: var(--space-5);
   display: flex;
   flex-direction: column;
@@ -143,35 +130,25 @@ onMounted(() => {
 }
 
 .stat-value {
-  font-size: var(--text-2xl);
-  font-weight: var(--font-bold);
-  color: var(--colour-accent);
+  font-size: 26px;
+  font-weight: 700;
+  color: var(--color-accent);
   font-variant-numeric: tabular-nums;
-  line-height: var(--leading-tight);
+  line-height: 1.3;
 }
 
 .stat-label {
-  font-size: var(--text-xs);
-  font-weight: var(--font-semibold);
+  font-size: 11px;
+  font-weight: 600;
   text-transform: uppercase;
-  letter-spacing: var(--tracking-caps);
-  color: var(--colour-text-disabled);
-  line-height: var(--leading-normal);
+  letter-spacing: 0.06em;
+  color: var(--color-text-tertiary);
+  line-height: 1.5;
 }
 
 /* ── Sections ── */
 .section {
   margin-top: var(--space-8);
-}
-
-.section-title {
-  font-size: var(--text-xs);
-  font-weight: var(--font-semibold);
-  text-transform: uppercase;
-  letter-spacing: var(--tracking-caps);
-  color: var(--colour-text-muted);
-  margin-bottom: var(--space-3);
-  line-height: var(--leading-normal);
 }
 
 /* ── Breakdown ── */
@@ -191,15 +168,15 @@ onMounted(() => {
 }
 
 .breakdown-label {
-  font-size: var(--text-sm);
-  color: var(--colour-text-secondary);
-  line-height: var(--leading-normal);
+  font-size: 13px;
+  color: var(--color-text-secondary);
+  line-height: 1.5;
 }
 
 .breakdown-value {
-  font-size: var(--text-sm);
-  font-weight: var(--font-semibold);
-  color: var(--colour-accent);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-accent);
   font-variant-numeric: tabular-nums;
 }
 
@@ -210,18 +187,9 @@ onMounted(() => {
   gap: var(--space-2);
 }
 
-.tag-item {
-  padding: var(--space-1) var(--space-3);
-  border-radius: 99px;
-  font-size: var(--text-sm);
-  color: var(--colour-accent);
-  background: var(--colour-accent-muted);
-  line-height: var(--leading-normal);
-}
-
 .tag-count {
-  font-size: var(--text-xs);
-  color: var(--colour-text-disabled);
+  font-size: 11px;
+  color: var(--color-text-tertiary);
   font-variant-numeric: tabular-nums;
   margin-left: 2px;
 }
@@ -242,37 +210,11 @@ onMounted(() => {
   border-radius: var(--radius-md);
 }
 
-.activity-badge {
-  font-size: var(--text-xs);
-  padding: 2px var(--space-2);
-  border-radius: var(--radius-sm);
-  text-transform: uppercase;
-  font-weight: var(--font-semibold);
-  letter-spacing: var(--tracking-caps);
-  flex-shrink: 0;
-  line-height: var(--leading-normal);
-}
-
-.activity-badge.created {
-  background: color-mix(in srgb, var(--colour-success) 15%, transparent);
-  color: var(--colour-success);
-}
-
-.activity-badge.updated {
-  background: color-mix(in srgb, var(--colour-info) 15%, transparent);
-  color: var(--colour-info);
-}
-
-.activity-badge.archived {
-  background: color-mix(in srgb, var(--colour-danger) 15%, transparent);
-  color: var(--colour-danger);
-}
-
 .activity-title {
   flex: 1;
-  font-size: var(--text-sm);
-  color: var(--colour-text);
-  line-height: var(--leading-normal);
+  font-size: 13px;
+  color: var(--color-text-primary);
+  line-height: 1.5;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -286,13 +228,13 @@ onMounted(() => {
 }
 
 .activity-ns {
-  font-size: var(--text-xs);
-  color: var(--colour-text-muted);
+  font-size: 11px;
+  color: var(--color-text-tertiary);
 }
 
 .activity-time {
-  font-size: var(--text-xs);
-  color: var(--colour-text-muted);
+  font-size: 11px;
+  color: var(--color-text-tertiary);
   font-variant-numeric: tabular-nums;
 }
 </style>

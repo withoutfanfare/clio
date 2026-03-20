@@ -33,23 +33,23 @@ const kinds = ["note", "fact", "decision", "summary", "task", "observation", "sn
 
 .kind-pill {
   padding: var(--space-1) var(--space-3);
-  background: var(--colour-surface-overlay);
+  background: var(--color-surface-hover);
   border: none;
   border-radius: var(--radius-sm);
-  color: var(--colour-text-muted);
-  font-size: var(--text-xs);
-  font-weight: var(--font-medium);
+  color: var(--color-text-tertiary);
+  font-size: 11px;
+  font-weight: 500;
   cursor: pointer;
   transition: color 150ms, background 150ms;
 }
 
 .kind-pill:hover {
-  color: var(--colour-text);
-  background: color-mix(in srgb, var(--colour-surface-overlay), white 4%);
+  color: var(--color-text-primary);
+  background: var(--color-surface-selected);
 }
 
 .kind-pill.active {
-  background: var(--colour-accent-muted);
-  color: var(--colour-accent);
+  background: var(--color-accent-subtle);
+  color: var(--color-accent);
 }
 </style>

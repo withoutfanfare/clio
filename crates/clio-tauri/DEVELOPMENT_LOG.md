@@ -21,12 +21,12 @@
 ## Cycle: 2026-03-20 23:30
 - **App:** Clio Tauri
 - **Items completed:**
-  - [Foundation] Integrate @stuntrocket/ui shared component library and design tokens (P1/M) — Installed @stuntrocket/ui from local Verdaccio registry, configured Tailwind CSS v4 with @tailwindcss/vite plugin, replaced bespoke theme with Scooda tokens.css import, loaded Poppins via Google Fonts, added violet accent override for Clio identity, migrated all components to use shared UI primitives (SButton, SBadge, SCard, SInput, SSidebarLink, SCommandPalette, SDropdownMenu, SFormField, SAmbientBlobs, SSpinner, SEmptyState, SHeading, SSectionHeader, STag, SKbd)
+  - [Foundation] Integrate @stuntrocket/ui shared component library and design tokens (P1/M) — Installed @stuntrocket/ui from local Verdaccio registry, configured Tailwind CSS v4 with @tailwindcss/vite plugin, replaced bespoke theme with @stuntrocket/ui tokens.css import, loaded Poppins via Google Fonts, added violet accent override for Clio identity, migrated all components to use shared UI primitives (SButton, SBadge, SCard, SInput, SSidebarLink, SCommandPalette, SDropdownMenu, SFormField, SAmbientBlobs, SSpinner, SEmptyState, SHeading, SSectionHeader, STag, SKbd)
 - **Items attempted but failed:** none
 - **Branch:** feature/scooda-design-tokens
 - **Tests passing:** yes (cargo check clean, cargo clippy clean, vue-tsc clean)
 - **Build status:** pending
-- **Notes:** Significant refactoring — net removal of 655 lines as inline styles replaced by shared component library classes. Clio uses a violet accent (#8B5CF6) override on top of the Scooda base palette to maintain its distinct identity within the portfolio. Glass morphism tokens (surface-card, surface-panel, surface-overlay) are Clio-specific additions layered on top of the shared token system. Dark mode preserved via .dark class on html element.
+- **Notes:** Significant refactoring — net removal of 655 lines as inline styles replaced by shared component library classes. Clio uses a violet accent (#8B5CF6) override on top of the @stuntrocket/ui base palette to maintain its distinct identity within the portfolio. Glass morphism tokens (surface-card, surface-panel, surface-overlay) are Clio-specific additions layered on top of the shared token system. Dark mode preserved via .dark class on html element.
 
 ## Cycle: 2026-03-20 23:00
 - **App:** Clio Tauri

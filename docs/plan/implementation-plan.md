@@ -113,7 +113,7 @@ Every capture surface must resolve into the same ingest pipeline. Raycast, inbox
 
 - Codex stores a project decision and Claude later recalls it via MCP.
 - A shell script records a deployment note from CI output.
-- A future Tauri app shows recent memories for `project:scooda`.
+- A future Tauri app shows recent memories for `project:my-app`.
 - An agent stores a summary with `source=codex` and `source_ref=issue-123`; later runs update that memory instead of duplicating it.
 - A Raycast command captures a thought into the local daemon and receives a confirmation immediately.
 - An inbox folder watcher converts dropped text or Markdown files into reviewed memories.

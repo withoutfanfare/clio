@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { SButton, SKbd } from "@stuntrocket/ui";
 import { useMemoryStore } from "@/stores/memories";
 
 const store = useMemoryStore();
@@ -10,8 +11,9 @@ const store = useMemoryStore();
       <div class="appbar-left" />
 
       <div class="appbar-right">
-        <button
-          class="appbar-btn"
+        <SButton
+          variant="ghost"
+          size="sm"
           @click="store.paletteOpen = true"
           title="Search (Cmd+K)"
         >
@@ -19,17 +21,18 @@ const store = useMemoryStore();
             <circle cx="7" cy="7" r="4.5" stroke="currentColor" stroke-width="1.5"/>
             <path d="M10.5 10.5L14 14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
           </svg>
-          <kbd class="kbd-hint">K</kbd>
-        </button>
-        <button
-          class="appbar-btn"
+          <SKbd>K</SKbd>
+        </SButton>
+        <SButton
+          variant="icon"
+          size="sm"
           @click="store.toggleCompose()"
           title="New memory (Cmd+N)"
         >
           <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
             <path d="M8 3v10M3 8h10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
           </svg>
-        </button>
+        </SButton>
       </div>
     </div>
   </header>
@@ -63,45 +66,5 @@ const store = useMemoryStore();
   display: flex;
   align-items: center;
   gap: var(--space-1);
-}
-
-/* ── Icon Buttons ── */
-.appbar-btn {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: var(--space-2);
-  width: 32px;
-  height: 32px;
-  padding: 0;
-  background: none;
-  border: none;
-  border-radius: var(--radius-md);
-  color: var(--colour-text-secondary);
-  cursor: pointer;
-  transition: color 150ms, background 150ms;
-}
-
-.appbar-btn:hover {
-  color: var(--colour-text);
-  background: var(--colour-surface-overlay);
-}
-
-/* Widen the search button to fit the kbd hint */
-.appbar-btn:has(.kbd-hint) {
-  width: auto;
-  padding: 0 var(--space-2);
-}
-
-/* ── Keyboard Hint ── */
-.kbd-hint {
-  font-size: var(--text-xs);
-  font-family: inherit;
-  font-weight: var(--font-medium);
-  line-height: 1;
-  padding: 2px 5px;
-  border-radius: 4px;
-  border: 1px solid var(--colour-border);
-  color: var(--colour-text-disabled);
 }
 </style>
