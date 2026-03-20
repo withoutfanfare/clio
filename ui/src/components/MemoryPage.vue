@@ -8,6 +8,7 @@ import type { RecallItem } from "@/api/types";
 const props = defineProps<{
   memory: RecallItem;
   mode?: "list" | "grid";
+  focused?: boolean;
 }>();
 
 const store = useMemoryStore();
@@ -75,6 +76,12 @@ function onDownload(e: Event) {
   closeMenu();
 }
 
+function onTogglePin(e: Event) {
+  e.stopPropagation();
+  store.togglePin(props.memory.id);
+  closeMenu();
+}
+
 async function onArchive(e: Event) {
   e.stopPropagation();
   try {
@@ -114,7 +121,7 @@ function formatTime(iso: string): string {
 <template>
   <article
     class="memory-page"
-    :class="mode === 'grid' ? 'mode-grid' : 'mode-list'"
+    :class="[mode === 'grid' ? 'mode-grid' : 'mode-list', { 'kb-focused': focused }]"
     @click="open"
     tabindex="0"
     @keydown.enter="open"
@@ -170,6 +177,9 @@ function formatTime(iso: string): string {
         :style="menuStyle"
         @click.stop
       >
+        <button class="pmenu-item" @click="onTogglePin">
+          {{ store.isPinned(memory.id) ? "Unpin" : "Pin to top" }}
+        </button>
         <button class="pmenu-item" @click="onCopy">
           {{ copied ? "Copied!" : "Copy as Markdown" }}
         </button>
@@ -215,7 +225,8 @@ function formatTime(iso: string): string {
   box-shadow: var(--shadow-sm);
 }
 
-.memory-page:focus-visible {
+.memory-page:focus-visible,
+.memory-page.kb-focused {
   outline: 2px solid var(--colour-border-focus);
   outline-offset: 2px;
   box-shadow: var(--shadow-focus);

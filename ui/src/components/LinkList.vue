@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted } from "vue";
+import { ref, watch } from "vue";
 import * as api from "@/api/memory";
 import { useMemoryStore } from "@/stores/memories";
 import type { MemoryLink, SuggestionResult } from "@/api/types";
@@ -12,14 +12,41 @@ const store = useMemoryStore();
 const links = ref<MemoryLink[]>([]);
 const suggestions = ref<SuggestionResult[]>([]);
 const loadingSuggestions = ref(false);
+const loadingLinks = ref(false);
 const suggestError = ref<string | null>(null);
 const suggestAttempted = ref(false);
+const expanded = ref(false);
+const loaded = ref(false);
 
-onMounted(async () => {
+async function loadLinks() {
+  if (loaded.value || loadingLinks.value) return;
+  loadingLinks.value = true;
   try {
     links.value = await api.getLinks(props.memoryId);
+    loaded.value = true;
   } catch {
     // May not have links
+  } finally {
+    loadingLinks.value = false;
+  }
+}
+
+function toggle() {
+  expanded.value = !expanded.value;
+  if (expanded.value && !loaded.value) {
+    loadLinks();
+  }
+}
+
+// Reset state when memory changes
+watch(() => props.memoryId, () => {
+  links.value = [];
+  suggestions.value = [];
+  suggestError.value = null;
+  suggestAttempted.value = false;
+  loaded.value = false;
+  if (expanded.value) {
+    loadLinks();
   }
 });
 
@@ -61,8 +88,19 @@ function openLinked(id: string) {
 <template>
   <div class="link-list">
     <div class="links-header">
-      <span class="links-title">Links</span>
+      <button class="links-toggle" @click="toggle">
+        <svg
+          width="10" height="10" viewBox="0 0 12 12" fill="none"
+          class="links-chevron"
+          :class="{ open: expanded }"
+        >
+          <path d="M4 2l4 4-4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+        <span class="links-title">Links</span>
+        <span v-if="links.length && !expanded" class="links-count">{{ links.length }}</span>
+      </button>
       <button
+        v-if="expanded"
         class="suggest-btn"
         @click="suggestLinks"
         :disabled="loadingSuggestions"
@@ -87,46 +125,54 @@ function openLinked(id: string) {
       </button>
     </div>
 
-    <div v-if="loadingSuggestions" class="loading-bar">
-      <div class="loading-bar-track" />
-    </div>
+    <Transition name="fade">
+      <div v-if="expanded" class="links-body">
+        <div v-if="loadingLinks" class="loading-bar">
+          <div class="loading-bar-track" />
+        </div>
 
-    <div v-if="links.length" class="links-items">
-      <button
-        v-for="link in links"
-        :key="link.to_memory_id"
-        class="link-item"
-        @click="openLinked(link.to_memory_id)"
-      >
-        <span class="link-rel">{{ link.relationship || "relates_to" }}</span>
-        <span class="link-id">{{ link.to_memory_id.slice(0, 8) }}</span>
-      </button>
-    </div>
+        <div v-if="loadingSuggestions" class="loading-bar">
+          <div class="loading-bar-track" />
+        </div>
 
-    <p v-if="suggestError" class="suggest-error">
-      {{ suggestError }}
-    </p>
+        <div v-if="links.length" class="links-items">
+          <button
+            v-for="link in links"
+            :key="link.to_memory_id"
+            class="link-item"
+            @click="openLinked(link.to_memory_id)"
+          >
+            <span class="link-rel">{{ link.relationship || "relates_to" }}</span>
+            <span class="link-id">{{ link.to_memory_id.slice(0, 8) }}</span>
+          </button>
+        </div>
 
-    <div v-if="suggestions.length" class="suggestions">
-      <span class="suggestions-label">Suggested</span>
-      <button
-        v-for="s in suggestions"
-        :key="s.memory.id"
-        class="suggestion-item"
-        @click="createLink(s.memory.id)"
-      >
-        <span class="suggestion-title">{{ s.memory.title || s.memory.content.slice(0, 60) }}</span>
-        <span class="suggestion-score">{{ (s.similarity * 100).toFixed(0) }}%</span>
-      </button>
-    </div>
+        <p v-if="suggestError" class="suggest-error">
+          {{ suggestError }}
+        </p>
 
-    <p v-if="suggestAttempted && !loadingSuggestions && !suggestError && !suggestions.length && !links.length" class="links-empty">
-      No similar memories found
-    </p>
+        <div v-if="suggestions.length" class="suggestions">
+          <span class="suggestions-label">Suggested</span>
+          <button
+            v-for="s in suggestions"
+            :key="s.memory.id"
+            class="suggestion-item"
+            @click="createLink(s.memory.id)"
+          >
+            <span class="suggestion-title">{{ s.memory.title || s.memory.content.slice(0, 60) }}</span>
+            <span class="suggestion-score">{{ (s.similarity * 100).toFixed(0) }}%</span>
+          </button>
+        </div>
 
-    <p v-if="!suggestAttempted && !links.length && !suggestions.length" class="links-empty">
-      No linked memories
-    </p>
+        <p v-if="suggestAttempted && !loadingSuggestions && !suggestError && !suggestions.length && !links.length" class="links-empty">
+          No similar memories found
+        </p>
+
+        <p v-if="!suggestAttempted && !links.length && !suggestions.length && !loadingLinks" class="links-empty">
+          No linked memories
+        </p>
+      </div>
+    </Transition>
   </div>
 </template>
 
@@ -141,7 +187,30 @@ function openLinked(id: string) {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-bottom: var(--space-3);
+}
+
+.links-toggle {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  background: none;
+  border: none;
+  color: var(--colour-text-muted);
+  cursor: pointer;
+  transition: color 150ms;
+  padding: var(--space-1) 0;
+}
+
+.links-toggle:hover {
+  color: var(--colour-text);
+}
+
+.links-chevron {
+  transition: transform 200ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.links-chevron.open {
+  transform: rotate(90deg);
 }
 
 .links-title {
@@ -149,7 +218,16 @@ function openLinked(id: string) {
   font-weight: var(--font-semibold);
   text-transform: uppercase;
   letter-spacing: var(--tracking-caps);
-  color: var(--colour-text-muted);
+}
+
+.links-count {
+  font-size: var(--text-xs);
+  color: var(--colour-text-disabled);
+  font-variant-numeric: tabular-nums;
+}
+
+.links-body {
+  margin-top: var(--space-3);
 }
 
 .suggest-btn {

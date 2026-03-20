@@ -11,7 +11,9 @@ import type { GroupBy } from "@/composables/useGroupedMemories";
 const store = useMemoryStore();
 const route = useRoute();
 const groupByRef = toRef(store, "groupBy") as Ref<GroupBy>;
-const groups = useGroupedMemories(toRef(store, "items"), groupByRef);
+const groups = useGroupedMemories(toRef(store, "unpinnedItems"), groupByRef);
+
+const pinnedCollapsed = ref(false);
 
 const filtersOpen = ref(false);
 const tagInput = ref("");
@@ -288,21 +290,53 @@ watch(
       </div>
     </div>
 
-    <div v-else class="river">
-      <DateGroup
-        v-for="group in groups"
-        :key="group.label"
-        :label="group.label"
-        :mode="store.viewMode"
-      >
-        <MemoryPage
-          v-for="item in group.items"
-          :key="item.id"
-          :memory="item"
+    <template v-else>
+      <!-- Pinned section -->
+      <div v-if="store.pinnedItems.length" class="pinned-section">
+        <button class="pinned-header" @click="pinnedCollapsed = !pinnedCollapsed">
+          <svg
+            width="10" height="10" viewBox="0 0 12 12" fill="none"
+            class="pinned-chevron"
+            :class="{ open: !pinnedCollapsed }"
+          >
+            <path d="M4 2l4 4-4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+          <svg width="12" height="12" viewBox="0 0 16 16" fill="none" class="pin-icon">
+            <path d="M9.828 1.172a1 1 0 011.414 0l3.586 3.586a1 1 0 010 1.414L12 9l-1 4-4.5-1.5L3 15l.5-3.5L2 7l3-2.828 4.828-3z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round" fill="none"/>
+          </svg>
+          <span class="pinned-label">Pinned</span>
+          <span class="pinned-count">{{ store.pinnedItems.length }}</span>
+        </button>
+        <Transition name="slide-down">
+          <div v-if="!pinnedCollapsed" class="pinned-list" :class="store.viewMode === 'grid' ? 'pinned-grid' : ''">
+            <MemoryPage
+              v-for="item in store.pinnedItems"
+              :key="item.id"
+              :memory="item"
+              :mode="store.viewMode"
+              :focused="store.items.indexOf(item) === store.focusedIndex"
+            />
+          </div>
+        </Transition>
+      </div>
+
+      <div class="river">
+        <DateGroup
+          v-for="group in groups"
+          :key="group.label"
+          :label="group.label"
           :mode="store.viewMode"
-        />
-      </DateGroup>
-    </div>
+        >
+          <MemoryPage
+            v-for="item in group.items"
+            :key="item.id"
+            :memory="item"
+            :mode="store.viewMode"
+            :focused="store.items.indexOf(item) === store.focusedIndex"
+          />
+        </DateGroup>
+      </div>
+    </template>
 
     <div v-if="!store.loading && !store.items.length" class="river-empty">
       <template v-if="store.hasActiveFilters">
@@ -699,6 +733,65 @@ watch(
 @keyframes loading-pulse {
   0%, 60%, 100% { opacity: 0.3; }
   30% { opacity: 0.8; }
+}
+
+/* ── Pinned Section ── */
+.pinned-section {
+  margin-bottom: var(--space-4);
+}
+
+.pinned-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  background: none;
+  border: none;
+  color: var(--colour-text-muted);
+  cursor: pointer;
+  transition: color 150ms;
+  padding: var(--space-1) 0;
+  margin-bottom: var(--space-3);
+}
+
+.pinned-header:hover {
+  color: var(--colour-text);
+}
+
+.pinned-chevron {
+  transition: transform 200ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.pinned-chevron.open {
+  transform: rotate(90deg);
+}
+
+.pin-icon {
+  color: var(--colour-accent);
+}
+
+.pinned-label {
+  font-size: var(--text-xs);
+  font-weight: var(--font-semibold);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-caps);
+}
+
+.pinned-count {
+  font-size: var(--text-xs);
+  color: var(--colour-text-disabled);
+  font-variant-numeric: tabular-nums;
+}
+
+.pinned-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.pinned-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: var(--space-2);
 }
 
 .river {
