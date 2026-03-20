@@ -1,12 +1,19 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
+  BackupListEntry,
+  BackupResult,
+  BulkResult,
   DetectedContext,
+  ImportResult,
+  IntegrityReport,
   Memory,
   MemoryLink,
   MemoryStats,
+  NamespaceInfo,
   RecallResult,
   RecentEntry,
   RememberInput,
+  RestoreResult,
   SuggestionResult,
 } from "./types";
 
@@ -168,4 +175,96 @@ export async function detectNamespace(
   directory: string,
 ): Promise<DetectedContext | null> {
   return invoke<DetectedContext | null>("cmd_detect_namespace", { directory });
+}
+
+// Bulk operations
+
+export async function bulkArchive(memoryIds: string[]): Promise<BulkResult> {
+  return invoke<BulkResult>("cmd_bulk_archive", { memoryIds });
+}
+
+export async function bulkDelete(memoryIds: string[]): Promise<BulkResult> {
+  return invoke<BulkResult>("cmd_bulk_delete", { memoryIds });
+}
+
+export async function bulkAddTag(
+  memoryIds: string[],
+  tag: string,
+): Promise<BulkResult> {
+  return invoke<BulkResult>("cmd_bulk_add_tag", { memoryIds, tag });
+}
+
+export async function bulkRemoveTag(
+  memoryIds: string[],
+  tag: string,
+): Promise<BulkResult> {
+  return invoke<BulkResult>("cmd_bulk_remove_tag", { memoryIds, tag });
+}
+
+// Export / Import
+
+export async function exportMemories(params?: {
+  namespace?: string;
+  include_archived?: boolean;
+  format?: string;
+}): Promise<string> {
+  return invoke<string>("cmd_export_memories", {
+    namespace: params?.namespace,
+    includeArchived: params?.include_archived,
+    format: params?.format,
+  });
+}
+
+export async function importMemories(data: string): Promise<ImportResult> {
+  return invoke<ImportResult>("cmd_import_memories", { data });
+}
+
+// Namespace management
+
+export async function namespaceDetails(): Promise<NamespaceInfo[]> {
+  return invoke<NamespaceInfo[]>("cmd_namespace_details");
+}
+
+export async function renameNamespace(
+  from: string,
+  to: string,
+): Promise<number> {
+  return invoke<number>("cmd_rename_namespace", { from, to });
+}
+
+export async function mergeNamespaces(
+  source: string,
+  target: string,
+): Promise<number> {
+  return invoke<number>("cmd_merge_namespaces", { source, target });
+}
+
+export async function deleteNamespace(namespace: string): Promise<boolean> {
+  return invoke<boolean>("cmd_delete_namespace", { namespace });
+}
+
+// Integrity checks
+
+export async function integrityCheck(): Promise<IntegrityReport> {
+  return invoke<IntegrityReport>("cmd_integrity_check");
+}
+
+export async function integrityFix(): Promise<IntegrityReport> {
+  return invoke<IntegrityReport>("cmd_integrity_fix");
+}
+
+// Backup and restore
+
+export async function createBackup(): Promise<BackupResult> {
+  return invoke<BackupResult>("cmd_backup");
+}
+
+export async function listBackups(): Promise<BackupListEntry[]> {
+  return invoke<BackupListEntry[]>("cmd_list_backups");
+}
+
+export async function restoreBackup(
+  backupPath: string,
+): Promise<RestoreResult> {
+  return invoke<RestoreResult>("cmd_restore", { backupPath });
 }

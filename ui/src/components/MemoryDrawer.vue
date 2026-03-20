@@ -28,11 +28,42 @@ const menuOpen = ref(false);
 const copied = ref(false);
 const confirmingDelete = ref(false);
 const contentRef = ref<HTMLTextAreaElement | null>(null);
+const revisionsOpen = ref(false);
+
+// Revision tracking: store previous content versions in localStorage
+interface Revision {
+  content: string;
+  timestamp: string;
+}
+
+const revisions = ref<Revision[]>([]);
+
+function loadRevisions(memoryId: string) {
+  try {
+    const raw = localStorage.getItem(`clio-revisions-${memoryId}`);
+    revisions.value = raw ? JSON.parse(raw) : [];
+  } catch {
+    revisions.value = [];
+  }
+}
+
+function saveRevision(memoryId: string, oldContent: string) {
+  if (!oldContent.trim()) return;
+  const newRevisions = [
+    ...revisions.value,
+    { content: oldContent, timestamp: new Date().toISOString() },
+  ].slice(-20); // Keep last 20 revisions
+  revisions.value = newRevisions;
+  localStorage.setItem(`clio-revisions-${memoryId}`, JSON.stringify(newRevisions));
+}
+
+let previousContent = "";
 
 watch(
   () => store.drawerMemory,
   (memory) => {
     if (memory) {
+      previousContent = memory.content;
       editContent.value = memory.content;
       editTitle.value = memory.title ?? "";
       editKind.value = memory.kind;
@@ -41,6 +72,8 @@ watch(
       editImportance.value = memory.importance;
       metaOpen.value = false;
       menuOpen.value = false;
+      revisionsOpen.value = false;
+      loadRevisions(memory.id);
       cancel();
       nextTick(() => contentRef.value?.focus());
     }
@@ -49,6 +82,11 @@ watch(
 
 function onContentChange() {
   if (!store.drawerMemory) return;
+  // Save revision if content has meaningfully changed
+  if (previousContent && previousContent !== editContent.value && previousContent.trim() !== editContent.value.trim()) {
+    saveRevision(store.drawerMemory.id, previousContent);
+    previousContent = editContent.value;
+  }
   scheduleAutoSave(store.drawerMemory, { content: editContent.value });
 }
 
@@ -303,10 +341,41 @@ function formatDate(iso: string): string {
                   </div>
                 </div>
 
+                <div class="meta-row" v-if="store.drawerMemory.source">
+                  <label class="meta-label">Source</label>
+                  <span class="meta-source-value">{{ store.drawerMemory.source }}</span>
+                </div>
+
                 <div class="meta-info">
                   <span>Created {{ formatDate(store.drawerMemory.created_at) }}</span>
                   <span>Updated {{ formatDate(store.drawerMemory.updated_at) }}</span>
                   <span class="meta-id">{{ store.drawerMemory.id }}</span>
+                </div>
+
+                <!-- Revision history -->
+                <div v-if="revisions.length" class="revision-section">
+                  <button class="revision-toggle" @click="revisionsOpen = !revisionsOpen">
+                    <svg
+                      width="10" height="10" viewBox="0 0 12 12" fill="none"
+                      class="revision-chevron"
+                      :class="{ open: revisionsOpen }"
+                    >
+                      <path d="M4 2l4 4-4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                    </svg>
+                    Revisions ({{ revisions.length }})
+                  </button>
+                  <Transition name="fade">
+                    <div v-if="revisionsOpen" class="revision-list">
+                      <div
+                        v-for="(rev, i) in revisions"
+                        :key="i"
+                        class="revision-item"
+                      >
+                        <span class="revision-time">{{ formatDate(rev.timestamp) }}</span>
+                        <p class="revision-content">{{ rev.content.slice(0, 200) }}{{ rev.content.length > 200 ? "\u2026" : "" }}</p>
+                      </div>
+                    </div>
+                  </Transition>
                 </div>
               </div>
             </Transition>
@@ -664,5 +733,77 @@ function formatDate(iso: string): string {
   font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
   font-size: 10px;
   opacity: 0.7;
+}
+
+.meta-source-value {
+  font-size: var(--text-sm);
+  color: var(--colour-text-secondary);
+  padding: var(--space-1) 0;
+  text-transform: capitalize;
+}
+
+/* ── Revision History ── */
+.revision-section {
+  margin-top: var(--space-3);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--colour-border);
+}
+
+.revision-toggle {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  background: none;
+  border: none;
+  color: var(--colour-text-muted);
+  font-size: var(--text-xs);
+  font-weight: var(--font-semibold);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-caps);
+  cursor: pointer;
+  transition: color 150ms;
+  padding: var(--space-1) 0;
+}
+
+.revision-toggle:hover {
+  color: var(--colour-text);
+}
+
+.revision-chevron {
+  transition: transform 200ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.revision-chevron.open {
+  transform: rotate(90deg);
+}
+
+.revision-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+.revision-item {
+  padding: var(--space-2) var(--space-3);
+  background: var(--colour-surface-overlay);
+  border-radius: var(--radius-md);
+}
+
+.revision-time {
+  font-size: var(--text-xs);
+  color: var(--colour-text-disabled);
+  font-variant-numeric: tabular-nums;
+}
+
+.revision-content {
+  font-size: var(--text-xs);
+  color: var(--colour-text-secondary);
+  margin: var(--space-1) 0 0;
+  line-height: var(--leading-relaxed);
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 </style>

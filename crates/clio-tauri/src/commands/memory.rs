@@ -311,3 +311,129 @@ pub fn cmd_cache_clear(
         .map_err(|e| CommandError::Core(format!("Lock poisoned: {e}")))?;
     Ok(app.cache.clear_all())
 }
+
+// ---------------------------------------------------------------------------
+// Bulk operations
+// ---------------------------------------------------------------------------
+
+#[derive(serde::Serialize)]
+pub struct BulkResult {
+    pub affected: u32,
+}
+
+#[tauri::command]
+pub fn cmd_bulk_archive(
+    state: State<'_, Mutex<AppState>>,
+    memory_ids: Vec<String>,
+) -> Result<BulkResult, CommandError> {
+    let app = state
+        .lock()
+        .map_err(|e| CommandError::Core(format!("Lock poisoned: {e}")))?;
+    let affected = clio_core::repository::archive_bulk(&app.conn, &memory_ids)?;
+    app.cache.clear_all();
+    Ok(BulkResult { affected })
+}
+
+#[tauri::command]
+pub fn cmd_bulk_delete(
+    state: State<'_, Mutex<AppState>>,
+    memory_ids: Vec<String>,
+) -> Result<BulkResult, CommandError> {
+    let app = state
+        .lock()
+        .map_err(|e| CommandError::Core(format!("Lock poisoned: {e}")))?;
+    let affected = clio_core::repository::delete_bulk(&app.conn, &memory_ids)?;
+    app.cache.clear_all();
+    Ok(BulkResult { affected })
+}
+
+#[tauri::command]
+pub fn cmd_bulk_add_tag(
+    state: State<'_, Mutex<AppState>>,
+    memory_ids: Vec<String>,
+    tag: String,
+) -> Result<BulkResult, CommandError> {
+    let app = state
+        .lock()
+        .map_err(|e| CommandError::Core(format!("Lock poisoned: {e}")))?;
+    let affected = clio_core::repository::add_tag_bulk(&app.conn, &memory_ids, &tag)?;
+    app.cache.clear_all();
+    Ok(BulkResult { affected })
+}
+
+#[tauri::command]
+pub fn cmd_bulk_remove_tag(
+    state: State<'_, Mutex<AppState>>,
+    memory_ids: Vec<String>,
+    tag: String,
+) -> Result<BulkResult, CommandError> {
+    let app = state
+        .lock()
+        .map_err(|e| CommandError::Core(format!("Lock poisoned: {e}")))?;
+    let affected = clio_core::repository::remove_tag_bulk(&app.conn, &memory_ids, &tag)?;
+    app.cache.clear_all();
+    Ok(BulkResult { affected })
+}
+
+// ---------------------------------------------------------------------------
+// Export / Import
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub fn cmd_export_memories(
+    state: State<'_, Mutex<AppState>>,
+    namespace: Option<String>,
+    include_archived: Option<bool>,
+    format: Option<String>,
+) -> Result<String, CommandError> {
+    let app = state
+        .lock()
+        .map_err(|e| CommandError::Core(format!("Lock poisoned: {e}")))?;
+
+    let fmt = format.unwrap_or_else(|| "json".into());
+    let mut buf = Vec::new();
+
+    match fmt.as_str() {
+        "json" => {
+            clio_core::export::export_jsonl(
+                &app.conn,
+                &mut buf,
+                namespace.as_deref(),
+                include_archived.unwrap_or(false),
+            )?;
+        }
+        _ => {
+            return Err(CommandError::Config(format!("Unsupported export format: {fmt}")));
+        }
+    }
+
+    String::from_utf8(buf)
+        .map_err(|e| CommandError::Core(format!("UTF-8 encoding error: {e}")))
+}
+
+#[derive(serde::Serialize)]
+pub struct ImportResult {
+    pub imported: u32,
+    pub skipped: u32,
+    pub errors: Vec<String>,
+}
+
+#[tauri::command]
+pub fn cmd_import_memories(
+    state: State<'_, Mutex<AppState>>,
+    data: String,
+) -> Result<ImportResult, CommandError> {
+    let app = state
+        .lock()
+        .map_err(|e| CommandError::Core(format!("Lock poisoned: {e}")))?;
+
+    let mut reader = std::io::Cursor::new(data.as_bytes());
+    let result = clio_core::export::import_jsonl(&app.conn, &mut reader)?;
+    app.cache.clear_all();
+
+    Ok(ImportResult {
+        imported: result.imported,
+        skipped: result.skipped,
+        errors: result.errors,
+    })
+}

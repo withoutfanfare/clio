@@ -4,6 +4,7 @@ import * as api from "@/api/memory";
 import type {
   Memory,
   RecallItem,
+  RecallResult,
   MemoryStats,
   RecentEntry,
 } from "@/api/types";
@@ -165,6 +166,140 @@ export const useMemoryStore = defineStore("memories", () => {
   // Compose state
   const composeOpen = ref(false);
 
+  // Bulk selection
+  const selectedIds = ref<Set<string>>(new Set());
+  const selectionMode = ref(false);
+
+  const selectedCount = computed(() => selectedIds.value.size);
+
+  function toggleSelection(memoryId: string, shiftKey = false) {
+    const newSet = new Set(selectedIds.value);
+    if (newSet.has(memoryId)) {
+      newSet.delete(memoryId);
+    } else {
+      newSet.add(memoryId);
+    }
+    selectedIds.value = newSet;
+    selectionMode.value = newSet.size > 0;
+  }
+
+  function selectRange(fromIndex: number, toIndex: number) {
+    const start = Math.min(fromIndex, toIndex);
+    const end = Math.max(fromIndex, toIndex);
+    const newSet = new Set(selectedIds.value);
+    for (let i = start; i <= end; i++) {
+      if (items.value[i]) {
+        newSet.add(items.value[i].id);
+      }
+    }
+    selectedIds.value = newSet;
+    selectionMode.value = newSet.size > 0;
+  }
+
+  function clearSelection() {
+    selectedIds.value = new Set();
+    selectionMode.value = false;
+  }
+
+  function isSelected(memoryId: string): boolean {
+    return selectedIds.value.has(memoryId);
+  }
+
+  // Notifications for new memories from external sources
+  const notifications = ref<Array<{ id: string; title: string | null; namespace: string; source: string | null; timestamp: number }>>([]);
+  const notificationsEnabled = ref(true);
+  let lastKnownIds = new Set<string>();
+  let notificationsInitialised = false;
+
+  function initNotificationTracking() {
+    lastKnownIds = new Set(items.value.map((m) => m.id));
+    notificationsInitialised = true;
+  }
+
+  function checkForNewMemories(newItems: RecallItem[]) {
+    if (!notificationsInitialised || !notificationsEnabled.value) return;
+    for (const item of newItems) {
+      if (!lastKnownIds.has(item.id)) {
+        // Only notify for externally created memories (not desktop source)
+        if (item.source !== "desktop") {
+          notifications.value.push({
+            id: item.id,
+            title: item.title,
+            namespace: item.namespace,
+            source: item.source,
+            timestamp: Date.now(),
+          });
+          // Keep only last 10 notifications
+          if (notifications.value.length > 10) {
+            notifications.value = notifications.value.slice(-10);
+          }
+        }
+        lastKnownIds.add(item.id);
+      }
+    }
+  }
+
+  function dismissNotification(memoryId: string) {
+    notifications.value = notifications.value.filter((n) => n.id !== memoryId);
+  }
+
+  function dismissAllNotifications() {
+    notifications.value = [];
+  }
+
+  // Search result cache (session-scoped)
+  interface CacheEntry {
+    result: RecallResult;
+    timestamp: number;
+  }
+  const searchCache = ref(new Map<string, CacheEntry>());
+  const SEARCH_CACHE_MAX = 20;
+  let cacheVersion = 0;
+
+  function getCachedSearch(key: string): RecallResult | null {
+    const entry = searchCache.value.get(key);
+    if (!entry) return null;
+    return entry.result;
+  }
+
+  function setCachedSearch(key: string, result: RecallResult) {
+    const newCache = new Map<string, CacheEntry>(searchCache.value);
+    newCache.set(key, { result, timestamp: Date.now() });
+    // Evict oldest if over limit
+    if (newCache.size > SEARCH_CACHE_MAX) {
+      let oldest: string | null = null;
+      let oldestTime = Infinity;
+      for (const [k, v] of newCache) {
+        if (v.timestamp < oldestTime) {
+          oldestTime = v.timestamp;
+          oldest = k;
+        }
+      }
+      if (oldest) newCache.delete(oldest);
+    }
+    searchCache.value = newCache;
+  }
+
+  function invalidateSearchCache() {
+    searchCache.value = new Map<string, CacheEntry>();
+    cacheVersion++;
+  }
+
+  // Quick-create last-used defaults (persisted to localStorage)
+  const quickCreateLastNamespace = ref(
+    localStorage.getItem("clio-qc-namespace") || "global",
+  );
+  const quickCreateLastKind = ref(
+    localStorage.getItem("clio-qc-kind") || "note",
+  );
+
+  function setQuickCreateDefaults(namespace: string, kind: string) {
+    quickCreateLastNamespace.value = namespace;
+    quickCreateLastKind.value = kind;
+    localStorage.setItem("clio-qc-namespace", namespace);
+    localStorage.setItem("clio-qc-kind", kind);
+  }
+
   // Side panel (always visible by default)
   const sidePanelOpen = ref(true);
 
@@ -193,12 +328,24 @@ export const useMemoryStore = defineStore("memories", () => {
     loading.value = true;
     error.value = null;
     try {
+      const cacheKey = JSON.stringify({
+        q: query || null,
+        ns: selectedNamespace.value,
+        v: cacheVersion,
+      });
+      const cached = getCachedSearch(cacheKey);
+      if (cached) {
+        items.value = cached.items;
+        total.value = cached.total;
+        return;
+      }
       const result = await api.recall({
         query: query || undefined,
         namespace: selectedNamespace.value ?? undefined,
       });
       items.value = result.items;
       total.value = result.total;
+      setCachedSearch(cacheKey, result);
     } catch (e) {
       error.value = String(e);
     } finally {
@@ -227,7 +374,13 @@ export const useMemoryStore = defineStore("memories", () => {
       });
       // Only update if data actually changed to avoid unnecessary re-renders.
       if (fingerprint(result.items) !== fingerprint(items.value)) {
+        // Check for new memories (notifications)
+        checkForNewMemories(result.items);
         items.value = result.items;
+        // Initialise notification tracking on first load
+        if (!notificationsInitialised) {
+          initNotificationTracking();
+        }
       }
       total.value = result.total;
     } catch (e) {
@@ -290,16 +443,44 @@ export const useMemoryStore = defineStore("memories", () => {
     try {
       await api.capture({ text, namespace });
       composeOpen.value = false;
+      invalidateSearchCache();
       await loadRecent();
     } catch {
       // Capture unavailable — fall back to simple remember
       await api.remember({
         content: text,
         namespace: namespace ?? undefined,
+        source: "desktop",
       });
       composeOpen.value = false;
+      invalidateSearchCache();
       await loadRecent();
     }
+  }
+
+  async function quickCreate(params: {
+    content: string;
+    namespace?: string;
+    kind?: string;
+    tags?: string[];
+    title?: string;
+    importance?: number;
+  }) {
+    await api.remember({
+      content: params.content,
+      namespace: params.namespace || "global",
+      kind: params.kind || "note",
+      tags: params.tags,
+      title: params.title,
+      importance: params.importance || 3,
+      source: "desktop",
+    });
+    if (params.namespace) {
+      setQuickCreateDefaults(params.namespace, params.kind || "note");
+    }
+    invalidateSearchCache();
+    await loadRecent();
+    await fetchNamespaces();
   }
 
   // Palette search
@@ -436,5 +617,25 @@ export const useMemoryStore = defineStore("memories", () => {
     togglePin,
     focusedIndex,
     shortcutHelpOpen,
+    // Bulk selection
+    selectedIds,
+    selectionMode,
+    selectedCount,
+    toggleSelection,
+    selectRange,
+    clearSelection,
+    isSelected,
+    // Notifications
+    notifications,
+    notificationsEnabled,
+    dismissNotification,
+    dismissAllNotifications,
+    // Search cache
+    invalidateSearchCache,
+    // Quick create
+    quickCreate,
+    quickCreateLastNamespace,
+    quickCreateLastKind,
+    setQuickCreateDefaults,
   };
 });

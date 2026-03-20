@@ -104,3 +104,57 @@ export interface DetectedContext {
   source: "clio_namespace_file" | "git_directory" | "project_manifest";
   marker_path: string;
 }
+
+// Bulk operations
+export interface BulkResult {
+  affected: number;
+}
+
+// Namespace management
+export interface NamespaceInfo {
+  name: string;
+  memory_count: number;
+  last_activity: string | null;
+}
+
+// Integrity checks
+export interface IntegrityIssue {
+  kind: string;
+  description: string;
+  suggested_fix: string;
+  auto_fixable: boolean;
+  affected_ids: string[];
+}
+
+export interface IntegrityReport {
+  issues: IntegrityIssue[];
+  total_checked: number;
+  issues_found: number;
+  fixed: number;
+}
+
+// Backup and restore
+export interface BackupResult {
+  path: string;
+  size_bytes: number;
+  timestamp: string;
+}
+
+export interface BackupListEntry {
+  path: string;
+  filename: string;
+  size_bytes: number;
+  created: string;
+}
+
+export interface RestoreResult {
+  restored_from: string;
+  integrity_ok: boolean;
+}
+
+// Import
+export interface ImportResult {
+  imported: number;
+  skipped: number;
+  errors: string[];
+}

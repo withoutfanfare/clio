@@ -18,6 +18,16 @@ const router = createRouter({
       name: "stats",
       component: () => import("@/views/StatsView.vue"),
     },
+    {
+      path: "/namespaces",
+      name: "namespaces",
+      component: () => import("@/views/NamespacesView.vue"),
+    },
+    {
+      path: "/tools",
+      name: "tools",
+      component: () => import("@/views/ToolsView.vue"),
+    },
   ],
 });
 

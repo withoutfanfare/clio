@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, nextTick, onMounted, onUnmounted } from "vue";
+import { ref, computed, nextTick, onMounted, onUnmounted } from "vue";
 import { useMemoryStore } from "@/stores/memories";
 import { copyToClipboard, downloadMarkdown } from "@/utils/memoryExport";
 import * as api from "@/api/memory";
@@ -39,10 +39,40 @@ function handleClickOutside(e: MouseEvent) {
 onMounted(() => document.addEventListener("pointerdown", handleClickOutside, true));
 onUnmounted(() => document.removeEventListener("pointerdown", handleClickOutside, true));
 
-function open() {
+function open(e: MouseEvent) {
   if (menuOpen.value) return;
+  // Cmd/Ctrl+click toggles selection
+  if (e.metaKey || e.ctrlKey) {
+    e.preventDefault();
+    store.toggleSelection(props.memory.id);
+    return;
+  }
+  // Shift+click extends selection range
+  if (e.shiftKey && store.selectionMode) {
+    e.preventDefault();
+    const myIndex = store.items.findIndex((i) => i.id === props.memory.id);
+    if (myIndex >= 0) {
+      // Find the last selected item's index
+      const lastSelected = store.items.findIndex(
+        (i) => store.isSelected(i.id) && i.id !== props.memory.id,
+      );
+      if (lastSelected >= 0) {
+        store.selectRange(lastSelected, myIndex);
+      } else {
+        store.toggleSelection(props.memory.id);
+      }
+    }
+    return;
+  }
+  // In selection mode, simple click toggles
+  if (store.selectionMode) {
+    store.toggleSelection(props.memory.id);
+    return;
+  }
   store.openDrawer(props.memory.id);
 }
+
+const isItemSelected = computed(() => store.isSelected(props.memory.id));
 
 function toggleMenu(e: Event) {
   e.stopPropagation();
@@ -121,10 +151,10 @@ function formatTime(iso: string): string {
 <template>
   <article
     class="memory-page"
-    :class="[mode === 'grid' ? 'mode-grid' : 'mode-list', { 'kb-focused': focused }]"
+    :class="[mode === 'grid' ? 'mode-grid' : 'mode-list', { 'kb-focused': focused, 'is-selected': isItemSelected }]"
     @click="open"
     tabindex="0"
-    @keydown.enter="open"
+    @keydown.enter="open($event as unknown as MouseEvent)"
   >
     <div class="page-header">
       <div class="page-header-row">
@@ -157,6 +187,7 @@ function formatTime(iso: string): string {
         </span>
         <span class="meta-sep" v-if="memory.namespace !== 'global'">&middot;</span>
         <span class="meta-ns" v-if="memory.namespace !== 'global'">{{ memory.namespace }}</span>
+        <span v-if="memory.source" class="meta-source">{{ memory.source }}</span>
         <span class="meta-time">{{ formatTime(memory.updated_at) }}</span>
       </div>
     </div>
@@ -230,6 +261,12 @@ function formatTime(iso: string): string {
   outline: 2px solid var(--colour-border-focus);
   outline-offset: 2px;
   box-shadow: var(--shadow-focus);
+}
+
+.memory-page.is-selected {
+  border-color: var(--colour-accent);
+  box-shadow: 0 0 0 1px var(--colour-accent), var(--shadow-card);
+  background: color-mix(in srgb, var(--colour-accent) 5%, var(--colour-surface-card));
 }
 
 /* ── List mode ── */
@@ -404,6 +441,19 @@ function formatTime(iso: string): string {
 
 .meta-ns {
   color: var(--colour-text-disabled);
+}
+
+.meta-source {
+  display: inline-flex;
+  align-items: center;
+  padding: 0px 4px;
+  border-radius: 3px;
+  background: var(--colour-surface-overlay);
+  color: var(--colour-text-disabled);
+  font-size: 9px;
+  font-weight: var(--font-medium);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-caps);
 }
 
 .meta-time {

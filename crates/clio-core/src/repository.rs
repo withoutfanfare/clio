@@ -953,6 +953,165 @@ pub fn list_namespaces(conn: &Connection) -> Result<Vec<String>> {
     Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
 }
 
+/// Return namespace details: name, memory count, and last activity date.
+pub fn namespace_details(conn: &Connection) -> Result<Vec<NamespaceInfo>> {
+    let mut stmt = conn.prepare(
+        "SELECT namespace, COUNT(*) as cnt,
+                MAX(COALESCE(archived_at, updated_at)) as last_activity
+         FROM memories
+         GROUP BY namespace
+         ORDER BY namespace",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok(NamespaceInfo {
+            name: row.get(0)?,
+            memory_count: row.get(1)?,
+            last_activity: row.get(2)?,
+        })
+    })?;
+    Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+}
+
+/// Delete a namespace if it has no memories. Returns true if deleted.
+pub fn delete_empty_namespace(conn: &Connection, namespace: &str) -> Result<bool> {
+    let count: u32 = conn.query_row(
+        "SELECT COUNT(*) FROM memories WHERE namespace = ?1",
+        params![namespace],
+        |row| row.get(0),
+    )?;
+    if count > 0 {
+        return Err(ClioError::Validation(format!(
+            "cannot delete namespace '{}': still has {} memories",
+            namespace, count
+        )));
+    }
+    // Namespace only exists as a value on memories — no separate table.
+    // If count is 0, the namespace is already effectively deleted.
+    Ok(true)
+}
+
+/// Rename a namespace: update all memories from old name to new name.
+pub fn rename_namespace(conn: &Connection, from: &str, to: &str) -> Result<usize> {
+    if to.is_empty() || to.len() > 120 {
+        return Err(ClioError::Validation(
+            "namespace must be between 1 and 120 characters.".into(),
+        ));
+    }
+    let now = now_utc();
+    let count = conn.execute(
+        "UPDATE memories SET namespace = ?1, updated_at = ?2 WHERE namespace = ?3",
+        params![to, now, from],
+    )?;
+    Ok(count)
+}
+
+/// Bulk archive multiple memories in a single transaction.
+pub fn archive_bulk(conn: &Connection, ids: &[String]) -> Result<u32> {
+    if ids.is_empty() {
+        return Ok(0);
+    }
+    let now = now_utc();
+    conn.execute_batch("SAVEPOINT bulk_archive")?;
+    let mut count = 0u32;
+    for id in ids {
+        let affected = conn.execute(
+            "UPDATE memories SET archived_at = COALESCE(archived_at, ?1), updated_at = ?1 WHERE id = ?2",
+            params![now, id],
+        )?;
+        count += affected as u32;
+    }
+    conn.execute_batch("RELEASE bulk_archive")?;
+    Ok(count)
+}
+
+/// Bulk delete multiple memories in a single transaction.
+pub fn delete_bulk(conn: &Connection, ids: &[String]) -> Result<u32> {
+    if ids.is_empty() {
+        return Ok(0);
+    }
+    conn.execute_batch("SAVEPOINT bulk_delete")?;
+    let mut count = 0u32;
+    for id in ids {
+        let affected = conn.execute(
+            "DELETE FROM memories WHERE id = ?1",
+            params![id],
+        )?;
+        count += affected as u32;
+    }
+    conn.execute_batch("RELEASE bulk_delete")?;
+    Ok(count)
+}
+
+/// Bulk add a tag to multiple memories.
+pub fn add_tag_bulk(conn: &Connection, ids: &[String], tag: &str) -> Result<u32> {
+    if ids.is_empty() || tag.is_empty() {
+        return Ok(0);
+    }
+    let normalised = tag.trim().to_lowercase();
+    let now = now_utc();
+    conn.execute_batch("SAVEPOINT bulk_tag_add")?;
+    let mut count = 0u32;
+    for id in ids {
+        // Insert tag if not already present
+        let affected = conn.execute(
+            "INSERT OR IGNORE INTO memory_tags (memory_id, tag, created_at) VALUES (?1, ?2, ?3)",
+            params![id, normalised, now],
+        )?;
+        if affected > 0 {
+            // Update tags_text
+            let tags: Vec<String> = {
+                let mut stmt = conn.prepare(
+                    "SELECT tag FROM memory_tags WHERE memory_id = ?1 ORDER BY tag",
+                )?;
+                let rows = stmt.query_map(params![id], |row| row.get(0))?;
+                rows.collect::<std::result::Result<Vec<_>, _>>()?
+            };
+            let tags_text = tags.join(" ");
+            conn.execute(
+                "UPDATE memories SET tags_text = ?1, updated_at = ?2 WHERE id = ?3",
+                params![tags_text, now, id],
+            )?;
+            count += 1;
+        }
+    }
+    conn.execute_batch("RELEASE bulk_tag_add")?;
+    Ok(count)
+}
+
+/// Bulk remove a tag from multiple memories.
+pub fn remove_tag_bulk(conn: &Connection, ids: &[String], tag: &str) -> Result<u32> {
+    if ids.is_empty() || tag.is_empty() {
+        return Ok(0);
+    }
+    let normalised = tag.trim().to_lowercase();
+    let now = now_utc();
+    conn.execute_batch("SAVEPOINT bulk_tag_remove")?;
+    let mut count = 0u32;
+    for id in ids {
+        let affected = conn.execute(
+            "DELETE FROM memory_tags WHERE memory_id = ?1 AND tag = ?2",
+            params![id, normalised],
+        )?;
+        if affected > 0 {
+            let tags: Vec<String> = {
+                let mut stmt = conn.prepare(
+                    "SELECT tag FROM memory_tags WHERE memory_id = ?1 ORDER BY tag",
+                )?;
+                let rows = stmt.query_map(params![id], |row| row.get(0))?;
+                rows.collect::<std::result::Result<Vec<_>, _>>()?
+            };
+            let tags_text = tags.join(" ");
+            conn.execute(
+                "UPDATE memories SET tags_text = ?1, updated_at = ?2 WHERE id = ?3",
+                params![tags_text, now, id],
+            )?;
+            count += 1;
+        }
+    }
+    conn.execute_batch("RELEASE bulk_tag_remove")?;
+    Ok(count)
+}
+
 // ---------------------------------------------------------------------------
 // Link
 // ---------------------------------------------------------------------------

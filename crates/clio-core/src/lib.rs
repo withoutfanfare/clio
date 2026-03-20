@@ -1,4 +1,5 @@
 pub mod assembly;
+pub mod backup;
 pub mod cache;
 pub mod capture;
 pub mod config;
@@ -8,6 +9,7 @@ pub mod db;
 pub mod embeddings;
 pub mod error;
 pub mod export;
+pub mod integrity;
 pub mod migrate;
 pub mod migrations;
 pub mod models;

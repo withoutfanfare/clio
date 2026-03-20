@@ -5,6 +5,9 @@ import SidePanel from "./components/SidePanel.vue";
 import MemoryDrawer from "./components/MemoryDrawer.vue";
 import CommandPalette from "./components/CommandPalette.vue";
 import ShortcutHelp from "./components/ShortcutHelp.vue";
+import QuickCreate from "./components/QuickCreate.vue";
+import BulkActionBar from "./components/BulkActionBar.vue";
+import NotificationToast from "./components/NotificationToast.vue";
 import { useMemoryStore } from "@/stores/memories";
 import { useKeyboard } from "@/composables/useKeyboard";
 import * as api from "@/api/memory";
@@ -71,6 +74,8 @@ useKeyboard({
       store.closePalette();
     } else if (store.drawerOpen) {
       store.closeDrawer();
+    } else if (store.selectionMode) {
+      store.clearSelection();
     } else {
       store.focusedIndex = -1;
     }
@@ -119,6 +124,9 @@ onMounted(() => {
     <MemoryDrawer />
     <CommandPalette />
     <ShortcutHelp />
+    <QuickCreate />
+    <BulkActionBar />
+    <NotificationToast />
   </div>
 </template>
 

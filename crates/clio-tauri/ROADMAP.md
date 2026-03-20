@@ -8,7 +8,8 @@ Local-first AI memory backbone — desktop UI for managing persistent, searchabl
 - **Priority:** P2 (important)
 - **Size:** M (1-3hrs)
 - **Added:** 2026-03-19
-- **Status:** pending
+- **Status:** completed
+- **Completed:** 2026-03-20
 - **Description:** As the memory database grows, users need to perform bulk operations — selecting multiple memories to archive, delete, or tag in one action. Currently each memory must be managed individually, which becomes tedious when curating hundreds of entries. A checkbox-based selection model with a floating action bar would dramatically improve memory hygiene workflows.
 - **Acceptance criteria:**
   - Shift-click and Cmd-click multi-select in memory list views
@@ -21,7 +22,8 @@ Local-first AI memory backbone — desktop UI for managing persistent, searchabl
 - **Priority:** P3 (nice-to-have)
 - **Size:** M (1-3hrs)
 - **Added:** 2026-03-19
-- **Status:** pending
+- **Status:** completed
+- **Completed:** 2026-03-20
 - **Description:** Users should be able to export their memory database (or a filtered subset) to JSON or Markdown for backup, sharing with teammates, or migrating between machines. Import would allow restoring from backup or ingesting curated memory sets. This supports Clio's local-first philosophy by giving users full data portability.
 - **Acceptance criteria:**
   - Export all memories or a filtered/selected subset to JSON or Markdown format
@@ -47,7 +49,8 @@ Local-first AI memory backbone — desktop UI for managing persistent, searchabl
 - **Priority:** P2 (important)
 - **Size:** S (< 1hr)
 - **Added:** 2026-03-19
-- **Status:** pending
+- **Status:** completed
+- **Completed:** 2026-03-20
 - **Description:** As the memory database grows through automated captures and manual entries, data integrity issues can accumulate silently — broken links pointing to deleted memories, orphaned memories without a namespace, and metadata inconsistencies (e.g. tags referencing non-existent tag IDs). A periodic integrity check that surfaces these issues would help users maintain a healthy memory database.
 - **Acceptance criteria:**
   - Integrity check detectable from the UI (settings or tools menu)
@@ -88,7 +91,8 @@ Local-first AI memory backbone — desktop UI for managing persistent, searchabl
 - **Priority:** P3 (nice-to-have)
 - **Size:** S (< 1hr)
 - **Added:** 2026-03-19
-- **Status:** pending
+- **Status:** completed
+- **Completed:** 2026-03-20
 - **Description:** Clio's local-first philosophy means users own their data, but there is no structured backup mechanism. If the SQLite database file is corrupted or a machine is replaced, all memories are lost. A backup command (accessible from the Tauri menu bar and via the CLI) that copies the database to a timestamped archive, and a restore command that validates and replaces from a backup, would give users confidence in Clio's durability promise.
 - **Acceptance criteria:**
   - Backup command creates a timestamped copy of the SQLite database file (e.g. clio-backup-2026-03-19T14-30.db)
@@ -114,7 +118,8 @@ Local-first AI memory backbone — desktop UI for managing persistent, searchabl
 - **Priority:** P3 (nice-to-have)
 - **Size:** S (< 1hr)
 - **Added:** 2026-03-20
-- **Status:** pending
+- **Status:** completed
+- **Completed:** 2026-03-20
 - **Description:** The desktop UI relies on manual navigation or periodic polling to discover memories created by external tools (CLI `clio remember`, MCP `memory_remember` calls, automated captures) during active sessions. A lightweight notification system that detects new memory arrivals and displays a toast — showing title, namespace, and source — would make the desktop app a live awareness hub for cross-tool memory activity. This is especially valuable during Claude Code sessions where Clio hooks may capture multiple memories in quick succession.
 - **Acceptance criteria:**
   - New memories detected within 5 seconds of creation (leveraging existing polling infrastructure)
@@ -128,7 +133,8 @@ Local-first AI memory backbone — desktop UI for managing persistent, searchabl
 - **Priority:** P2 (important)
 - **Size:** S (< 1hr)
 - **Added:** 2026-03-19
-- **Status:** pending
+- **Status:** completed
+- **Completed:** 2026-03-20
 - **Description:** Namespaces are a core organisational concept in Clio, but there is no dedicated UI for managing them beyond viewing the namespace list. Users cannot rename a namespace (requiring manual re-assignment of all memories), merge two namespaces that have become redundant, or create a new namespace before memories are assigned to it. A namespace management view would make this first-class organisational concept properly manageable.
 - **Acceptance criteria:**
   - Dedicated namespace management view accessible from settings or main navigation
@@ -157,7 +163,8 @@ Local-first AI memory backbone — desktop UI for managing persistent, searchabl
 - **Priority:** P2 (important)
 - **Size:** S (< 1hr)
 - **Added:** 2026-03-21
-- **Status:** pending
+- **Status:** completed
+- **Completed:** 2026-03-20
 - **Description:** Memories are currently created via CLI or MCP tools and can be archived from the desktop UI, but their content cannot be edited in place. As understanding evolves — decisions are revised, observations refined, constraints clarified — the original memory text becomes outdated. Allowing inline editing from the detail panel with a simple revision history (previous versions stored as metadata) would keep important memories current without requiring delete-and-recreate workflows.
 - **Acceptance criteria:**
   - Edit button on the memory detail panel enables inline content editing
@@ -171,7 +178,8 @@ Local-first AI memory backbone — desktop UI for managing persistent, searchabl
 - **Priority:** P2 (important)
 - **Size:** S (< 1hr)
 - **Added:** 2026-03-20
-- **Status:** pending
+- **Status:** completed
+- **Completed:** 2026-03-20
 - **Description:** Memories are currently created exclusively via CLI (`clio remember`) or MCP tool calls (`memory_remember`) from external AI sessions. The desktop UI supports viewing, searching, pinning, and archiving memories but has no way to create one directly. When a user has a thought, decision, or observation while browsing existing memories, they must switch to a terminal to capture it. A quick-create dialog (Cmd+N) with namespace selector, tag presets, and kind picker would make the desktop UI a complete memory management environment rather than a read-only viewer.
 - **Acceptance criteria:**
   - Cmd+N opens a quick-create dialog with fields: content (textarea), namespace (dropdown from existing namespaces), tags (tag input with autocomplete), kind (dropdown: decision, constraint, observation, summary)
@@ -185,7 +193,8 @@ Local-first AI memory backbone — desktop UI for managing persistent, searchabl
 - **Priority:** P2 (important)
 - **Size:** S (< 1hr)
 - **Added:** 2026-03-21
-- **Status:** pending
+- **Status:** completed
+- **Completed:** 2026-03-20
 - **Description:** The completed lazy-load optimisation improved panel rendering, but search queries still hit the database on every keystroke (after debounce). Developers frequently search for the same terms repeatedly during a session — caching recent search results in memory and invalidating only when the underlying data changes (new memory created, memory edited, memory archived) would make repeated searches instant and reduce unnecessary database load during intensive memory management sessions.
 - **Acceptance criteria:**
   - Recent search results cached in memory (last 20 unique queries)
@@ -199,7 +208,8 @@ Local-first AI memory backbone — desktop UI for managing persistent, searchabl
 - **Priority:** P2 (important)
 - **Size:** S (< 1hr)
 - **Added:** 2026-03-20
-- **Status:** pending
+- **Status:** completed
+- **Completed:** 2026-03-20
 - **Description:** Memories are created by multiple tools — CLI (`clio remember`), MCP (`memory_remember`), desktop UI (once the quick-create dialog ships), and automated hooks — but there is no structured attribution showing which tool created each memory. During memory hygiene sessions, users need to understand capture patterns: are most memories coming from automated hooks (potentially low-quality) or deliberate CLI captures (likely higher quality)? Source attribution would support filtering, quality assessment, and help users tune their capture pipeline by identifying which tools produce the most valuable memories.
 - **Acceptance criteria:**
   - Memory metadata includes a `source` field populated at creation time (values: cli, mcp, desktop, hook, import)

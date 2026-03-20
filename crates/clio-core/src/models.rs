@@ -255,6 +255,14 @@ pub struct RecentEntry {
     pub timestamp: String,
 }
 
+/// Namespace information with memory count and last activity.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NamespaceInfo {
+    pub name: String,
+    pub memory_count: u32,
+    pub last_activity: Option<String>,
+}
+
 /// Generate a new UUIDv7 string.
 pub fn new_id() -> String {
     Uuid::now_v7().to_string()

@@ -176,6 +176,19 @@ async function createProject() {
         </svg>
         Statistics
       </button>
+      <button class="footer-btn" @click="router.push({ name: 'namespaces' })">
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+          <path d="M2 4.5A1.5 1.5 0 013.5 3h3.379a1.5 1.5 0 011.06.44l.622.62a1.5 1.5 0 001.06.44H12.5A1.5 1.5 0 0114 6v5.5a1.5 1.5 0 01-1.5 1.5h-9A1.5 1.5 0 012 11.5v-7z" stroke="currentColor" stroke-width="1.1"/>
+        </svg>
+        Manage namespaces
+      </button>
+      <button class="footer-btn" @click="router.push({ name: 'tools' })">
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+          <path d="M6 2L4.5 5.5 2 6l2 2-.5 3.5L6 10l2.5 1.5L9 8l2-2-2.5-.5L6 2z" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/>
+          <circle cx="12" cy="12" r="2" stroke="currentColor" stroke-width="1.2"/>
+        </svg>
+        Tools
+      </button>
       <button class="footer-btn" @click="store.toggleCompose()">
         <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
           <path d="M8 3v10M3 8h10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
