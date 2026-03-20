@@ -122,6 +122,46 @@ export const useMemoryStore = defineStore("memories", () => {
     localStorage.setItem("clio-view-mode", mode);
   }
 
+  // Pinned memories (persisted to localStorage, max 25)
+  const MAX_PINS = 25;
+  const pinnedIds = ref<string[]>(
+    localStorage.getItem("clio-pinned-ids")
+      ? JSON.parse(localStorage.getItem("clio-pinned-ids")!)
+      : [],
+  );
+
+  const pinnedItems = computed(() =>
+    pinnedIds.value
+      .map((id) => items.value.find((m) => m.id === id))
+      .filter((m): m is RecallItem => m !== undefined),
+  );
+
+  const unpinnedItems = computed(() =>
+    items.value.filter((m) => !pinnedIds.value.includes(m.id)),
+  );
+
+  const pinnedCount = computed(() => pinnedIds.value.length);
+
+  function isPinned(memoryId: string): boolean {
+    return pinnedIds.value.includes(memoryId);
+  }
+
+  function togglePin(memoryId: string) {
+    if (isPinned(memoryId)) {
+      pinnedIds.value = pinnedIds.value.filter((id) => id !== memoryId);
+    } else {
+      if (pinnedIds.value.length >= MAX_PINS) return;
+      pinnedIds.value = [...pinnedIds.value, memoryId];
+    }
+    localStorage.setItem("clio-pinned-ids", JSON.stringify(pinnedIds.value));
+  }
+
+  // Focused memory index for keyboard navigation
+  const focusedIndex = ref(-1);
+
+  // Shortcut help overlay
+  const shortcutHelpOpen = ref(false);
+
   // Compose state
   const composeOpen = ref(false);
 
@@ -388,5 +428,13 @@ export const useMemoryStore = defineStore("memories", () => {
     stopPolling,
     pausePolling,
     resumePolling,
+    pinnedIds,
+    pinnedItems,
+    unpinnedItems,
+    pinnedCount,
+    isPinned,
+    togglePin,
+    focusedIndex,
+    shortcutHelpOpen,
   };
 });

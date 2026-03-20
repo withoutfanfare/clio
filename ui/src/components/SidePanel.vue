@@ -90,6 +90,14 @@ async function createProject() {
       </div>
     </div>
 
+    <!-- Pinned count -->
+    <div v-if="store.pinnedCount > 0" class="pinned-badge">
+      <svg width="12" height="12" viewBox="0 0 16 16" fill="none">
+        <path d="M9.828 1.172a1 1 0 011.414 0l3.586 3.586a1 1 0 010 1.414L12 9l-1 4-4.5-1.5L3 15l.5-3.5L2 7l3-2.828 4.828-3z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round" fill="none"/>
+      </svg>
+      <span>{{ store.pinnedCount }} pinned</span>
+    </div>
+
     <!-- Section label -->
     <div class="section-label">Namespaces</div>
 
@@ -236,6 +244,18 @@ async function createProject() {
   color: var(--colour-text-disabled);
   font-variant-numeric: tabular-nums;
   line-height: 1;
+}
+
+/* ── Pinned Badge ── */
+.pinned-badge {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px var(--space-2);
+  margin-bottom: var(--space-2);
+  font-size: 10px;
+  color: var(--colour-accent);
+  font-variant-numeric: tabular-nums;
 }
 
 /* ── Section Label ── */

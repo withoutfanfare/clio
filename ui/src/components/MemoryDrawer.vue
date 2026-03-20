@@ -88,6 +88,12 @@ function onDownload() {
   menuOpen.value = false;
 }
 
+function onTogglePin() {
+  if (!store.drawerMemory) return;
+  store.togglePin(store.drawerMemory.id);
+  menuOpen.value = false;
+}
+
 async function archiveMemory() {
   if (!store.drawerMemory) return;
   try {
@@ -193,6 +199,9 @@ function formatDate(iso: string): string {
               </button>
               <Transition name="fade">
                 <div v-if="menuOpen" class="overflow-menu">
+                  <button class="menu-item" @click="onTogglePin">
+                    {{ store.drawerMemory && store.isPinned(store.drawerMemory.id) ? "Unpin" : "Pin to top" }}
+                  </button>
                   <button class="menu-item" @click="onCopy">
                     {{ copied ? "Copied!" : "Copy as Markdown" }}
                   </button>
