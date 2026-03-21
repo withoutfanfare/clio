@@ -219,7 +219,7 @@ function formatTime(iso: string): string {
 
 .memory-page.is-selected {
   border-color: var(--colour-accent);
-  box-shadow: 0 0 0 1px var(--colour-accent), var(--shadow-card);
+  box-shadow: 0 0 0 1px var(--colour-accent), var(--glass-glow);
   background: color-mix(in srgb, var(--colour-accent) 5%, var(--colour-surface-card));
 }
 

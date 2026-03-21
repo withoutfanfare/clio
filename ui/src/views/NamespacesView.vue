@@ -107,15 +107,20 @@ async function applyMerge() {
   }
 }
 
-async function deleteNs(ns: string) {
+async function deleteNs(ns: string, memoryCount: number) {
   if (confirmingDelete.value !== ns) {
     confirmingDelete.value = ns;
     return;
   }
   error.value = null;
   try {
-    await api.deleteNamespace(ns);
-    success.value = `Namespace '${ns}' deleted`;
+    if (memoryCount > 0) {
+      const count = await api.purgeNamespace(ns);
+      success.value = `Deleted namespace '${ns}' and ${count} ${count === 1 ? "memory" : "memories"}`;
+    } else {
+      await api.deleteNamespace(ns);
+      success.value = `Namespace '${ns}' deleted`;
+    }
     confirmingDelete.value = null;
     store.invalidateSearchCache();
     await loadNamespaces();
@@ -235,11 +240,15 @@ onMounted(() => {
               <button
                 class="ns-action-btn"
                 :class="{ danger: confirmingDelete === ns.name }"
-                @click="deleteNs(ns.name)"
-                :title="ns.memory_count > 0 ? `Cannot delete: ${ns.memory_count} memories` : 'Delete empty namespace'"
-                :disabled="ns.memory_count > 0 && confirmingDelete !== ns.name"
+                @click="deleteNs(ns.name, ns.memory_count)"
+                :title="confirmingDelete === ns.name
+                  ? `Click again to delete ${ns.memory_count} ${ns.memory_count === 1 ? 'memory' : 'memories'}`
+                  : 'Delete namespace'"
               >
-                <svg width="12" height="12" viewBox="0 0 16 16" fill="none">
+                <template v-if="confirmingDelete === ns.name && ns.memory_count > 0">
+                  Delete {{ ns.memory_count }}?
+                </template>
+                <svg v-else width="12" height="12" viewBox="0 0 16 16" fill="none">
                   <path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
                 </svg>
               </button>

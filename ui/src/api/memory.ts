@@ -243,6 +243,10 @@ export async function deleteNamespace(namespace: string): Promise<boolean> {
   return invoke<boolean>("cmd_delete_namespace", { namespace });
 }
 
+export async function purgeNamespace(namespace: string): Promise<number> {
+  return invoke<number>("cmd_purge_namespace", { namespace });
+}
+
 // Integrity checks
 
 export async function integrityCheck(): Promise<IntegrityReport> {

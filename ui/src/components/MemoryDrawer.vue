@@ -575,9 +575,23 @@ function formatDate(iso: string): string {
   opacity: 0.7;
 }
 
+.meta-row {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.meta-label {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--color-text-tertiary);
+}
+
 .meta-source-value {
-  font-size: var(--text-sm);
-  color: var(--colour-text-secondary);
+  font-size: 13px;
+  color: var(--color-text-secondary);
   padding: var(--space-1) 0;
   text-transform: capitalize;
 }

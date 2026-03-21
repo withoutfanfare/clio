@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed } from "vue";
+import { ref, computed, nextTick } from "vue";
 import { SButton, SFormField, SInput, SSidebarLink, SKbd } from "@stuntrocket/ui";
 import { useMemoryStore } from "@/stores/memories";
 import { useRouter } from "vue-router";
@@ -8,6 +8,43 @@ import * as api from "@/api/memory";
 
 const store = useMemoryStore();
 const router = useRouter();
+
+// Context menu state
+const ctxMenu = ref<{ x: number; y: number; ns: string } | null>(null);
+const ctxConfirming = ref(false);
+
+function onContextMenu(e: MouseEvent, ns: string) {
+  e.preventDefault();
+  ctxConfirming.value = false;
+  ctxMenu.value = { x: e.clientX, y: e.clientY, ns };
+  nextTick(() => document.addEventListener("click", closeCtxMenu, { once: true }));
+}
+
+function closeCtxMenu() {
+  ctxMenu.value = null;
+  ctxConfirming.value = false;
+}
+
+async function ctxDelete() {
+  if (!ctxMenu.value) return;
+  if (!ctxConfirming.value) {
+    ctxConfirming.value = true;
+    return;
+  }
+  const ns = ctxMenu.value.ns;
+  try {
+    await api.purgeNamespace(ns);
+    ctxMenu.value = null;
+    ctxConfirming.value = false;
+    if (store.selectedNamespace === ns) {
+      selectNamespace(null);
+    }
+    await store.fetchNamespaces();
+    store.loadRecent();
+  } catch {
+    // Deletion failed
+  }
+}
 
 const showNewProject = ref(false);
 const newProjectDir = ref("");
@@ -76,29 +113,6 @@ async function createProject() {
 
 <template>
   <aside class="side-panel">
-    <!-- Brand / Memory count -->
-    <div class="panel-brand">
-      <div class="brand-icon">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
-          <circle cx="12" cy="12" r="3" fill="currentColor" opacity="0.8"/>
-          <circle cx="12" cy="12" r="8" stroke="currentColor" stroke-width="1.5" opacity="0.4"/>
-          <circle cx="12" cy="12" r="11" stroke="currentColor" stroke-width="0.75" opacity="0.2"/>
-        </svg>
-      </div>
-      <div class="brand-text">
-        <span class="brand-name">Clio</span>
-        <span class="brand-count">{{ memoryCount }} memories</span>
-      </div>
-    </div>
-
-    <!-- Pinned count -->
-    <div v-if="store.pinnedCount > 0" class="pinned-badge">
-      <svg width="12" height="12" viewBox="0 0 16 16" fill="none">
-        <path d="M9.828 1.172a1 1 0 011.414 0l3.586 3.586a1 1 0 010 1.414L12 9l-1 4-4.5-1.5L3 15l.5-3.5L2 7l3-2.828 4.828-3z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round" fill="none"/>
-      </svg>
-      <span>{{ store.pinnedCount }} pinned</span>
-    </div>
-
     <!-- Section label -->
     <div class="section-label">Namespaces</div>
 
@@ -117,6 +131,7 @@ async function createProject() {
         :key="ns"
         :active="store.selectedNamespace === ns"
         @click="selectNamespace(ns)"
+        @contextmenu="onContextMenu($event, ns)"
       >
         <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
           <path d="M2 4.5A1.5 1.5 0 013.5 3h3.379a1.5 1.5 0 011.06.44l.622.62a1.5 1.5 0 001.06.44H12.5A1.5 1.5 0 0114 6v5.5a1.5 1.5 0 01-1.5 1.5h-9A1.5 1.5 0 012 11.5v-7z" stroke="currentColor" stroke-width="1.1"/>
@@ -124,6 +139,26 @@ async function createProject() {
         <span>{{ ns }}</span>
       </SSidebarLink>
     </nav>
+
+    <!-- Right-click context menu -->
+    <Teleport to="body">
+      <div
+        v-if="ctxMenu"
+        class="ctx-menu"
+        :style="{ left: ctxMenu.x + 'px', top: ctxMenu.y + 'px' }"
+        @click.stop
+      >
+        <button
+          class="ctx-item danger"
+          @click="ctxDelete"
+        >
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+            <path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+          </svg>
+          {{ ctxConfirming ? `Delete "${ctxMenu.ns}" and all memories?` : `Delete project` }}
+        </button>
+      </div>
+    </Teleport>
 
     <div class="panel-actions">
       <SButton variant="ghost" size="sm" @click="toggleNewProject" class="action-btn-full">
@@ -206,16 +241,19 @@ async function createProject() {
 .side-panel {
   width: 220px;
   min-width: 220px;
-  background: var(--colour-surface-panel);
-  backdrop-filter: var(--glass-blur);
-  -webkit-backdrop-filter: var(--glass-blur);
-  border: 1px solid var(--glass-border);
+  background: rgba(18, 16, 22, 0.82);
+  backdrop-filter: blur(24px) saturate(1.5);
+  -webkit-backdrop-filter: blur(24px) saturate(1.5);
+  border: 1px solid rgba(255, 255, 255, 0.10);
   border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-lg), var(--glass-glow-strong);
+  box-shadow:
+    0 4px 24px rgba(0, 0, 0, 0.5),
+    inset 0 1px 0 0 rgba(255, 255, 255, 0.08),
+    inset 0 0 20px rgba(139, 92, 246, 0.03);
   display: flex;
   flex-direction: column;
-  padding: var(--space-4) var(--space-3);
-  overflow-y: auto;
+  padding: var(--space-2) var(--space-3) var(--space-3);
+  overflow: hidden;
   z-index: 10;
 }
 
@@ -289,9 +327,35 @@ async function createProject() {
   flex: 1;
   display: flex;
   flex-direction: column;
-  gap: 1px;
+  gap: 2px;
   overflow-y: auto;
   min-height: 0;
+}
+
+/* Sidebar link overrides — fix icon shrinking, add gap, improve readability */
+.panel-nav :deep(button),
+.panel-footer :deep(button) {
+  gap: var(--space-2);
+  padding-top: 10px;
+  padding-bottom: 10px;
+  padding-left: var(--space-2) !important;
+  font-size: 13px;
+  line-height: 1.65;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.panel-nav :deep(button) svg,
+.panel-footer :deep(button) svg {
+  flex-shrink: 0;
+}
+
+.panel-nav :deep(button) span,
+.panel-footer :deep(button) span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
 }
 
 /* ── Actions ── */
@@ -359,6 +423,47 @@ async function createProject() {
   border-top: 1px solid var(--color-border-subtle);
   display: flex;
   flex-direction: column;
-  gap: 1px;
+  gap: 2px;
+}
+
+/* ── Context Menu ── */
+.ctx-menu {
+  position: fixed;
+  z-index: 500;
+  min-width: 180px;
+  background: var(--colour-surface-dropdown);
+  border: 1px solid rgba(255, 255, 255, 0.10);
+  border-radius: var(--radius-md);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+  padding: 4px;
+}
+
+.ctx-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  padding: 8px 12px;
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-sm);
+  color: var(--color-text-secondary);
+  font-size: 13px;
+  cursor: pointer;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.ctx-item:hover {
+  background: var(--color-surface-hover);
+  color: var(--color-text-primary);
+}
+
+.ctx-item.danger {
+  color: var(--color-danger);
+}
+
+.ctx-item.danger:hover {
+  background: var(--color-danger-subtle);
 }
 </style>

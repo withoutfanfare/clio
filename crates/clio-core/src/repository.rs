@@ -990,6 +990,20 @@ pub fn delete_empty_namespace(conn: &Connection, namespace: &str) -> Result<bool
     Ok(true)
 }
 
+/// Delete a namespace and all its memories. Returns count of deleted memories.
+pub fn delete_namespace_with_memories(conn: &Connection, namespace: &str) -> Result<usize> {
+    if namespace.is_empty() || namespace == "global" {
+        return Err(ClioError::Validation(
+            "cannot delete the global namespace".into(),
+        ));
+    }
+    let count = conn.execute(
+        "DELETE FROM memories WHERE namespace = ?1",
+        params![namespace],
+    )?;
+    Ok(count)
+}
+
 /// Rename a namespace: update all memories from old name to new name.
 pub fn rename_namespace(conn: &Connection, from: &str, to: &str) -> Result<usize> {
     if to.is_empty() || to.len() > 120 {

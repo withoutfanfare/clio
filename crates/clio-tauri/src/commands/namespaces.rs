@@ -71,6 +71,20 @@ pub fn cmd_delete_namespace(
 }
 
 #[tauri::command]
+pub fn cmd_purge_namespace(
+    state: State<'_, Mutex<AppState>>,
+    namespace: String,
+) -> Result<u32, CommandError> {
+    let app = state
+        .lock()
+        .map_err(|e| CommandError::Core(format!("Lock poisoned: {e}")))?;
+    let count =
+        clio_core::repository::delete_namespace_with_memories(&app.conn, &namespace)?;
+    app.cache.clear_all();
+    Ok(count as u32)
+}
+
+#[tauri::command]
 pub fn cmd_init_namespace(
     directory: String,
     namespace: String,

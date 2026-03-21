@@ -417,6 +417,9 @@ export const useMemoryStore = defineStore("memories", () => {
 
   function setNamespace(ns: string | null) {
     selectedNamespace.value = ns;
+    // Reset notification tracking so the new namespace's items aren't treated as "new"
+    notificationsInitialised = false;
+    lastKnownIds.clear();
   }
 
   // Drawer

@@ -658,13 +658,13 @@ watch(
 .pinned-list {
   display: flex;
   flex-direction: column;
-  gap: var(--space-2);
+  gap: var(--space-3);
 }
 
 .pinned-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
-  gap: var(--space-2);
+  gap: var(--space-3);
 }
 
 .river {

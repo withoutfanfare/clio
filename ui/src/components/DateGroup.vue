@@ -28,7 +28,7 @@ defineProps<{
 .layout-list {
   display: flex;
   flex-direction: column;
-  gap: var(--space-2);
+  gap: var(--space-3);
 }
 
 .layout-grid {
