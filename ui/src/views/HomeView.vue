@@ -5,12 +5,15 @@ import { SButton, SSelect, SFormField, SEmptyState, SSpinner, SBadge, SKbd } fro
 import ComposeArea from "@/components/ComposeArea.vue";
 import DateGroup from "@/components/DateGroup.vue";
 import MemoryPage from "@/components/MemoryPage.vue";
+import VirtualMemoryList from "@/components/VirtualMemoryList.vue";
 import { useMemoryStore } from "@/stores/memories";
 import { useGroupedMemories } from "@/composables/useGroupedMemories";
+import { useNamespaceColours } from "@/composables/useNamespaceColours";
 import type { GroupBy } from "@/composables/useGroupedMemories";
 
 const store = useMemoryStore();
 const route = useRoute();
+const { getColour } = useNamespaceColours();
 const groupByRef = toRef(store, "groupBy") as Ref<GroupBy>;
 const groups = useGroupedMemories(toRef(store, "unpinnedItems"), groupByRef);
 
@@ -101,6 +104,22 @@ function handleKindChange(value: string) {
   store.setFilterKind(value || null);
 }
 
+/** Namespace counts derived from stats. */
+const namespaceCounts = computed(() => {
+  const map = new Map<string, number>();
+  if (store.currentStats?.by_namespace) {
+    for (const [ns, count] of store.currentStats.by_namespace) {
+      map.set(ns, count);
+    }
+  }
+  return map;
+});
+
+function handleNamespaceSwitch(value: string) {
+  store.setNamespace(value || null);
+  store.loadRecent();
+}
+
 onMounted(() => {
   store.loadRecent();
   store.loadStats();
@@ -133,9 +152,22 @@ watch(
         <span class="river-count">
           {{ store.total }} {{ store.total === 1 ? "memory" : "memories" }}
         </span>
-        <span v-if="store.activeNamespace" class="river-namespace">
-          in <strong>{{ store.activeNamespace }}</strong>
-        </span>
+        <div class="ns-switcher">
+          <select
+            class="ns-select"
+            :value="store.selectedNamespace ?? ''"
+            @change="handleNamespaceSwitch(($event.target as HTMLSelectElement).value)"
+          >
+            <option value="">All namespaces</option>
+            <option
+              v-for="ns in store.allNamespaces"
+              :key="ns"
+              :value="ns"
+            >
+              {{ ns }} ({{ namespaceCounts.get(ns) ?? 0 }})
+            </option>
+          </select>
+        </div>
       </div>
       <div class="header-controls">
         <SButton
@@ -331,22 +363,11 @@ watch(
         </Transition>
       </div>
 
-      <div class="river">
-        <DateGroup
-          v-for="group in groups"
-          :key="group.label"
-          :label="group.label"
-          :mode="store.viewMode"
-        >
-          <MemoryPage
-            v-for="item in group.items"
-            :key="item.id"
-            :memory="item"
-            :mode="store.viewMode"
-            :focused="store.items.indexOf(item) === store.focusedIndex"
-          />
-        </DateGroup>
-      </div>
+      <VirtualMemoryList
+        :groups="groups"
+        :mode="store.viewMode"
+        class="river"
+      />
     </template>
 
     <div v-if="!store.loading && !store.items.length" class="river-empty">
@@ -377,7 +398,10 @@ watch(
 
 <style scoped>
 .home-view {
+  display: flex;
+  flex-direction: column;
   padding-bottom: 64px;
+  min-height: 0;
 }
 
 .river-header {
@@ -408,6 +432,38 @@ watch(
 .river-namespace strong {
   color: var(--color-accent);
   font-weight: 500;
+}
+
+/* ── Namespace Quick-Switch ── */
+.ns-switcher {
+  position: relative;
+}
+
+.ns-select {
+  appearance: none;
+  background: var(--color-surface-hover);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-sm);
+  padding: 3px 24px 3px 8px;
+  font-size: 12px;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  transition: border-color 150ms;
+  background-image: url("data:image/svg+xml,%3Csvg width='10' height='6' viewBox='0 0 10 6' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%239CA3AF' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 6px center;
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ns-select:hover {
+  border-color: var(--color-accent);
+}
+
+.ns-select:focus {
+  outline: 2px solid color-mix(in srgb, var(--color-accent) 55%, transparent);
+  outline-offset: 1px;
 }
 
 /* ── Header Controls ── */
@@ -668,8 +724,9 @@ watch(
 }
 
 .river {
-  display: flex;
-  flex-direction: column;
+  flex: 1;
+  min-height: 300px;
+  max-height: calc(100vh - 200px);
 }
 
 .river-empty {
