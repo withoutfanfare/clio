@@ -1,5 +1,17 @@
 # Clio Tauri — Development Log
 
+## Cycle: 2026-03-25 22:00
+- App: Clio Tauri
+- Items completed:
+  - [Performance] Memory list virtualisation (P2/S) — VirtualMemoryList component with binary-search-based visible row detection, pre-computed offsets for group headers, list cards, and grid rows. Renders only visible items plus buffer of 5 above/below. Auto-scrolls on keyboard navigation (j/k) via focusedIndex watcher. Resets scroll position on filter/sort/namespace changes. ResizeObserver tracks container dimensions. Supports both list and grid modes with configurable row heights.
+  - [UX/UI] Namespace colour coding (P3/S) — useNamespaceColours composable with 12-colour curated palette, DJB2 hash for deterministic colour assignment, localStorage persistence for custom colour overrides. Left border stripe on MemoryPage cards via CSS custom property (--ns-colour). Coloured dot indicator next to namespace name in card meta. Coloured dots replacing folder icons in SidePanel namespace list.
+  - [UX/UI] Namespace quick-switch dropdown (P3/S) — Native select element in the memory list header alongside the count and filter controls. Lists all namespaces with memory count from stats data. "All namespaces" default option. Selecting a namespace calls setNamespace and loadRecent for immediate filtering. Styled to match glass design system.
+- Items attempted but failed: none
+- Branch: feature/virtualisation-namespace-colours-quickswitch
+- Tests passing: yes (cargo check clean, cargo clippy clean excluding pre-existing clio-core warnings, vue-tsc clean excluding pre-existing baseUrl deprecation, vite build clean)
+- Build status: success (Clio.app + Clio_0.1.0_aarch64.dmg bundled, copied to ~/Desktop/TauriBuilds/clio/Clio-2026-03-25-2226.app)
+- Notes: All three items are frontend-only changes — no Rust backend modifications needed. New files: VirtualMemoryList.vue, useNamespaceColours.ts. Modified files: HomeView.vue (virtual list integration, namespace dropdown, layout updates), MemoryPage.vue (namespace colour border stripe and dot), SidePanel.vue (namespace colour dots). The virtualisation uses absolute positioning with translateY transforms for smooth 60fps scrolling, avoiding DOM thrashing.
+
 ## Cycle: 2026-03-20 (bulk roadmap implementation)
 - **App:** Clio Tauri
 - **Items completed:**
