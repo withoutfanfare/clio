@@ -1,5 +1,15 @@
 # Clio Tauri — Development Log
 
+## Cycle: 2026-03-29 21:00
+- App: Clio Tauri
+- Items completed:
+  - [Feature] Add memory deduplication detection with merge suggestions (P2/M) — New `deduplication` module in clio-core with two-strategy duplicate detection: exact content matching via SQL GROUP BY and FTS5 near-duplicate detection using keyword extraction, BM25 scoring, and word-level Jaccard similarity verification. Union-find clustering groups similar pairs. Three new Tauri commands: `cmd_find_duplicates` (scan), `cmd_preview_merge` (preview), `cmd_merge_memories` (execute). Merge operation combines tags, preserves highest confidence/importance, transfers all incoming/outgoing links to the kept memory, and archives merged-away memories. Frontend: deduplication section in ToolsView with scan button, cluster display (exact/similar badges, memory cards with title/namespace/kind/tags/date), merge preview panel showing resulting memory state, and one-click merge with post-merge re-scan. 8 unit tests covering word cleaning, significance filtering, Jaccard similarity, FTS query building, and union-find root finding.
+- Items attempted but failed: none
+- Branch: feature/memory-deduplication
+- Tests passing: yes (cargo test 78 lib + 34 integration, cargo check clean, cargo clippy clean excluding pre-existing warnings, vue-tsc clean excluding pre-existing baseUrl deprecation, vite build clean)
+- Build status: pending
+- Notes: All business logic in clio-core per architecture rules. Near-duplicate detection extracts up to 10 significant words from title + first 200 chars of content, queries FTS5 with OR-joined quoted terms, then verifies with word-level Jaccard similarity (threshold 0.3) to reduce false positives. Clusters limited to 50 max. Merge archives rather than deletes per Clio's "archive means hidden, not deleted" rule. Self-links prevented during link transfer. Pre-existing uncommitted changes on develop (docs, README, MemoryDrawer, MemoryPage) were not included in the feature commit.
+
 ## Cycle: 2026-03-25 22:00
 - App: Clio Tauri
 - Items completed:

@@ -105,7 +105,8 @@ Local-first AI memory backbone — desktop UI for managing persistent, searchabl
 - **Priority:** P2 (important)
 - **Size:** M (1-3hrs)
 - **Added:** 2026-03-20
-- **Status:** pending
+- **Status:** completed
+- **Completed:** 2026-03-29
 - **Description:** As memories accumulate from multiple sources (CLI captures, MCP tool calls, manual entries), content overlap becomes inevitable. The integrity check item detects duplicate content hashes, but near-duplicates — the same concept captured at different times with slightly different wording — require fuzzy matching. A deduplication view that surfaces clusters of similar memories and lets users merge them (combining metadata, preserving the highest-confidence version, reconciling tags) would keep the memory database clean and improve recall quality.
 - **Acceptance criteria:**
   - Deduplication scan using content similarity scoring (FTS5 similarity or embedding cosine distance)
