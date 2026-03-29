@@ -4,11 +4,13 @@ import type {
   BackupResult,
   BulkResult,
   DetectedContext,
+  DuplicateScanResult,
   ImportResult,
   IntegrityReport,
   Memory,
   MemoryLink,
   MemoryStats,
+  MergePreview,
   NamespaceInfo,
   RecallResult,
   RecentEntry,
@@ -271,4 +273,24 @@ export async function restoreBackup(
   backupPath: string,
 ): Promise<RestoreResult> {
   return invoke<RestoreResult>("cmd_restore", { backupPath });
+}
+
+// Deduplication
+
+export async function findDuplicates(): Promise<DuplicateScanResult> {
+  return invoke<DuplicateScanResult>("cmd_find_duplicates");
+}
+
+export async function previewMerge(
+  keepId: string,
+  mergeIds: string[],
+): Promise<MergePreview> {
+  return invoke<MergePreview>("cmd_preview_merge", { keepId, mergeIds });
+}
+
+export async function mergeMemories(
+  keepId: string,
+  mergeIds: string[],
+): Promise<Memory> {
+  return invoke<Memory>("cmd_merge_memories", { keepId, mergeIds });
 }

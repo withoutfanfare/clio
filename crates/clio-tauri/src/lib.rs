@@ -181,6 +181,9 @@ pub fn run() {
             commands::namespaces::cmd_list_backups,
             commands::namespaces::cmd_restore,
             commands::clipboard::cmd_copy_to_clipboard,
+            commands::deduplication::cmd_find_duplicates,
+            commands::deduplication::cmd_preview_merge,
+            commands::deduplication::cmd_merge_memories,
         ])
         .run(tauri::generate_context!())
         .expect("Failed to run Clio");

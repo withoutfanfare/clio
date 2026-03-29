@@ -2,7 +2,14 @@
 import { ref } from "vue";
 import * as api from "@/api/memory";
 import { useMemoryStore } from "@/stores/memories";
-import type { IntegrityReport, BackupListEntry, ImportResult } from "@/api/types";
+import type {
+  IntegrityReport,
+  BackupListEntry,
+  ImportResult,
+  DuplicateScanResult,
+  DuplicateCluster,
+  MergePreview,
+} from "@/api/types";
 
 const store = useMemoryStore();
 
@@ -164,6 +171,84 @@ function formatDate(iso: string): string {
   });
 }
 
+// Deduplication
+const dedupResult = ref<DuplicateScanResult | null>(null);
+const dedupLoading = ref(false);
+const dedupError = ref<string | null>(null);
+const mergePreview = ref<MergePreview | null>(null);
+const mergePreviewCluster = ref<DuplicateCluster | null>(null);
+const mergeLoading = ref(false);
+const mergeMessage = ref<string | null>(null);
+
+async function runDeduplicationScan() {
+  dedupLoading.value = true;
+  dedupError.value = null;
+  mergePreview.value = null;
+  mergePreviewCluster.value = null;
+  mergeMessage.value = null;
+  try {
+    dedupResult.value = await api.findDuplicates();
+  } catch (e) {
+    dedupError.value = String(e);
+  } finally {
+    dedupLoading.value = false;
+  }
+}
+
+async function showMergePreview(cluster: DuplicateCluster) {
+  if (cluster.memories.length < 2) return;
+  const keepId = cluster.memories[0].id;
+  const mergeIds = cluster.memories.slice(1).map((m) => m.id);
+  mergePreviewCluster.value = cluster;
+  mergeLoading.value = true;
+  try {
+    mergePreview.value = await api.previewMerge(keepId, mergeIds);
+  } catch (e) {
+    dedupError.value = String(e);
+  } finally {
+    mergeLoading.value = false;
+  }
+}
+
+async function executeMerge() {
+  if (!mergePreview.value || !mergePreviewCluster.value) return;
+  const keepId = mergePreview.value.keep_id;
+  const mergeIds = mergePreviewCluster.value.memories
+    .slice(1)
+    .map((m) => m.id);
+  mergeLoading.value = true;
+  try {
+    await api.mergeMemories(keepId, mergeIds);
+    mergeMessage.value = `Merged ${mergeIds.length} memories into one`;
+    mergePreview.value = null;
+    mergePreviewCluster.value = null;
+    store.invalidateSearchCache();
+    // Re-scan to update results.
+    await runDeduplicationScan();
+    await store.loadRecent();
+  } catch (e) {
+    dedupError.value = String(e);
+  } finally {
+    mergeLoading.value = false;
+  }
+}
+
+function dismissMergePreview() {
+  mergePreview.value = null;
+  mergePreviewCluster.value = null;
+}
+
+function truncateContent(content: string, maxLen = 120): string {
+  if (content.length <= maxLen) return content;
+  return content.slice(0, maxLen) + "\u2026";
+}
+
+function similarityLabel(sim: number): string {
+  if (sim >= 1.0) return "Exact match";
+  if (sim >= 0.8) return `${Math.round(sim * 100)}% similar`;
+  return `${Math.round(sim * 100)}% similar`;
+}
+
 // Load backups on mount
 loadBackups();
 </script>
@@ -171,6 +256,98 @@ loadBackups();
 <template>
   <div class="tools-view">
     <h1 class="tools-title">Tools</h1>
+
+    <!-- Deduplication Section -->
+    <section class="tools-section">
+      <h2 class="section-title">Deduplication</h2>
+      <p class="section-desc">
+        Scan for duplicate and near-duplicate memories. Review clusters and merge them to keep the database clean.
+      </p>
+      <div class="section-actions">
+        <button class="tool-btn" @click="runDeduplicationScan" :disabled="dedupLoading">
+          {{ dedupLoading ? "Scanning\u2026" : "Scan for duplicates" }}
+        </button>
+      </div>
+
+      <div v-if="dedupError" class="tool-error" @click="dedupError = null">{{ dedupError }}</div>
+      <div v-if="mergeMessage" class="tool-success" @click="mergeMessage = null">{{ mergeMessage }}</div>
+
+      <div v-if="dedupResult" class="dedup-report">
+        <div class="report-summary">
+          <span>Scanned {{ dedupResult.total_scanned }} memories</span>
+          <span v-if="dedupResult.clusters.length === 0" class="report-ok">No duplicates found</span>
+          <span v-else class="report-issues">
+            {{ dedupResult.clusters.length }} cluster{{ dedupResult.clusters.length === 1 ? "" : "s" }} found
+          </span>
+        </div>
+
+        <div v-for="(cluster, ci) in dedupResult.clusters" :key="ci" class="dedup-cluster">
+          <div class="cluster-header">
+            <span class="cluster-badge" :class="cluster.match_type">
+              {{ cluster.match_type === 'exact' ? 'Exact' : similarityLabel(cluster.similarity) }}
+            </span>
+            <span class="cluster-count">{{ cluster.memories.length }} memories</span>
+            <button
+              class="tool-btn-sm"
+              @click="showMergePreview(cluster)"
+              :disabled="mergeLoading"
+            >
+              Preview merge
+            </button>
+          </div>
+
+          <div v-for="mem in cluster.memories" :key="mem.id" class="cluster-memory">
+            <div class="mem-title">{{ mem.title || truncateContent(mem.content, 80) }}</div>
+            <div class="mem-meta">
+              <span class="mem-ns">{{ mem.namespace }}</span>
+              <span class="mem-kind">{{ mem.kind }}</span>
+              <span v-if="mem.tags.length" class="mem-tags">{{ mem.tags.join(', ') }}</span>
+              <span class="mem-date">{{ formatDate(mem.updated_at) }}</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Merge Preview Modal -->
+      <div v-if="mergePreview" class="merge-preview">
+        <h3 class="merge-title">Merge Preview</h3>
+        <p class="section-desc">
+          The first memory will be kept. {{ mergePreview.memories_archived }} other{{ mergePreview.memories_archived === 1 ? '' : 's' }} will be archived.
+        </p>
+        <div class="merge-detail">
+          <div class="merge-field">
+            <span class="merge-label">Title</span>
+            <span class="merge-value">{{ mergePreview.title || '(none)' }}</span>
+          </div>
+          <div class="merge-field">
+            <span class="merge-label">Content</span>
+            <span class="merge-value merge-content">{{ truncateContent(mergePreview.content, 200) }}</span>
+          </div>
+          <div class="merge-field">
+            <span class="merge-label">Tags</span>
+            <span class="merge-value">{{ mergePreview.tags.length ? mergePreview.tags.join(', ') : '(none)' }}</span>
+          </div>
+          <div class="merge-field">
+            <span class="merge-label">Importance</span>
+            <span class="merge-value">{{ mergePreview.importance }}</span>
+          </div>
+          <div v-if="mergePreview.confidence !== null" class="merge-field">
+            <span class="merge-label">Confidence</span>
+            <span class="merge-value">{{ mergePreview.confidence }}</span>
+          </div>
+          <div v-if="mergePreview.links_transferred > 0" class="merge-field">
+            <span class="merge-label">Links transferred</span>
+            <span class="merge-value">{{ mergePreview.links_transferred }}</span>
+          </div>
+        </div>
+        <div class="section-actions">
+          <button class="tool-btn primary" @click="executeMerge" :disabled="mergeLoading">
+            {{ mergeLoading ? "Merging\u2026" : "Confirm merge" }}
+          </button>
+          <button class="tool-btn" @click="dismissMergePreview">Cancel</button>
+        </div>
+      </div>
+    </section>
 
     <!-- Integrity Section -->
     <section class="tools-section">
@@ -397,6 +574,127 @@ loadBackups();
   font-size: var(--text-sm);
   margin-bottom: var(--space-3);
   cursor: pointer;
+}
+
+/* Deduplication */
+.dedup-report {
+  margin-top: var(--space-3);
+}
+
+.dedup-cluster {
+  padding: var(--space-3);
+  background: var(--colour-surface-overlay);
+  border-radius: var(--radius-md);
+  margin-bottom: var(--space-2);
+}
+
+.cluster-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
+}
+
+.cluster-badge {
+  font-size: var(--text-xs);
+  padding: 1px 6px;
+  border-radius: 99px;
+  font-weight: var(--font-medium);
+}
+
+.cluster-badge.exact {
+  background: color-mix(in srgb, var(--colour-danger) 15%, transparent);
+  color: var(--colour-danger);
+}
+
+.cluster-badge.similar {
+  background: color-mix(in srgb, var(--colour-warning) 15%, transparent);
+  color: var(--colour-warning);
+}
+
+.cluster-count {
+  font-size: var(--text-xs);
+  color: var(--colour-text-muted);
+  flex: 1;
+}
+
+.cluster-memory {
+  padding: var(--space-2);
+  border-top: 1px solid var(--glass-border);
+}
+
+.cluster-memory:first-of-type {
+  border-top: none;
+}
+
+.mem-title {
+  font-size: var(--text-sm);
+  color: var(--colour-text);
+  margin-bottom: 2px;
+}
+
+.mem-meta {
+  display: flex;
+  gap: var(--space-2);
+  font-size: var(--text-xs);
+  color: var(--colour-text-muted);
+}
+
+.mem-ns {
+  color: var(--colour-accent);
+}
+
+.mem-kind {
+  text-transform: capitalize;
+}
+
+.mem-tags {
+  opacity: 0.7;
+}
+
+/* Merge Preview */
+.merge-preview {
+  margin-top: var(--space-4);
+  padding: var(--space-4);
+  background: var(--colour-surface-card);
+  border: 1px solid var(--colour-accent);
+  border-radius: var(--radius-lg);
+}
+
+.merge-title {
+  font-size: var(--text-base);
+  font-weight: var(--font-semibold);
+  color: var(--colour-text);
+  margin-bottom: var(--space-2);
+}
+
+.merge-detail {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin-bottom: var(--space-4);
+}
+
+.merge-field {
+  display: flex;
+  gap: var(--space-3);
+  font-size: var(--text-sm);
+}
+
+.merge-label {
+  min-width: 100px;
+  color: var(--colour-text-muted);
+  font-weight: var(--font-medium);
+}
+
+.merge-value {
+  color: var(--colour-text);
+}
+
+.merge-content {
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+  font-size: var(--text-xs);
+  white-space: pre-wrap;
 }
 
 /* Integrity */
