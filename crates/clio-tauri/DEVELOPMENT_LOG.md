@@ -1,5 +1,15 @@
 # Clio Tauri — Development Log
 
+## Cycle: 2026-03-30 00:00
+- App: Clio Tauri
+- Items completed:
+  - [Feature] Add memory context builder for assembling curated knowledge briefs in the desktop UI (P2/M) — New ContextBuilderView.vue with full brief assembly workflow. Search-to-add memories via the existing recall API with debounced input. Block-based architecture: memory blocks (snapshot of title, content, namespace, kind, tags), heading blocks (editable text input), and narrative blocks (editable textarea). Drag-and-drop reordering via native HTML5 drag API with visual drop indicator. Move up/down buttons and remove button per block. Markdown export to clipboard (via @tauri-apps/plugin-clipboard-manager with navigator.clipboard fallback) and to file (Blob download). Builder state auto-saved to sessionStorage for session-scoped persistence. Maximum 50 memories per brief. Duplicate detection prevents adding the same memory twice. New route at /context-builder with lazy-loaded component. Sidebar navigation link added to SidePanel.vue between "Manage namespaces" and "Tools".
+- Items attempted but failed: none
+- Branch: feature/memory-context-builder
+- Tests passing: yes (cargo check clean, cargo clippy clean excluding pre-existing clio-core warnings, vue-tsc clean, vite build clean)
+- Build status: pending
+- Notes: Purely frontend implementation — no Rust backend changes required. The context builder uses the existing recall API for memory search and the existing RecallItem type for memory data. All state management is component-local with sessionStorage persistence, following the pattern established by pinned memories (localStorage) and search cache (in-memory). The Markdown export format includes a generated header with date, section headings as h2, memory titles as h3, metadata line (namespace, kind, tags), content body, and horizontal rules between memories.
+
 ## Cycle: 2026-03-29 21:00
 - App: Clio Tauri
 - Items completed:

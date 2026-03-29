@@ -310,7 +310,8 @@ Local-first AI memory backbone — desktop UI for managing persistent, searchabl
 - **Priority:** P2 (important)
 - **Size:** M (1-3hrs)
 - **Added:** 2026-03-23
-- **Status:** pending
+- **Status:** completed
+- **Completed:** 2026-03-29
 - **Description:** The MCP `memory_context` tool builds context programmatically for AI agent consumption, but the desktop UI has no way for users to manually curate and refine context outputs. When preparing for a meeting, onboarding a colleague, or documenting a decision trail, users need to select specific memories, arrange them in a logical order, add bridging narrative, and export the result as a formatted brief. A drag-and-drop context builder in the desktop UI — with memory search integration, ordering controls, section headings, and export to Markdown/clipboard — would make Clio valuable for deliberate knowledge transfer beyond automated recall, filling the gap between raw memory storage and polished knowledge communication.
 - **Acceptance criteria:**
   - Context builder view accessible from the main navigation alongside list, search, and graph views
