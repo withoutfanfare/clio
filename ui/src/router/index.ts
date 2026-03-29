@@ -28,6 +28,11 @@ const router = createRouter({
       name: "tools",
       component: () => import("@/views/ToolsView.vue"),
     },
+    {
+      path: "/context-builder",
+      name: "context-builder",
+      component: () => import("@/views/ContextBuilderView.vue"),
+    },
   ],
 });
 
