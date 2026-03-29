@@ -219,6 +219,13 @@ async function createProject() {
         </svg>
         Manage namespaces
       </SSidebarLink>
+      <SSidebarLink @click="router.push({ name: 'context-builder' })">
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+          <rect x="2" y="2" width="12" height="12" rx="1.5" stroke="currentColor" stroke-width="1.1"/>
+          <path d="M5 5h6M5 8h4M5 11h5" stroke="currentColor" stroke-width="1.1" stroke-linecap="round"/>
+        </svg>
+        Context builder
+      </SSidebarLink>
       <SSidebarLink @click="router.push({ name: 'tools' })">
         <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
           <path d="M6 2L4.5 5.5 2 6l2 2-.5 3.5L6 10l2.5 1.5L9 8l2-2-2.5-.5L6 2z" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/>
