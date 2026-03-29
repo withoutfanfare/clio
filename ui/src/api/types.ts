@@ -158,3 +158,29 @@ export interface ImportResult {
   skipped: number;
   errors: string[];
 }
+
+// Deduplication
+export interface DuplicateCluster {
+  memories: Memory[];
+  similarity: number;
+  match_type: "exact" | "similar";
+}
+
+export interface DuplicateScanResult {
+  clusters: DuplicateCluster[];
+  total_scanned: number;
+  duplicates_found: number;
+}
+
+export interface MergePreview {
+  keep_id: string;
+  content: string;
+  title: string | null;
+  tags: string[];
+  confidence: number | null;
+  importance: number;
+  namespace: string;
+  kind: string;
+  links_transferred: number;
+  memories_archived: number;
+}

@@ -6,6 +6,7 @@ pub mod config;
 pub mod daemon;
 pub mod context;
 pub mod db;
+pub mod deduplication;
 pub mod embeddings;
 pub mod error;
 pub mod export;
