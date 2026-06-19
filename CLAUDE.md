@@ -4,11 +4,14 @@ Local-first shared memory system for AI tooling. Rust workspace, SQLite storage,
 
 ## Build & Dev
 
-- **Build all:** `./build.sh` — builds all crates, restarts daemon
-- **Build one:** `./build.sh <crate-name>` (e.g. `./build.sh clio-cli`)
+- **Build all:** `./build.sh` — installs all binaries, restarts daemon (macOS/launchctl; daemon logs in `~/Library/Logs/clio/`)
+- **Build one:** `./build.sh {cli|mcp|daemon|tauri|restart}` (short names only — not `clio-cli`)
 - **Dev (Tauri):** `./dev.sh` — starts Vite + Tauri with hot reload
 - **Rust only:** `cargo build` / `cargo test`
+- **Single test:** `cargo test -p clio-core <name>` (most tests live in `clio-core`, inline + `tests/integration.rs`)
+- **Lint/format:** `cargo fmt` / `cargo clippy` (no custom config — workspace defaults)
 - **Frontend deps:** `cd ui && npm install`
+- **Frontend typecheck/build:** `cd ui && npm run build` (runs `vue-tsc --noEmit` then `vite build`)
 
 ## Architecture
 
