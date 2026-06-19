@@ -1498,6 +1498,70 @@ fn recall_multi_term_matches_documents_containing_all_terms() {
 }
 
 // ---------------------------------------------------------------------------
+// Backup: WAL-safe standalone snapshot
+// ---------------------------------------------------------------------------
+
+#[test]
+fn backup_produces_standalone_snapshot_without_wal() {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("memory.db");
+    let conn = clio_core::db::open(&db_path).unwrap();
+    repository::remember(&conn, &base_input("back me up"), &Settings::default()).unwrap();
+
+    let dest = dir.path().join("backups");
+    let res = clio_core::backup::backup(&db_path, Some(&dest), 5).unwrap();
+    let backup_path = std::path::Path::new(&res.path);
+
+    // The snapshot must be a complete, standalone DB needing no WAL sidecar.
+    assert!(backup_path.exists(), "backup file should exist");
+    assert!(
+        !backup_path.with_extension("db-wal").exists(),
+        "VACUUM INTO snapshot must not carry a -wal sidecar"
+    );
+    let bconn = rusqlite::Connection::open(backup_path).unwrap();
+    let n: i64 = bconn
+        .query_row("SELECT COUNT(*) FROM memories", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(n, 1, "the snapshot must contain the row, even if it was still in the WAL");
+}
+
+// ---------------------------------------------------------------------------
+// Restore: safety snapshot before overwrite
+// ---------------------------------------------------------------------------
+
+#[test]
+fn restore_creates_pre_restore_safety_snapshot() {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("memory.db");
+    let conn = clio_core::db::open(&db_path).unwrap();
+    repository::remember(&conn, &base_input("original row"), &Settings::default()).unwrap();
+
+    let dest = dir.path().join("backups");
+    let res = clio_core::backup::backup(&db_path, Some(&dest), 5).unwrap();
+
+    // Change the live DB after the backup, then restore.
+    repository::remember(&conn, &base_input("added after backup"), &Settings::default()).unwrap();
+    drop(conn);
+
+    let r = clio_core::backup::restore(&db_path, std::path::Path::new(&res.path)).unwrap();
+    assert!(r.integrity_ok);
+
+    // A safety snapshot of the pre-restore live DB must be written.
+    assert!(
+        db_path.with_extension("db.pre-restore").exists(),
+        "restore should snapshot the live DB before overwriting it"
+    );
+
+    // The restored DB reflects the backup (1 row) and leaves no stale WAL.
+    assert!(!db_path.with_extension("db-wal").exists());
+    let conn2 = clio_core::db::open(&db_path).unwrap();
+    let n: i64 = conn2
+        .query_row("SELECT COUNT(*) FROM memories", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(n, 1, "restored DB should match the backup, not the post-backup state");
+}
+
+// ---------------------------------------------------------------------------
 // Character-based validation
 // ---------------------------------------------------------------------------
 
