@@ -5,7 +5,6 @@ import { SButton, SSelect, SFormField, SEmptyState, SSpinner, SBadge, SKbd } fro
 import ComposeArea from "@/components/ComposeArea.vue";
 import DateGroup from "@/components/DateGroup.vue";
 import MemoryPage from "@/components/MemoryPage.vue";
-import VirtualMemoryList from "@/components/VirtualMemoryList.vue";
 import { useMemoryStore } from "@/stores/memories";
 import { useGroupedMemories } from "@/composables/useGroupedMemories";
 import { useNamespaceColours } from "@/composables/useNamespaceColours";
@@ -363,11 +362,22 @@ watch(
         </Transition>
       </div>
 
-      <VirtualMemoryList
-        :groups="groups"
-        :mode="store.viewMode"
-        class="river"
-      />
+      <div class="river">
+        <DateGroup
+          v-for="group in groups"
+          :key="group.label"
+          :label="group.label"
+          :mode="store.viewMode"
+        >
+          <MemoryPage
+            v-for="item in group.items"
+            :key="item.id"
+            :memory="item"
+            :mode="store.viewMode"
+            :focused="store.unpinnedItems.indexOf(item) === store.focusedIndex"
+          />
+        </DateGroup>
+      </div>
     </template>
 
     <div v-if="!store.loading && !store.items.length" class="river-empty">
@@ -724,9 +734,10 @@ watch(
 }
 
 .river {
-  flex: 1;
-  min-height: 300px;
-  max-height: calc(100vh - 200px);
+  /* Cards flow naturally; .content-area is the scroll container.
+     No nested scroll/height cap here, so the list fills to the bottom. */
+  display: flex;
+  flex-direction: column;
 }
 
 .river-empty {

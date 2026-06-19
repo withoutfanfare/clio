@@ -18,6 +18,9 @@ ui/dist/
 code-review/
 .superpowers/
 
+# Generated knowledge-graph output
+graphify-out/
+
 # Environment
 .env
 .env.*
