@@ -6,6 +6,10 @@ This document defines the MCP surface for Clio. It is written so another coding 
 
 The MCP server is an adapter over the Rust core. It is not a second storage implementation.
 
+For user-facing connection instructions, see [MCP Agent Setup](../mcp-agent-setup.md). For database structure, see [Schema Reference](schema.md).
+
+---
+
 ## Scope
 
 This document covers:
@@ -1337,3 +1341,13 @@ The MCP contract is ready for implementation when:
 - defaults and required fields are explicit
 - structured and human-readable outputs are defined
 - another coding agent can implement the server without inventing tool semantics
+
+---
+
+## Related Documentation
+
+- [MCP Agent Setup](../mcp-agent-setup.md) — connection instructions for 10+ AI agents
+- [Schema Reference](schema.md) — database tables, indexes, FTS
+- [Settings Reference](settings.md) — configuration keys and defaults
+- [Architecture](../../context/ARCHITECTURE.md) — system overview and crate boundaries
+- [Documentation Index](../README.md) — all available documentation

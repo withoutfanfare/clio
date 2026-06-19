@@ -2,6 +2,8 @@
 
 Quick reference for all Clio CLI commands and flags.
 
+For a full walkthrough with explanations, see [Getting Started](getting-started.md). For connecting AI agents, see [MCP Agent Setup](mcp-agent-setup.md).
+
 ---
 
 ## Setup
@@ -221,6 +223,8 @@ Default DB: `~/Library/Application Support/clio/memory.db` (macOS)
 
 ## Related Documentation
 
+- [Getting Started](getting-started.md) — full walkthrough with explanations
 - [MCP Agent Setup](mcp-agent-setup.md) — connecting AI agents to Clio
-- [Getting Started](getting-started.md) — full setup walkthrough
-- [Settings Reference](reference/settings.md) — all configuration keys
+- [Settings Reference](reference/settings.md) — all configuration keys and defaults
+- [Schema Reference](reference/schema.md) — database structure
+- [Documentation Index](README.md) — all available documentation

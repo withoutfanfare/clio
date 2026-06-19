@@ -586,6 +586,111 @@ These flags apply to every command:
 
 ---
 
+## 14. Troubleshooting
+
+### Database locked errors
+
+If you see `database is locked` errors, another process has an exclusive lock on the SQLite file. This can happen when:
+
+- The MCP server and CLI are running simultaneously (WAL mode should prevent this, but check)
+- A long-running query is active
+- Another tool has the database open
+
+Solution: Close other connections or wait a few seconds and retry.
+
+### Embedding errors
+
+**"embeddings are disabled"**
+
+Run `clio settings auto-embed --enable` to re-enable auto-embedding.
+
+**"embedding backend not available"**
+
+The `fastembed` feature flag is not enabled. Build with:
+```sh
+cargo install --path crates/clio-cli --features fastembed
+cargo install --path crates/clio-mcp --features fastembed
+```
+
+**"OpenAI API key required"**
+
+You've selected OpenAI embeddings but not configured an API key:
+```sh
+clio settings use-openai-embeddings --api-key sk-...
+```
+
+### Capture errors
+
+**"capture pipeline is not enabled"**
+
+Enable capture first:
+```sh
+clio settings use-capture --api-key sk-...
+```
+
+**"LLM returned unparseable JSON"**
+
+The LLM response could not be parsed. This is rare with GPT-4o-mini. Try again or check your API endpoint.
+
+### MCP connection issues
+
+**Agent cannot connect to Clio**
+
+1. Verify `clio-mcp` is on your PATH: `which clio-mcp`
+2. Check the MCP config has the correct absolute path
+3. Verify `CLIO_DB_PATH` points to an existing database file
+4. Test manually: `CLIO_DB_PATH=/path/to/memory.db clio-mcp` (should start and wait for JSON-RPC on stdin)
+
+**"Memory not found" errors**
+
+The memory ID may be incorrect or the memory may have been deleted. Use `clio recall` to find the correct ID.
+
+### Namespace detection not working
+
+If `clio context` shows `global` when you expected a project namespace:
+
+1. Check for a `.clio-namespace` file in the current directory
+2. Check for a `.git` directory, `Cargo.toml`, or `package.json` in the directory tree
+3. Verify you're running the command from within the project directory (not from outside)
+
+Create an explicit namespace file:
+```sh
+clio init --namespace project:my-project
+```
+
+### Memory not appearing in search
+
+1. Check if it was archived: `clio recall --include-archived --query "your terms"`
+2. Check the namespace: `clio recall --namespace project:your-project --query "your terms"`
+3. Try semantic search: `clio search --query "conceptually related content"`
+4. Verify the memory exists: `clio show <id>`
+
+### Performance issues
+
+**Slow semantic search**
+
+Semantic search must compute cosine similarity against all embedded memories. For large databases (10k+ memories), this can take a few seconds. Consider:
+- Using `--namespace` to filter the search space
+- Using `clio recall` (FTS) for keyword-based searches
+
+**Slow capture**
+
+The capture pipeline calls an external LLM API. Latency depends on your network and the API provider. Use `--dry-run` to test without storing.
+
+### Getting help
+
+1. Check this troubleshooting section
+2. Review the [CLI Reference](cli-reference.md) for command details
+3. Check the [Settings Reference](reference/settings.md) for configuration options
+4. Review the [MCP Contract](reference/mcp-contract.md) for tool behaviour
+5. Open an issue on the repository with:
+   - The exact command you ran
+   - The full error message
+   - Your operating system
+   - Output of `clio schema` (for schema-related issues)
+
+---
+
 ## Related Documentation
 
 - [Desktop App (Tauri)](tauri-app.md) — visual interface for browsing and editing memories
