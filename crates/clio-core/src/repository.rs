@@ -786,9 +786,12 @@ fn append_filters(
 // Scoped recall (project namespace first, then global fallback)
 // ---------------------------------------------------------------------------
 
-/// Search within the detected namespace first, then fall back to `global` if
-/// the scoped results are fewer than `limit`. Deduplicates by memory id,
-/// giving priority to the project-scoped results.
+/// Recall within the detected namespace, then fill any remaining slots from `global`.
+///
+/// The two passes query disjoint namespaces, so `total` is the sum of both passes
+/// (each memory counted once). Note: the global fill always starts at `offset: 0`,
+/// so this convenience path is intended for first-page recall — paging with
+/// `offset > 0` does not page meaningfully across the combined result set.
 pub fn recall_scoped(
     conn: &Connection,
     query: &RecallQuery,

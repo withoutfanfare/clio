@@ -1598,3 +1598,27 @@ fn merge_does_not_inflate_access_count() {
         .unwrap();
     assert_eq!(access_count, 0, "a merge is maintenance and must not bump access_count");
 }
+
+// ---------------------------------------------------------------------------
+// recall_scoped — total counting (characterisation / regression)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn recall_scoped_total_counts_each_namespace_once() {
+    let conn = test_db();
+    // Two matches in the project namespace, one in global — all disjoint by namespace.
+    remember_in(&conn, "proj", "alpha one note");
+    remember_in(&conn, "proj", "alpha two note");
+    remember_in(&conn, "global", "alpha three note");
+
+    // limit high enough that the scoped pass does not satisfy it alone, exercising the merge.
+    let q = RecallQuery {
+        query: Some("alpha".into()),
+        limit: 5,
+        ..Default::default()
+    };
+    let res = repository::recall_scoped(&conn, &q, "proj").unwrap();
+
+    assert_eq!(res.count, 3, "should merge 2 project + 1 global match");
+    assert_eq!(res.total, 3, "disjoint namespaces — each counted once, no double count");
+}
