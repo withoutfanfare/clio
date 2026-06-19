@@ -734,10 +734,10 @@ watch(
 }
 
 .river {
-  flex: 1;
-  min-height: 0;
-  max-height: calc(100vh - 200px);
-  overflow-y: auto;
+  /* Cards flow naturally; .content-area is the scroll container.
+     No nested scroll/height cap here, so the list fills to the bottom. */
+  display: flex;
+  flex-direction: column;
 }
 
 .river-empty {
