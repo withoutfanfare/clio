@@ -4,6 +4,7 @@
 //! integrity-checked restore.
 
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use crate::error::{ClioError, Result};
 
@@ -67,23 +68,20 @@ pub fn backup(db_path: &Path, dest_dir: Option<&Path>, max_backups: u32) -> Resu
     let backup_filename = format!("clio-backup-{ts_file}.db");
     let backup_path = backup_dir.join(&backup_filename);
 
-    // Copy the database file
-    std::fs::copy(db_path, &backup_path).map_err(|e| {
-        ClioError::Export(format!(
-            "could not copy database to {}: {e}",
-            backup_path.display()
-        ))
+    // Produce a transactionally-consistent, standalone snapshot. VACUUM INTO writes
+    // a complete database with no -wal/-shm sidecars, avoiding torn-copy corruption
+    // that plain file copies risk under WAL mode.
+    let _ = std::fs::remove_file(&backup_path); // VACUUM INTO requires the target not exist
+    let src = rusqlite::Connection::open(db_path).map_err(|e| {
+        ClioError::Export(format!("could not open database for backup: {e}"))
     })?;
-
-    // Also copy WAL and SHM files if they exist (for WAL mode consistency)
-    let wal_path = db_path.with_extension("db-wal");
-    let shm_path = db_path.with_extension("db-shm");
-    if wal_path.exists() {
-        let _ = std::fs::copy(&wal_path, backup_path.with_extension("db-wal"));
-    }
-    if shm_path.exists() {
-        let _ = std::fs::copy(&shm_path, backup_path.with_extension("db-shm"));
-    }
+    src.busy_timeout(Duration::from_millis(5000))
+        .map_err(|e| ClioError::Export(format!("could not set busy timeout for backup: {e}")))?;
+    src.execute(
+        "VACUUM INTO ?1",
+        rusqlite::params![backup_path.to_string_lossy()],
+    )
+    .map_err(|e| ClioError::Export(format!("backup VACUUM INTO failed: {e}")))?;
 
     let size_bytes = std::fs::metadata(&backup_path)
         .map(|m| m.len())
@@ -168,6 +166,31 @@ pub fn restore(db_path: &Path, backup_path: &Path) -> Result<RestoreResult> {
         return Err(ClioError::Import(
             "backup file failed integrity check — aborting restore".into(),
         ));
+    }
+
+    // Safety: snapshot the current live DB before overwriting, so a bad restore is
+    // recoverable. Best-effort — failure here must not block a valid restore.
+    if db_path.exists() {
+        let safety = db_path.with_extension("db.pre-restore");
+        let _ = std::fs::remove_file(&safety);
+        match rusqlite::Connection::open(db_path) {
+            Err(e) => {
+                tracing::warn!(
+                    "could not open live database for pre-restore safety snapshot: {e}"
+                );
+            }
+            Ok(live) => {
+                let _ = live.busy_timeout(Duration::from_millis(5000));
+                if let Err(e) = live.execute(
+                    "VACUUM INTO ?1",
+                    rusqlite::params![safety.to_string_lossy()],
+                ) {
+                    tracing::warn!(
+                        "pre-restore safety snapshot was not written (VACUUM INTO failed): {e}"
+                    );
+                }
+            }
+        }
     }
 
     // Replace the current database

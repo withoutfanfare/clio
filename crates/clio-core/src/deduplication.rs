@@ -100,14 +100,14 @@ pub fn preview_merge(
     keep_id: &str,
     merge_ids: &[String],
 ) -> Result<MergePreview> {
-    let keep = repository::get(conn, keep_id)?;
+    let keep = repository::get_raw(conn, keep_id)?;
     let mut all_tags: Vec<String> = keep.tags.clone();
     let mut best_confidence = keep.confidence;
     let mut best_importance = keep.importance;
     let mut links_transferred: u32 = 0;
 
     for merge_id in merge_ids {
-        let mem = repository::get(conn, merge_id)?;
+        let mem = repository::get_raw(conn, merge_id)?;
         for tag in &mem.tags {
             if !all_tags.contains(tag) {
                 all_tags.push(tag.clone());
@@ -159,14 +159,14 @@ pub fn merge_memories(
     keep_id: &str,
     merge_ids: &[String],
 ) -> Result<Memory> {
-    let keep = repository::get(conn, keep_id)?;
+    let keep = repository::get_raw(conn, keep_id)?;
     let mut all_tags: Vec<String> = keep.tags.clone();
     let mut best_confidence = keep.confidence;
     let mut best_importance = keep.importance;
 
     // Collect data from memories being merged away.
     for merge_id in merge_ids {
-        let mem = repository::get(conn, merge_id)?;
+        let mem = repository::get_raw(conn, merge_id)?;
         for tag in &mem.tags {
             if !all_tags.contains(tag) {
                 all_tags.push(tag.clone());
@@ -186,61 +186,65 @@ pub fn merge_memories(
 
     // Update the kept memory with merged metadata.
     let tags_text = all_tags.join(" ");
-    conn.execute(
-        "UPDATE memories SET tags_text = ?1, confidence = ?2, importance = ?3, updated_at = ?4
-         WHERE id = ?5",
-        params![
-            tags_text,
-            best_confidence,
-            best_importance,
-            crate::models::now_utc(),
-            keep_id,
-        ],
-    )?;
+    let now = crate::models::now_utc();
 
-    // Sync tags in the memory_tags table.
-    conn.execute(
-        "DELETE FROM memory_tags WHERE memory_id = ?1",
-        params![keep_id],
-    )?;
-    for tag in &all_tags {
+    // Wrap the whole mutation in a savepoint so a mid-merge failure rolls back
+    // cleanly instead of leaving the kept memory half-mutated.
+    conn.execute_batch("SAVEPOINT merge_memories")?;
+    let result = (|| -> Result<()> {
         conn.execute(
-            "INSERT OR IGNORE INTO memory_tags (memory_id, tag) VALUES (?1, ?2)",
-            params![keep_id, tag],
+            "UPDATE memories SET tags_text = ?1, confidence = ?2, importance = ?3, updated_at = ?4
+             WHERE id = ?5",
+            params![tags_text, best_confidence, best_importance, now, keep_id],
         )?;
+
+        // Sync tags in the memory_tags table (created_at is NOT NULL).
+        conn.execute("DELETE FROM memory_tags WHERE memory_id = ?1", params![keep_id])?;
+        for tag in &all_tags {
+            conn.execute(
+                "INSERT OR IGNORE INTO memory_tags (memory_id, tag, created_at) VALUES (?1, ?2, ?3)",
+                params![keep_id, tag, now],
+            )?;
+        }
+
+        // Transfer links from merged memories to the kept memory.
+        for merge_id in merge_ids {
+            conn.execute(
+                "UPDATE OR IGNORE memory_links SET from_memory_id = ?1
+                 WHERE from_memory_id = ?2 AND to_memory_id != ?1",
+                params![keep_id, merge_id],
+            )?;
+            conn.execute(
+                "UPDATE OR IGNORE memory_links SET to_memory_id = ?1
+                 WHERE to_memory_id = ?2 AND from_memory_id != ?1",
+                params![keep_id, merge_id],
+            )?;
+            conn.execute(
+                "DELETE FROM memory_links WHERE from_memory_id = ?1 OR to_memory_id = ?1",
+                params![merge_id],
+            )?;
+            conn.execute(
+                "DELETE FROM memory_links WHERE from_memory_id = ?1 AND to_memory_id = ?1",
+                params![keep_id],
+            )?;
+
+            // Archive the merged-away memory.
+            repository::archive(conn, merge_id)?;
+        }
+        Ok(())
+    })();
+
+    match result {
+        Ok(()) => conn.execute_batch("RELEASE merge_memories")?,
+        Err(e) => {
+            let _ = conn.execute_batch("ROLLBACK TO merge_memories");
+            let _ = conn.execute_batch("RELEASE merge_memories");
+            return Err(e);
+        }
     }
 
-    // Transfer links from merged memories to the kept memory.
-    for merge_id in merge_ids {
-        // Outgoing links: merge_id -> X becomes keep_id -> X
-        conn.execute(
-            "UPDATE OR IGNORE memory_links SET from_memory_id = ?1
-             WHERE from_memory_id = ?2 AND to_memory_id != ?1",
-            params![keep_id, merge_id],
-        )?;
-        // Incoming links: X -> merge_id becomes X -> keep_id
-        conn.execute(
-            "UPDATE OR IGNORE memory_links SET to_memory_id = ?1
-             WHERE to_memory_id = ?2 AND from_memory_id != ?1",
-            params![keep_id, merge_id],
-        )?;
-        // Remove any self-links or remaining links to/from merged memory.
-        conn.execute(
-            "DELETE FROM memory_links WHERE from_memory_id = ?1 OR to_memory_id = ?1",
-            params![merge_id],
-        )?;
-        // Remove self-links on kept memory that might have been created.
-        conn.execute(
-            "DELETE FROM memory_links WHERE from_memory_id = ?1 AND to_memory_id = ?1",
-            params![keep_id],
-        )?;
-
-        // Archive the merged-away memory.
-        repository::archive(conn, merge_id)?;
-    }
-
-    // Return the updated kept memory.
-    repository::get(conn, keep_id)
+    // Return the updated kept memory without inflating its access_count.
+    repository::get_raw(conn, keep_id)
 }
 
 // --- Internal helpers ---
@@ -265,7 +269,7 @@ fn find_exact_duplicates(conn: &Connection) -> Result<Vec<DuplicateCluster>> {
         let ids: Vec<String> = group.split(',').map(String::from).collect();
         let mut memories = Vec::new();
         for id in &ids {
-            if let Ok(mem) = repository::get(conn, id) {
+            if let Ok(mem) = repository::get_raw(conn, id) {
                 memories.push(mem);
             }
         }
@@ -414,7 +418,7 @@ fn find_near_duplicates(
         let sim = cluster_sim.get(&root).copied().unwrap_or(0.5);
         let mut memories = Vec::new();
         for id in &member_ids {
-            if let Ok(mem) = repository::get(conn, id) {
+            if let Ok(mem) = repository::get_raw(conn, id) {
                 memories.push(mem);
             }
         }
