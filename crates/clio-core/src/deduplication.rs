@@ -100,14 +100,14 @@ pub fn preview_merge(
     keep_id: &str,
     merge_ids: &[String],
 ) -> Result<MergePreview> {
-    let keep = repository::get(conn, keep_id)?;
+    let keep = repository::get_raw(conn, keep_id)?;
     let mut all_tags: Vec<String> = keep.tags.clone();
     let mut best_confidence = keep.confidence;
     let mut best_importance = keep.importance;
     let mut links_transferred: u32 = 0;
 
     for merge_id in merge_ids {
-        let mem = repository::get(conn, merge_id)?;
+        let mem = repository::get_raw(conn, merge_id)?;
         for tag in &mem.tags {
             if !all_tags.contains(tag) {
                 all_tags.push(tag.clone());
@@ -159,14 +159,14 @@ pub fn merge_memories(
     keep_id: &str,
     merge_ids: &[String],
 ) -> Result<Memory> {
-    let keep = repository::get(conn, keep_id)?;
+    let keep = repository::get_raw(conn, keep_id)?;
     let mut all_tags: Vec<String> = keep.tags.clone();
     let mut best_confidence = keep.confidence;
     let mut best_importance = keep.importance;
 
     // Collect data from memories being merged away.
     for merge_id in merge_ids {
-        let mem = repository::get(conn, merge_id)?;
+        let mem = repository::get_raw(conn, merge_id)?;
         for tag in &mem.tags {
             if !all_tags.contains(tag) {
                 all_tags.push(tag.clone());
@@ -269,7 +269,7 @@ fn find_exact_duplicates(conn: &Connection) -> Result<Vec<DuplicateCluster>> {
         let ids: Vec<String> = group.split(',').map(String::from).collect();
         let mut memories = Vec::new();
         for id in &ids {
-            if let Ok(mem) = repository::get(conn, id) {
+            if let Ok(mem) = repository::get_raw(conn, id) {
                 memories.push(mem);
             }
         }
@@ -418,7 +418,7 @@ fn find_near_duplicates(
         let sim = cluster_sim.get(&root).copied().unwrap_or(0.5);
         let mut memories = Vec::new();
         for id in &member_ids {
-            if let Ok(mem) = repository::get(conn, id) {
+            if let Ok(mem) = repository::get_raw(conn, id) {
                 memories.push(mem);
             }
         }

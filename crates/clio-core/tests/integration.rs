@@ -1576,3 +1576,25 @@ fn validates_namespace_length_by_characters_not_bytes() {
     let result = repository::remember(&conn, &input, &Settings::default());
     assert!(result.is_ok(), "a 120-character namespace must pass character-based validation");
 }
+
+// ---------------------------------------------------------------------------
+// Deduplication — access_count invariant
+// ---------------------------------------------------------------------------
+
+#[test]
+fn merge_does_not_inflate_access_count() {
+    let conn = test_db();
+    let keep = remember_simple(&conn, "keep this memory");
+    let dup = remember_simple(&conn, "duplicate memory");
+
+    clio_core::deduplication::merge_memories(&conn, &keep.id, &[dup.id.clone()]).unwrap();
+
+    let access_count: i64 = conn
+        .query_row(
+            "SELECT access_count FROM memories WHERE id = ?1",
+            [&keep.id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(access_count, 0, "a merge is maintenance and must not bump access_count");
+}
