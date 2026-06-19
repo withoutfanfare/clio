@@ -1475,3 +1475,24 @@ fn merge_retains_tags_in_memory_tags_table() {
         .unwrap();
     assert_eq!(count, 3, "kept memory should hold the union of tags (alpha, beta, gamma)");
 }
+
+// ---------------------------------------------------------------------------
+// FTS multi-term search
+// ---------------------------------------------------------------------------
+
+#[test]
+fn recall_multi_term_matches_documents_containing_all_terms() {
+    let conn = test_db();
+    remember_simple(&conn, "We use rust together with sqlite for storage");
+    remember_simple(&conn, "Unrelated python notes about pandas");
+
+    let q = RecallQuery {
+        query: Some("rust sqlite".into()),
+        ..Default::default()
+    };
+    let res = repository::recall(&conn, &q).unwrap();
+
+    // Both terms appear in the first doc but are not adjacent; multi-term AND must match it.
+    assert_eq!(res.count, 1, "multi-term query should match the doc containing both terms");
+    assert!(res.items[0].memory.content.contains("rust"));
+}

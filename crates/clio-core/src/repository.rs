@@ -527,12 +527,25 @@ fn append_linked_memories(conn: &Connection, result: &mut RecallResult) -> Resul
     Ok(())
 }
 
-/// Sanitise a user-supplied FTS query by wrapping it in double-quotes to
-/// force literal phrase matching. This prevents FTS operator injection
-/// (`NOT`, `OR`, column filters) while preserving normal search.
+/// Sanitise a user-supplied FTS query. Each whitespace-separated term is quoted
+/// individually to neutralise FTS operators (`NOT`, `OR`, column filters) while
+/// joining with spaces so multi-term queries match documents containing all terms
+/// (FTS5 implicit AND), preserving BM25 ranking.
 fn sanitise_fts_query(raw: &str) -> String {
-    let escaped = raw.replace('"', ' '.to_string().as_str());
-    format!("\"{}\"", escaped.trim())
+    let terms: Vec<String> = raw
+        .split_whitespace()
+        .map(|t| t.replace('"', " "))
+        .map(|t| t.trim().to_string())
+        .filter(|t| !t.is_empty())
+        .map(|t| format!("\"{t}\""))
+        .collect();
+
+    if terms.is_empty() {
+        // Preserve previous behaviour for an empty query: a quoted empty phrase
+        // (matches nothing rather than raising an FTS syntax error).
+        return "\"\"".to_string();
+    }
+    terms.join(" ")
 }
 
 fn recall_fts(conn: &Connection, fts_query: &str, q: &RecallQuery) -> Result<RecallResult> {
