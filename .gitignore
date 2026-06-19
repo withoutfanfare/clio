@@ -14,6 +14,10 @@ ui/dist/
 .claude/
 .gemini/
 
+# Local code-review artifacts
+code-review/
+.superpowers/
+
 # Environment
 .env
 .env.*
