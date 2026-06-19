@@ -4,6 +4,7 @@
 //! integrity-checked restore.
 
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use crate::error::{ClioError, Result};
 
@@ -74,6 +75,8 @@ pub fn backup(db_path: &Path, dest_dir: Option<&Path>, max_backups: u32) -> Resu
     let src = rusqlite::Connection::open(db_path).map_err(|e| {
         ClioError::Export(format!("could not open database for backup: {e}"))
     })?;
+    src.busy_timeout(Duration::from_millis(5000))
+        .map_err(|e| ClioError::Export(format!("could not set busy timeout for backup: {e}")))?;
     src.execute(
         "VACUUM INTO ?1",
         rusqlite::params![backup_path.to_string_lossy()],
@@ -170,11 +173,23 @@ pub fn restore(db_path: &Path, backup_path: &Path) -> Result<RestoreResult> {
     if db_path.exists() {
         let safety = db_path.with_extension("db.pre-restore");
         let _ = std::fs::remove_file(&safety);
-        if let Ok(live) = rusqlite::Connection::open(db_path) {
-            let _ = live.execute(
-                "VACUUM INTO ?1",
-                rusqlite::params![safety.to_string_lossy()],
-            );
+        match rusqlite::Connection::open(db_path) {
+            Err(e) => {
+                tracing::warn!(
+                    "could not open live database for pre-restore safety snapshot: {e}"
+                );
+            }
+            Ok(live) => {
+                let _ = live.busy_timeout(Duration::from_millis(5000));
+                if let Err(e) = live.execute(
+                    "VACUUM INTO ?1",
+                    rusqlite::params![safety.to_string_lossy()],
+                ) {
+                    tracing::warn!(
+                        "pre-restore safety snapshot was not written (VACUUM INTO failed): {e}"
+                    );
+                }
+            }
         }
     }
 
