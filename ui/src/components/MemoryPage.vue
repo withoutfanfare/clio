@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, nextTick, onMounted, onUnmounted } from "vue";
+import { ref, computed, nextTick, onMounted, onUnmounted, watch } from "vue";
 import { SCard, SBadge, STag, SDropdownMenu, SButton } from "@stuntrocket/ui";
 import type { SDropdownMenuItem } from "@stuntrocket/ui";
 import { useMemoryStore } from "@/stores/memories";
@@ -20,6 +20,18 @@ const copied = ref(false);
 const confirmingDelete = ref(false);
 
 const nsColour = computed(() => getColour(props.memory.namespace));
+
+const cardRef = ref<any>(null);
+
+// Scroll the focused card into view when keyboard navigation moves focus to it.
+watch(
+  () => props.focused,
+  (isFocused) => {
+    if (isFocused) {
+      nextTick(() => cardRef.value?.$el?.scrollIntoView?.({ block: "nearest" }));
+    }
+  },
+);
 
 function open(e: MouseEvent) {
   // Cmd/Ctrl+click toggles selection
@@ -149,6 +161,7 @@ function formatTime(iso: string): string {
 
 <template>
   <SCard
+    ref="cardRef"
     variant="glass"
     hoverable
     class="memory-page"
