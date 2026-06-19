@@ -2,11 +2,13 @@
 import { ref, computed, nextTick } from "vue";
 import { SButton, SFormField, SInput, SSidebarLink, SKbd } from "@stuntrocket/ui";
 import { useMemoryStore } from "@/stores/memories";
+import { useNamespaceColours } from "@/composables/useNamespaceColours";
 import { useRouter } from "vue-router";
 import { open } from "@tauri-apps/plugin-dialog";
 import * as api from "@/api/memory";
 
 const store = useMemoryStore();
+const { getColour } = useNamespaceColours();
 const router = useRouter();
 
 // Context menu state
@@ -133,9 +135,7 @@ async function createProject() {
         @click="selectNamespace(ns)"
         @contextmenu="onContextMenu($event, ns)"
       >
-        <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
-          <path d="M2 4.5A1.5 1.5 0 013.5 3h3.379a1.5 1.5 0 011.06.44l.622.62a1.5 1.5 0 001.06.44H12.5A1.5 1.5 0 0114 6v5.5a1.5 1.5 0 01-1.5 1.5h-9A1.5 1.5 0 012 11.5v-7z" stroke="currentColor" stroke-width="1.1"/>
-        </svg>
+        <span class="ns-dot" :style="{ background: getColour(ns) }" />
         <span>{{ ns }}</span>
       </SSidebarLink>
     </nav>
@@ -316,6 +316,15 @@ async function createProject() {
   font-size: 10px;
   color: var(--color-accent);
   font-variant-numeric: tabular-nums;
+}
+
+/* ── Namespace Colour Dot ── */
+.ns-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
 }
 
 /* ── Section Label ── */

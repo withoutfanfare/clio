@@ -1,10 +1,12 @@
 # MCP Agent Setup
 
-> For the full MCP tool and resource contract, see [reference/mcp-contract.md](reference/mcp-contract.md).
+> For the full MCP tool and resource contract, see [MCP Contract](reference/mcp-contract.md).
 
 Clio exposes an MCP (Model Context Protocol) server that gives AI coding agents persistent, structured memory across sessions. The server runs over stdio and provides 21 tools for reading, writing, searching, and linking memories.
 
 This section covers connection setup for six AI agents, then explains **how to actually use Clio** once connected — workflows, prompting patterns, and practical examples.
+
+**New to Clio?** Start with the [Getting Started Guide](getting-started.md) to install and initialise the database first.
 
 ---
 
@@ -810,6 +812,8 @@ Resources are read-only and return Markdown content suitable for embedding in ag
 
 ## Related Documentation
 
+- [Getting Started](getting-started.md) — installation and initial setup
 - [CLI Reference](cli-reference.md) — all CLI commands and flags
 - [MCP Contract](reference/mcp-contract.md) — full tool and resource definitions
-- [Getting Started](getting-started.md) — installation and setup
+- [Schema Reference](reference/schema.md) — database structure
+- [Documentation Index](README.md) — all available documentation

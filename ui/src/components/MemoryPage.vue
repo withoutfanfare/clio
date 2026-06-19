@@ -3,6 +3,7 @@ import { ref, computed, nextTick, onMounted, onUnmounted } from "vue";
 import { SCard, SBadge, STag, SDropdownMenu, SButton } from "@stuntrocket/ui";
 import type { SDropdownMenuItem } from "@stuntrocket/ui";
 import { useMemoryStore } from "@/stores/memories";
+import { useNamespaceColours } from "@/composables/useNamespaceColours";
 import { copyToClipboard, downloadMarkdown } from "@/utils/memoryExport";
 import * as api from "@/api/memory";
 import type { RecallItem } from "@/api/types";
@@ -14,8 +15,11 @@ const props = defineProps<{
 }>();
 
 const store = useMemoryStore();
+const { getColour } = useNamespaceColours();
 const copied = ref(false);
 const confirmingDelete = ref(false);
+
+const nsColour = computed(() => getColour(props.memory.namespace));
 
 function open(e: MouseEvent) {
   // Cmd/Ctrl+click toggles selection
@@ -149,6 +153,7 @@ function formatTime(iso: string): string {
     hoverable
     class="memory-page"
     :class="[mode === 'grid' ? 'mode-grid' : 'mode-list', { 'kb-focused': focused, 'is-selected': isItemSelected }]"
+    :style="{ '--ns-colour': nsColour }"
     @click="open"
     tabindex="0"
     @keydown.enter="open($event as unknown as MouseEvent)"
@@ -192,7 +197,10 @@ function formatTime(iso: string): string {
           />
         </span>
         <span class="meta-sep" v-if="memory.namespace !== 'global'">&middot;</span>
-        <span class="meta-ns" v-if="memory.namespace !== 'global'">{{ memory.namespace }}</span>
+        <span class="meta-ns" v-if="memory.namespace !== 'global'">
+          <span class="ns-dot" :style="{ background: nsColour }" />
+          {{ memory.namespace }}
+        </span>
         <span v-if="memory.source" class="meta-source">{{ memory.source }}</span>
         <span class="meta-time">{{ formatTime(memory.updated_at) }}</span>
       </div>
@@ -209,6 +217,16 @@ function formatTime(iso: string): string {
 <style scoped>
 .memory-page {
   cursor: pointer;
+  border-left: 3px solid var(--ns-colour, transparent);
+}
+
+.ns-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  vertical-align: middle;
+  margin-right: 2px;
 }
 
 .memory-page:focus-visible,
@@ -226,6 +244,8 @@ function formatTime(iso: string): string {
 /* ── List mode ── */
 .mode-list {
   padding: var(--space-4) var(--space-5);
+  flex-shrink: 0;
+  overflow: hidden;
 }
 
 .mode-list .page-content {

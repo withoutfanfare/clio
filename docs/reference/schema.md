@@ -6,6 +6,10 @@ This document defines the storage contract for Clio, the Rust shared memory syst
 
 This schema is the canonical persistence contract for phase one.
 
+For user-facing documentation, see the [Getting Started Guide](../getting-started.md) or [CLI Reference](../cli-reference.md).
+
+---
+
 ## Scope
 
 This document covers:
@@ -645,3 +649,12 @@ The schema is ready for coding agents when:
 - the core CRUD and recall flows are fully expressible
 - the MCP contract can map to the stored entities without inventing new fields
 - the future Tauri app can browse and edit records using the same tables
+
+---
+
+## Related Documentation
+
+- [MCP Contract](mcp-contract.md) — MCP tool and resource definitions
+- [Settings Reference](settings.md) — configuration keys and defaults
+- [Architecture](../../context/ARCHITECTURE.md) — system overview and crate boundaries
+- [Documentation Index](../README.md) — all available documentation

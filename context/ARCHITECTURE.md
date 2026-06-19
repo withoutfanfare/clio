@@ -4,6 +4,49 @@
 
 Clio is a local-first memory backbone for AI tooling. One Rust core, multiple access surfaces (CLI, MCP, Tauri, daemon), one SQLite database.
 
+## System Overview
+
+```text
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                              AI Coding Agents                                │
+│  ┌───────────┐  ┌───────────┐  ┌───────────┐  ┌───────────┐  ┌───────────┐ │
+│  │  Claude   │  │   Codex   │  │  Cursor   │  │ Windsurf  │  │  Gemini   │ │
+│  │   Code    │  │    CLI    │  │           │  │           │  │    CLI    │ │
+│  └─────┬─────┘  └─────┬─────┘  └─────┬─────┘  └─────┬─────┘  └─────┬─────┘ │
+│        │              │              │              │              │       │
+└────────┼──────────────┼──────────────┼──────────────┼──────────────┼───────┘
+         │              │              │              │              │
+         └──────────────┴──────────────┼──────────────┴──────────────┘
+                                       │ MCP (stdio JSON-RPC)
+                                       │
+                         ┌─────────────▼─────────────┐
+                         │        clio-mcp           │
+                         │  MCP Server (thin adapter)│
+                         └─────────────┬─────────────┘
+                                       │
+┌──────────────────────────────────────┼──────────────────────────────────────┐
+│                          Rust Core Layer                                   │
+│  ┌─────────────┐  ┌─────────────┐  ┌─▼───────────┐  ┌─────────────┐       │
+│  │  clio-cli   │  │clio-tauri   │  │  clio-core  │  │clio-daemon  │       │
+│  │ (CLI parser)│  │ (Desktop UI)│  │(All logic)  │  │(Background) │       │
+│  └──────┬──────┘  └──────┬──────┘  └──────┬──────┘  └──────┬──────┘       │
+│         │                │                │                │              │
+│         └────────────────┴────────────────┴────────────────┘              │
+│                                          │                                 │
+└──────────────────────────────────────────┼─────────────────────────────────┘
+                                           │
+                         ┌─────────────────▼─────────────────┐
+                         │           SQLite                   │
+                         │  ┌───────────┐  ┌───────────────┐ │
+                         │  │ memories  │  │ memory_tags   │ │
+                         │  ├───────────┤  ├───────────────┤ │
+                         │  │ embeddings│  │ memory_links  │ │
+                         │  ├───────────┤  ├───────────────┤ │
+                         │  │ FTS index │  │ review_queue  │ │
+                         │  └───────────┘  └───────────────┘ │
+                         └───────────────────────────────────┘
+```
+
 ## Tech Stack
 
 - **Language:** Rust
@@ -11,33 +54,6 @@ Clio is a local-first memory backbone for AI tooling. One Rust core, multiple ac
 - **Libraries:** rusqlite, serde, serde_json, clap, uuid, time, thiserror, tracing, fastembed (optional), reqwest (optional, OpenAI backend)
 - **Transport:** stdio (MCP), direct binary (CLI), Unix domain socket (daemon control)
 - **Daemon:** `notify` (filesystem watching), `tracing-appender` (rolling log files), `libc` (PID management)
-
-## System Diagram
-
-```text
-                    +----------------------+
-                    |   Tauri Desktop UI   |
-                    |   Vue 3 + Pinia      |
-                    +----------+-----------+
-                               |
-                               v
-  +----------------+   +----------------------+   +------------------+
-  | Shell scripts  |-->| Rust core library    |<--| MCP AI clients   |
-  | Cron jobs      |   | + domain logic       |   | Codex/Claude/etc |
-  +--------+-------+   | + SQLite access      |   +------------------+
-           |           | + migrations         |
-           v           +-----+-----+-----+---+
-       clio CLI              |     |     |
-                             |     |     |
-                             v     |     v
-                         clio-mcp  |  clio-daemon
-                             |     |     |   + inbox watcher
-                             v     v     |   + control socket
-                        SQLite database  |   + PID management
-                                         |   + auto-link inference
-                                         v
-                                    Inbox folders / local capture
-```
 
 ## Directory Structure
 

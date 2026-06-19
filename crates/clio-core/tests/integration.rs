@@ -9,6 +9,42 @@ fn test_db() -> rusqlite::Connection {
     db::open_in_memory().expect("failed to open in-memory DB")
 }
 
+fn base_input(content: &str) -> RememberInput {
+    RememberInput {
+        namespace: "global".into(),
+        kind: "note".into(),
+        title: None,
+        summary: None,
+        content: content.into(),
+        tags: vec![],
+        source: None,
+        source_ref: None,
+        confidence: None,
+        importance: 3,
+        metadata: serde_json::json!({}),
+        valid_from: None,
+        valid_until: None,
+        upsert: false,
+    }
+}
+
+fn remember_simple(conn: &rusqlite::Connection, content: &str) -> Memory {
+    repository::remember(conn, &base_input(content), &Settings::default()).unwrap()
+}
+
+fn remember_with_tags(conn: &rusqlite::Connection, content: &str, tags: &[&str]) -> Memory {
+    let input = RememberInput {
+        tags: tags.iter().map(|t| t.to_string()).collect(),
+        ..base_input(content)
+    };
+    repository::remember(conn, &input, &Settings::default()).unwrap()
+}
+
+fn remember_in(conn: &rusqlite::Connection, namespace: &str, content: &str) -> Memory {
+    let input = RememberInput { namespace: namespace.into(), ..base_input(content) };
+    repository::remember(conn, &input, &Settings::default()).unwrap()
+}
+
 // ---------------------------------------------------------------------------
 // Migration bootstrap
 // ---------------------------------------------------------------------------
@@ -1414,4 +1450,175 @@ fn bulk_link_expansion_returns_linked_memories() {
     // Verify linked_from is set on the linked items.
     let b_item = result.items.iter().find(|i| i.memory.id == b.id).unwrap();
     assert_eq!(b_item.linked_from.as_deref(), Some(a.id.as_str()));
+}
+
+// ---------------------------------------------------------------------------
+// Deduplication: merge retains tags in memory_tags table
+// ---------------------------------------------------------------------------
+
+#[test]
+fn merge_retains_tags_in_memory_tags_table() {
+    let conn = test_db();
+    let keep = remember_with_tags(&conn, "Primary content about rust", &["alpha", "beta"]);
+    let dup = remember_with_tags(&conn, "Duplicate content about rust", &["beta", "gamma"]);
+
+    clio_core::deduplication::merge_memories(&conn, &keep.id, &[dup.id.clone()]).unwrap();
+
+    // Regression: the normalised memory_tags rows for the kept memory were silently
+    // dropped because the re-insert omitted the NOT NULL created_at column.
+    let count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM memory_tags WHERE memory_id = ?1",
+            [&keep.id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(count, 3, "kept memory should hold the union of tags (alpha, beta, gamma)");
+}
+
+// ---------------------------------------------------------------------------
+// FTS multi-term search
+// ---------------------------------------------------------------------------
+
+#[test]
+fn recall_multi_term_matches_documents_containing_all_terms() {
+    let conn = test_db();
+    remember_simple(&conn, "We use rust together with sqlite for storage");
+    remember_simple(&conn, "Unrelated python notes about pandas");
+
+    let q = RecallQuery {
+        query: Some("rust sqlite".into()),
+        ..Default::default()
+    };
+    let res = repository::recall(&conn, &q).unwrap();
+
+    // Both terms appear in the first doc but are not adjacent; multi-term AND must match it.
+    assert_eq!(res.count, 1, "multi-term query should match the doc containing both terms");
+    assert!(res.items[0].memory.content.contains("rust"));
+}
+
+// ---------------------------------------------------------------------------
+// Backup: WAL-safe standalone snapshot
+// ---------------------------------------------------------------------------
+
+#[test]
+fn backup_produces_standalone_snapshot_without_wal() {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("memory.db");
+    let conn = clio_core::db::open(&db_path).unwrap();
+    repository::remember(&conn, &base_input("back me up"), &Settings::default()).unwrap();
+
+    let dest = dir.path().join("backups");
+    let res = clio_core::backup::backup(&db_path, Some(&dest), 5).unwrap();
+    let backup_path = std::path::Path::new(&res.path);
+
+    // The snapshot must be a complete, standalone DB needing no WAL sidecar.
+    assert!(backup_path.exists(), "backup file should exist");
+    assert!(
+        !backup_path.with_extension("db-wal").exists(),
+        "VACUUM INTO snapshot must not carry a -wal sidecar"
+    );
+    let bconn = rusqlite::Connection::open(backup_path).unwrap();
+    let n: i64 = bconn
+        .query_row("SELECT COUNT(*) FROM memories", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(n, 1, "the snapshot must contain the row, even if it was still in the WAL");
+}
+
+// ---------------------------------------------------------------------------
+// Restore: safety snapshot before overwrite
+// ---------------------------------------------------------------------------
+
+#[test]
+fn restore_creates_pre_restore_safety_snapshot() {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("memory.db");
+    let conn = clio_core::db::open(&db_path).unwrap();
+    repository::remember(&conn, &base_input("original row"), &Settings::default()).unwrap();
+
+    let dest = dir.path().join("backups");
+    let res = clio_core::backup::backup(&db_path, Some(&dest), 5).unwrap();
+
+    // Change the live DB after the backup, then restore.
+    repository::remember(&conn, &base_input("added after backup"), &Settings::default()).unwrap();
+    drop(conn);
+
+    let r = clio_core::backup::restore(&db_path, std::path::Path::new(&res.path)).unwrap();
+    assert!(r.integrity_ok);
+
+    // A safety snapshot of the pre-restore live DB must be written.
+    assert!(
+        db_path.with_extension("db.pre-restore").exists(),
+        "restore should snapshot the live DB before overwriting it"
+    );
+
+    // The restored DB reflects the backup (1 row) and leaves no stale WAL.
+    assert!(!db_path.with_extension("db-wal").exists());
+    let conn2 = clio_core::db::open(&db_path).unwrap();
+    let n: i64 = conn2
+        .query_row("SELECT COUNT(*) FROM memories", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(n, 1, "restored DB should match the backup, not the post-backup state");
+}
+
+// ---------------------------------------------------------------------------
+// Character-based validation
+// ---------------------------------------------------------------------------
+
+#[test]
+fn validates_namespace_length_by_characters_not_bytes() {
+    let conn = test_db();
+    // 120 two-byte characters = 240 bytes, but 120 chars — valid by the schema's
+    // character-based CHECK constraint.
+    let namespace = "é".repeat(120);
+    let input = RememberInput { namespace, ..base_input("multibyte namespace content") };
+
+    let result = repository::remember(&conn, &input, &Settings::default());
+    assert!(result.is_ok(), "a 120-character namespace must pass character-based validation");
+}
+
+// ---------------------------------------------------------------------------
+// Deduplication — access_count invariant
+// ---------------------------------------------------------------------------
+
+#[test]
+fn merge_does_not_inflate_access_count() {
+    let conn = test_db();
+    let keep = remember_simple(&conn, "keep this memory");
+    let dup = remember_simple(&conn, "duplicate memory");
+
+    clio_core::deduplication::merge_memories(&conn, &keep.id, &[dup.id.clone()]).unwrap();
+
+    let access_count: i64 = conn
+        .query_row(
+            "SELECT access_count FROM memories WHERE id = ?1",
+            [&keep.id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(access_count, 0, "a merge is maintenance and must not bump access_count");
+}
+
+// ---------------------------------------------------------------------------
+// recall_scoped — total counting (characterisation / regression)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn recall_scoped_total_counts_each_namespace_once() {
+    let conn = test_db();
+    // Two matches in the project namespace, one in global — all disjoint by namespace.
+    remember_in(&conn, "proj", "alpha one note");
+    remember_in(&conn, "proj", "alpha two note");
+    remember_in(&conn, "global", "alpha three note");
+
+    // limit high enough that the scoped pass does not satisfy it alone, exercising the merge.
+    let q = RecallQuery {
+        query: Some("alpha".into()),
+        limit: 5,
+        ..Default::default()
+    };
+    let res = repository::recall_scoped(&conn, &q, "proj").unwrap();
+
+    assert_eq!(res.count, 3, "should merge 2 project + 1 global match");
+    assert_eq!(res.total, 3, "disjoint namespaces — each counted once, no double count");
 }

@@ -2,6 +2,8 @@
 
 Clio ships a native desktop application built with Tauri 2 and Vue 3. It provides a visual interface for browsing, creating, editing, and searching memories without using the CLI or MCP server.
 
+For general Clio setup, see [Getting Started](getting-started.md). For CLI usage, see [CLI Reference](cli-reference.md).
+
 ---
 
 ## Building and Running
@@ -215,6 +217,16 @@ The app uses a custom CSS design system defined as CSS custom properties in `App
 ## Environment Variables
 
 | Variable | Purpose |
-|---|---|
+|----------|---------|
 | `CLIO_DB_PATH` | Override the database path (defaults to platform standard location) |
 | `RUST_LOG` | Control log verbosity (e.g. `info`, `debug`, `clio_tauri=debug`) |
+
+---
+
+## Related Documentation
+
+- [Getting Started](getting-started.md) — installation and initial setup
+- [CLI Reference](cli-reference.md) — command-line usage
+- [MCP Agent Setup](mcp-agent-setup.md) — connecting AI agents
+- [Architecture](../context/ARCHITECTURE.md) — system overview
+- [Documentation Index](README.md) — all available documentation
