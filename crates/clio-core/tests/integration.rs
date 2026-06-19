@@ -9,6 +9,42 @@ fn test_db() -> rusqlite::Connection {
     db::open_in_memory().expect("failed to open in-memory DB")
 }
 
+fn base_input(content: &str) -> RememberInput {
+    RememberInput {
+        namespace: "global".into(),
+        kind: "note".into(),
+        title: None,
+        summary: None,
+        content: content.into(),
+        tags: vec![],
+        source: None,
+        source_ref: None,
+        confidence: None,
+        importance: 3,
+        metadata: serde_json::json!({}),
+        valid_from: None,
+        valid_until: None,
+        upsert: false,
+    }
+}
+
+fn remember_simple(conn: &rusqlite::Connection, content: &str) -> Memory {
+    repository::remember(conn, &base_input(content), &Settings::default()).unwrap()
+}
+
+fn remember_with_tags(conn: &rusqlite::Connection, content: &str, tags: &[&str]) -> Memory {
+    let input = RememberInput {
+        tags: tags.iter().map(|t| t.to_string()).collect(),
+        ..base_input(content)
+    };
+    repository::remember(conn, &input, &Settings::default()).unwrap()
+}
+
+fn remember_in(conn: &rusqlite::Connection, namespace: &str, content: &str) -> Memory {
+    let input = RememberInput { namespace: namespace.into(), ..base_input(content) };
+    repository::remember(conn, &input, &Settings::default()).unwrap()
+}
+
 // ---------------------------------------------------------------------------
 // Migration bootstrap
 // ---------------------------------------------------------------------------
