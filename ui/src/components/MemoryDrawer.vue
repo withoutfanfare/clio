@@ -145,19 +145,27 @@ async function archiveMemory() {
   }
 }
 
-async function deleteMemory() {
-  if (!store.drawerMemory) return;
-  if (!confirmingDelete.value) {
-    confirmingDelete.value = true;
-    return;
-  }
+const deleting = ref(false);
+
+function promptDelete() {
+  confirmingDelete.value = true;
+}
+
+function cancelDelete() {
+  confirmingDelete.value = false;
+}
+
+async function confirmDelete() {
+  if (!store.drawerMemory || deleting.value) return;
+  deleting.value = true;
   try {
     await api.deleteMemory(store.drawerMemory.id);
     store.closeDrawer();
     store.loadRecent();
-  } catch {
-    // Delete failed
+  } catch (e) {
+    console.error("Delete failed:", e);
   } finally {
+    deleting.value = false;
     confirmingDelete.value = false;
   }
 }
@@ -182,7 +190,7 @@ const menuItems = computed<SDropdownMenuItem[]>(() => {
       value: "archive",
     },
     {
-      label: confirmingDelete.value ? "Confirm delete" : "Delete",
+      label: "Delete",
       value: "delete",
       danger: true,
     },
@@ -204,7 +212,7 @@ function handleMenuSelect(value: string) {
       archiveMemory();
       break;
     case "delete":
-      deleteMemory();
+      promptDelete();
       break;
   }
 }
@@ -380,6 +388,20 @@ function formatDate(iso: string): string {
 
           <LinkList :memory-id="store.drawerMemory.id" />
         </div>
+
+        <Transition name="fade">
+          <div v-if="confirmingDelete" class="delete-confirm-bar">
+            <span class="delete-confirm-text">Delete this memory permanently?</span>
+            <div class="delete-confirm-actions">
+              <SButton variant="ghost" size="sm" @click="cancelDelete" :disabled="deleting">
+                Cancel
+              </SButton>
+              <SButton variant="danger" size="sm" @click="confirmDelete" :disabled="deleting">
+                {{ deleting ? "Deleting\u2026" : "Delete" }}
+              </SButton>
+            </div>
+          </div>
+        </Transition>
       </div>
     </Transition>
   </Teleport>
@@ -659,5 +681,29 @@ function formatDate(iso: string): string {
   line-height: var(--leading-relaxed);
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+/* ── Delete Confirmation Bar ── */
+.delete-confirm-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-5);
+  border-top: 1px solid var(--color-border-subtle);
+  background: color-mix(in srgb, var(--color-danger) 6%, var(--colour-surface-panel));
+  flex-shrink: 0;
+}
+
+.delete-confirm-text {
+  font-size: 13px;
+  color: var(--color-danger);
+  font-weight: 500;
+}
+
+.delete-confirm-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
 }
 </style>

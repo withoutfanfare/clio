@@ -226,6 +226,8 @@ function formatTime(iso: string): string {
 /* ── List mode ── */
 .mode-list {
   padding: var(--space-4) var(--space-5);
+  flex-shrink: 0;
+  overflow: hidden;
 }
 
 .mode-list .page-content {
