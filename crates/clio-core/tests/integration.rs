@@ -1451,3 +1451,27 @@ fn bulk_link_expansion_returns_linked_memories() {
     let b_item = result.items.iter().find(|i| i.memory.id == b.id).unwrap();
     assert_eq!(b_item.linked_from.as_deref(), Some(a.id.as_str()));
 }
+
+// ---------------------------------------------------------------------------
+// Deduplication: merge retains tags in memory_tags table
+// ---------------------------------------------------------------------------
+
+#[test]
+fn merge_retains_tags_in_memory_tags_table() {
+    let conn = test_db();
+    let keep = remember_with_tags(&conn, "Primary content about rust", &["alpha", "beta"]);
+    let dup = remember_with_tags(&conn, "Duplicate content about rust", &["beta", "gamma"]);
+
+    clio_core::deduplication::merge_memories(&conn, &keep.id, &[dup.id.clone()]).unwrap();
+
+    // Regression: the normalised memory_tags rows for the kept memory were silently
+    // dropped because the re-insert omitted the NOT NULL created_at column.
+    let count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM memory_tags WHERE memory_id = ?1",
+            [&keep.id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(count, 3, "kept memory should hold the union of tags (alpha, beta, gamma)");
+}
