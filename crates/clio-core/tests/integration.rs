@@ -1496,3 +1496,19 @@ fn recall_multi_term_matches_documents_containing_all_terms() {
     assert_eq!(res.count, 1, "multi-term query should match the doc containing both terms");
     assert!(res.items[0].memory.content.contains("rust"));
 }
+
+// ---------------------------------------------------------------------------
+// Character-based validation
+// ---------------------------------------------------------------------------
+
+#[test]
+fn validates_namespace_length_by_characters_not_bytes() {
+    let conn = test_db();
+    // 120 two-byte characters = 240 bytes, but 120 chars — valid by the schema's
+    // character-based CHECK constraint.
+    let namespace = "é".repeat(120);
+    let input = RememberInput { namespace, ..base_input("multibyte namespace content") };
+
+    let result = repository::remember(&conn, &input, &Settings::default());
+    assert!(result.is_ok(), "a 120-character namespace must pass character-based validation");
+}

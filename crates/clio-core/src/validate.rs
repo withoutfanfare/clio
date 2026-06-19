@@ -28,7 +28,7 @@ pub fn remember_input(input: &RememberInput) -> Result<()> {
         ));
     }
 
-    if input.namespace.len() > 120 {
+    if input.namespace.chars().count() > 120 {
         return Err(ClioError::Validation(
             "namespace must be at most 120 characters.".into(),
         ));
@@ -38,14 +38,14 @@ pub fn remember_input(input: &RememberInput) -> Result<()> {
         return Err(ClioError::Validation("kind must not be empty.".into()));
     }
 
-    if input.kind.len() > 50 {
+    if input.kind.chars().count() > 50 {
         return Err(ClioError::Validation(
             "kind must be at most 50 characters.".into(),
         ));
     }
 
     if let Some(ref title) = input.title {
-        if title.len() > 240 {
+        if title.chars().count() > 240 {
             return Err(ClioError::Validation(
                 "title must be at most 240 characters.".into(),
             ));
@@ -53,7 +53,7 @@ pub fn remember_input(input: &RememberInput) -> Result<()> {
     }
 
     if let Some(ref summary) = input.summary {
-        if summary.len() > 1000 {
+        if summary.chars().count() > 1000 {
             return Err(ClioError::Validation(
                 "summary must be at most 1000 characters.".into(),
             ));
@@ -97,7 +97,7 @@ pub fn remember_input(input: &RememberInput) -> Result<()> {
 
     for tag in &input.tags {
         let trimmed = tag.trim();
-        if trimmed.is_empty() || trimmed.len() > 60 {
+        if trimmed.is_empty() || trimmed.chars().count() > 60 {
             return Err(ClioError::Validation(
                 "each tag must be between 1 and 60 characters.".into(),
             ));
