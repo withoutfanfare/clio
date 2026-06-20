@@ -89,6 +89,9 @@ enum Command {
     /// Find and optionally purge stale namespaces (dry-run by default).
     Cleanup(CleanupArgs),
 
+    /// Roll a namespace's memories into a single AI-curated consolidated memory.
+    Consolidate(ConsolidateArgs),
+
     /// List all namespaces in use.
     Namespaces,
 
@@ -347,6 +350,13 @@ struct CleanupArgs {
     /// backup is always taken before purging.
     #[arg(long)]
     execute: bool,
+}
+
+#[derive(Parser)]
+struct ConsolidateArgs {
+    /// Namespace to consolidate. Auto-detected from the working directory if omitted.
+    #[arg(long)]
+    namespace: Option<String>,
 }
 
 #[derive(Parser)]
@@ -818,6 +828,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         Command::Move(args) => cmd_move(cli.db_path.as_deref(), cli.json, args),
         Command::Delete { id } => cmd_delete(cli.db_path.as_deref(), cli.json, &id),
         Command::Cleanup(args) => cmd_cleanup(cli.db_path.as_deref(), cli.json, args),
+        Command::Consolidate(args) => cmd_consolidate(cli.db_path.as_deref(), cli.json, args),
         Command::Namespaces => cmd_namespaces(cli.db_path.as_deref(), cli.json),
         Command::Link(args) => cmd_link(cli.db_path.as_deref(), cli.json, args),
         Command::Export(args) => cmd_export(cli.db_path.as_deref(), args),
@@ -1318,6 +1329,39 @@ fn cmd_cleanup(
         if let Some(bp) = &report.backup_path {
             eprintln!("Backup: {bp}");
         }
+    }
+    Ok(())
+}
+
+fn cmd_consolidate(
+    db_path: Option<&str>,
+    json: bool,
+    args: ConsolidateArgs,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let path = resolve_db_path(db_path)?;
+    let conn = db::open(&path)?;
+    let s = settings::load(&path)?;
+
+    let namespace = match args.namespace {
+        Some(ns) => ns,
+        None => std::env::current_dir()
+            .ok()
+            .as_deref()
+            .and_then(context::detect_namespace)
+            .map(|ctx| ctx.namespace)
+            .unwrap_or_else(|| "global".into()),
+    };
+
+    let result = clio_core::consolidate::consolidate(&conn, &namespace, &s.capture, &s)?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&result.memory)?);
+    } else {
+        eprintln!(
+            "Consolidated {} memories into '{}'.",
+            result.source_count, namespace
+        );
+        print_memory_card(&result.memory);
     }
     Ok(())
 }

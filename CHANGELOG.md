@@ -22,6 +22,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CLI: `clio cleanup` (dry-run by default; `--stale-months`, `--archived`, `--folder-gone`, `--execute`) and `clio delete <id>` (previously the CLI had no delete).
 - Desktop app: a "Find stale" panel in the Namespaces view lists candidates with reasons and purges the selected ones (backup taken first). Backed by `cmd_find_cleanup_candidates` / `cmd_run_cleanup`.
 
+**Memory Consolidation**
+- New `clio-core::consolidate` module: rolls a namespace's atomic memories into a single AI-curated "consolidated memory" document. It is a *derived cache* — each run reconciles fully from the current memories (no iterative self-edit, so no drift) and leaves the atomic memories untouched.
+- Stored as a singleton per namespace (`kind = summary`, `source = clio-consolidate`, `source_ref = <namespace>` for per-namespace uniqueness), upserted in place.
+- The `project-brief` context now leads with the consolidated memory when one exists, so sessions open with the curated project summary.
+- CLI: `clio consolidate [--namespace]`.
+- Shared the OpenAI-compatible chat call across classify/distill/consolidate (`capture::chat`).
+- `new_since_last_consolidation` helper counts memories added since the last run (for an upcoming auto-consolidate trigger).
+
 ## [0.3.0] - 2026-03-03
 
 ### Added

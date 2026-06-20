@@ -183,7 +183,25 @@ fn build_project_brief(
     let constraints = recall_section(conn, "Active Constraints", ns, Some("constraint"), None, constraint_limit, include_links, scoring)?;
     let recent = recall_section(conn, "Recent Activity", ns, None, None, recent_limit, include_links, scoring)?;
 
-    Ok(vec![decisions, constraints, recent])
+    let mut sections = Vec::new();
+
+    // Lead with the AI-curated consolidated memory for this namespace, if one
+    // exists — it is the highest-signal summary of the whole project.
+    if let Some(ns_str) = ns {
+        if let Ok(Some(consolidated)) =
+            crate::repository::get_by_source_ref(conn, crate::consolidate::CONSOLIDATED_SOURCE, ns_str)
+        {
+            sections.push(ContextSection {
+                heading: "Consolidated Memory".to_string(),
+                items: vec![consolidated],
+            });
+        }
+    }
+
+    sections.push(decisions);
+    sections.push(constraints);
+    sections.push(recent);
+    Ok(sections)
 }
 
 fn build_person_brief(

@@ -4,6 +4,7 @@ pub mod cache;
 pub mod capture;
 pub mod cleanup;
 pub mod config;
+pub mod consolidate;
 pub mod daemon;
 pub mod context;
 pub mod db;

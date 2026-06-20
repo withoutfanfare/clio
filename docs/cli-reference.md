@@ -195,6 +195,25 @@ Criteria:
 With no criterion flag, all three are applied. The `global` namespace is never
 flagged. See `reference/settings.md` for `cleanup.*` configuration.
 
+### Consolidate (project memory)
+
+`consolidate` rolls a namespace's atomic memories into a single AI-curated
+"consolidated memory" document — a coherent, deduplicated summary of the
+project. It is stored as a singleton memory per namespace (`kind = summary`,
+upserted in place), and the session-start brief leads with it.
+
+```sh
+# Consolidate the current project (namespace auto-detected from cwd)
+clio consolidate
+
+# Consolidate a specific namespace
+clio consolidate --namespace project:clio
+```
+
+The document is a **derived cache**: each run reconciles it from the current
+atomic memories (no iterative self-editing, so it can't drift), and the atomic
+memories are left untouched. Requires the capture pipeline to be enabled.
+
 ---
 
 ## Stats & Activity

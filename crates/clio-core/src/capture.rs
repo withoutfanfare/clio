@@ -122,27 +122,36 @@ Output ONLY valid JSON, no markdown fences, no extra text. An empty session dige
 // Classify
 // ---------------------------------------------------------------------------
 
-/// Call an OpenAI-compatible chat completions endpoint to classify raw text.
-///
-/// Uses a mini tokio runtime for the HTTP call (same pattern as the OpenAI
-/// embedding backend) so this function is safe to call from synchronous code.
+/// Classify a single blob of text into structured memory fields.
 #[cfg(feature = "capture")]
 pub fn classify(text: &str, config: &CaptureConfig) -> Result<ClassificationResult> {
-    if !config.enabled {
-        return Err(ClioError::Config("capture pipeline is not enabled".into()));
-    }
+    parse_classification(&chat(CLASSIFICATION_SYSTEM_PROMPT, text, config)?)
+}
 
-    let api_key = match &config.api_key {
-        Some(key) if !key.is_empty() => key.clone(),
+/// Resolve the API key from config or the `OPENAI_API_KEY` environment variable.
+#[cfg(feature = "capture")]
+fn resolve_api_key(config: &CaptureConfig) -> Result<String> {
+    match &config.api_key {
+        Some(key) if !key.is_empty() => Ok(key.clone()),
         _ => std::env::var("OPENAI_API_KEY").map_err(|_| {
             ClioError::Config(
                 "capture API key required: set OPENAI_API_KEY or configure capture.api_key in settings"
                     .into(),
             )
-        })?,
-    };
+        }),
+    }
+}
 
-    get_or_create_runtime().block_on(classify_async(text, &api_key, config))
+/// Send a system + user prompt to the configured OpenAI-compatible chat
+/// completions endpoint and return the assistant message content. Shared by
+/// classify, distill, and consolidate. Safe to call from synchronous code.
+#[cfg(feature = "capture")]
+pub(crate) fn chat(system: &str, user: &str, config: &CaptureConfig) -> Result<String> {
+    if !config.enabled {
+        return Err(ClioError::Config("capture pipeline is not enabled".into()));
+    }
+    let api_key = resolve_api_key(config)?;
+    get_or_create_runtime().block_on(chat_async(system, user, &api_key, config))
 }
 
 /// Reuse a single tokio runtime across all capture classify calls.
@@ -158,11 +167,12 @@ fn get_or_create_runtime() -> &'static tokio::runtime::Runtime {
 }
 
 #[cfg(feature = "capture")]
-async fn classify_async(
-    text: &str,
+async fn chat_async(
+    system: &str,
+    user: &str,
     api_key: &str,
     config: &CaptureConfig,
-) -> Result<ClassificationResult> {
+) -> Result<String> {
     let base_url = config.base_url.trim_end_matches('/');
     let url = format!("{base_url}/chat/completions");
 
@@ -170,8 +180,8 @@ async fn classify_async(
         "model": config.model,
         "temperature": 0.1,
         "messages": [
-            { "role": "system", "content": CLASSIFICATION_SYSTEM_PROMPT },
-            { "role": "user", "content": text }
+            { "role": "system", "content": system },
+            { "role": "user", "content": user }
         ]
     });
 
@@ -200,89 +210,19 @@ async fn classify_async(
         .await
         .map_err(|e| ClioError::Storage(format!("capture API response parse error: {e}")))?;
 
-    let content_str = json["choices"][0]["message"]["content"]
+    json["choices"][0]["message"]["content"]
         .as_str()
+        .map(str::to_string)
         .ok_or_else(|| {
             ClioError::Storage("capture API: missing choices[0].message.content".into())
-        })?;
-
-    parse_classification(content_str)
+        })
 }
 
-/// Call an OpenAI-compatible chat completions endpoint to distil a longer body
-/// of text (e.g. a session transcript) into zero or more durable memories.
-///
-/// Uses the same mini tokio runtime as [`classify`] so it is safe to call from
-/// synchronous code. An empty result is valid and expected for routine input.
+/// Distil a longer body of text (e.g. a session transcript) into zero or more
+/// durable memories. An empty result is valid and expected for routine input.
 #[cfg(feature = "capture")]
 pub fn distill(text: &str, config: &CaptureConfig) -> Result<Vec<DistilledMemory>> {
-    if !config.enabled {
-        return Err(ClioError::Config("capture pipeline is not enabled".into()));
-    }
-
-    let api_key = match &config.api_key {
-        Some(key) if !key.is_empty() => key.clone(),
-        _ => std::env::var("OPENAI_API_KEY").map_err(|_| {
-            ClioError::Config(
-                "capture API key required: set OPENAI_API_KEY or configure capture.api_key in settings"
-                    .into(),
-            )
-        })?,
-    };
-
-    get_or_create_runtime().block_on(distill_async(text, &api_key, config))
-}
-
-#[cfg(feature = "capture")]
-async fn distill_async(
-    text: &str,
-    api_key: &str,
-    config: &CaptureConfig,
-) -> Result<Vec<DistilledMemory>> {
-    let base_url = config.base_url.trim_end_matches('/');
-    let url = format!("{base_url}/chat/completions");
-
-    let body = serde_json::json!({
-        "model": config.model,
-        "temperature": 0.1,
-        "messages": [
-            { "role": "system", "content": DISTILLATION_SYSTEM_PROMPT },
-            { "role": "user", "content": text }
-        ]
-    });
-
-    let client = reqwest::Client::new();
-    let response = client
-        .post(&url)
-        .header("Authorization", format!("Bearer {api_key}"))
-        .header("Content-Type", "application/json")
-        .json(&body)
-        .send()
-        .await
-        .map_err(|e| ClioError::Storage(format!("capture API request failed: {e}")))?;
-
-    if !response.status().is_success() {
-        let status = response.status();
-        let body = response
-            .text()
-            .await
-            .unwrap_or_else(|_| "unknown error".into());
-        tracing::debug!("Distillation API error body: {body}");
-        return Err(ClioError::Storage(format!("capture API returned {status}")));
-    }
-
-    let json: serde_json::Value = response
-        .json()
-        .await
-        .map_err(|e| ClioError::Storage(format!("capture API response parse error: {e}")))?;
-
-    let content_str = json["choices"][0]["message"]["content"]
-        .as_str()
-        .ok_or_else(|| {
-            ClioError::Storage("capture API: missing choices[0].message.content".into())
-        })?;
-
-    parse_distillation(content_str)
+    parse_distillation(&chat(DISTILLATION_SYSTEM_PROMPT, text, config)?)
 }
 
 /// Parse the LLM's JSON response into a `ClassificationResult`, with
