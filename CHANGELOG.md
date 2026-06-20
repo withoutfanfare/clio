@@ -5,6 +5,34 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+**Knowledge Distillation**
+- `distill` / `distill_and_store` in `clio-core::capture`: send a long body of text (e.g. a session transcript) to the LLM and extract **zero or more** self-contained, durable memories (decisions, facts, constraints, insights). Routine input yields nothing, so noise is filtered by design.
+- `DistilledMemory` struct and `parse_distillation` (tolerant of bare arrays or `{"memories": […]}`, drops empty-content items).
+- `clio distill` CLI command (stdin via `-`, `--dry-run`, `--source`, `--source-ref`, `--namespace`).
+- Distilled memories from one session get a per-index `source_ref` suffix (`<ref>-<n>`) so the `UNIQUE(source, source_ref)` index is respected while keeping a shared session prefix for provenance.
+- Reuses the existing capture pipeline per memory (review-queue routing below `review_threshold`, auto-embed) via a shared `store_or_queue` helper.
+
+**Namespace Cleanup**
+- New `clio-core::cleanup` module: `find_candidates` flags stale namespaces by age, all-archived state, or a missing project folder (the "folder gone" heuristic, which prunes the disk scan at project roots); `execute_cleanup` purges them after taking a database backup.
+- `CleanupConfig` settings: `stale_months` (default 6), `dev_roots`, `record_cwd`.
+- CLI: `clio cleanup` (dry-run by default; `--stale-months`, `--archived`, `--folder-gone`, `--execute`) and `clio delete <id>` (previously the CLI had no delete).
+- Desktop app: a "Find stale" panel in the Namespaces view lists candidates with reasons and purges the selected ones (backup taken first). Backed by `cmd_find_cleanup_candidates` / `cmd_run_cleanup`.
+
+**Memory Consolidation**
+- New `clio-core::consolidate` module: rolls a namespace's atomic memories into a single AI-curated "consolidated memory" document. It is a *derived cache* — each run reconciles fully from the current memories (no iterative self-edit, so no drift) and leaves the atomic memories untouched.
+- Stored as a singleton per namespace (`kind = summary`, `source = clio-consolidate`, `source_ref = <namespace>` for per-namespace uniqueness), upserted in place.
+- The `project-brief` context now leads with the consolidated memory when one exists, so sessions open with the curated project summary.
+- CLI: `clio consolidate [--namespace]`.
+- Shared the OpenAI-compatible chat call across classify/distill/consolidate (`capture::chat`).
+- `new_since_last_consolidation` helper counts memories added since the last run.
+- Triggers: `clio consolidate --all` (every namespace) and `--if-due` (only namespaces past `consolidate.auto_threshold` new memories). The Stop hook runs `--if-due` after each productive session; a launchd plist can schedule `--all --if-due` (documented in the CLI reference).
+- `ConsolidateConfig` setting `auto_threshold` (default 10).
+- Desktop app: a per-namespace "Consolidate" button in the Namespaces view (`cmd_consolidate_namespace`).
+
 ## [0.3.0] - 2026-03-03
 
 ### Added

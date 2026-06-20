@@ -83,6 +83,20 @@ Three variants (tagged by `provider`):
 | `max_links_per_memory` | int | `3` | Max links created per memory per pass |
 | `batch_size` | int | `50` | Memories processed per pass |
 
+## cleanup
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `stale_months` | int | `6` | A namespace with no activity for this many months is "stale by age" |
+| `dev_roots` | string[] | `["~/Development", "~/Projects", "~/Code", "~/dev", "~/src"]` | Roots scanned for the "folder gone" heuristic; `~` expands to `$HOME` |
+| `record_cwd` | bool | `true` | Record the working directory in memory metadata at capture time, for reliable future path matching |
+
+## consolidate
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `auto_threshold` | int | `10` | Consolidate a namespace automatically once it has this many new memories since the last consolidation (used by `clio consolidate --if-due`) |
+
 ## Example
 
 ```json

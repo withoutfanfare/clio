@@ -45,6 +45,30 @@ pub struct ClassificationResult {
     pub confidence: f64,
 }
 
+/// A single durable memory extracted from a longer body of text (e.g. a
+/// session transcript). Unlike [`ClassificationResult`], which describes how to
+/// file one supplied blob, each `DistilledMemory` carries its own
+/// self-contained `content` — the distilled fact, decision, or insight.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct DistilledMemory {
+    /// The self-contained durable fact to store as the memory body.
+    pub content: String,
+    /// Memory kind — one of note, fact, decision, summary, task, observation, constraint.
+    pub kind: String,
+    /// Concise label (max 240 chars).
+    pub title: String,
+    /// One-sentence summary (max 1000 chars).
+    pub summary: String,
+    /// 1-5 lowercase tags.
+    pub tags: Vec<String>,
+    /// Suggested namespace: "global", "project:<slug>", or "topic:<slug>".
+    pub namespace: String,
+    /// Importance on a 1-5 scale.
+    pub importance: i32,
+    /// Confidence score 0.0-1.0.
+    pub confidence: f64,
+}
+
 // ---------------------------------------------------------------------------
 // System prompt
 // ---------------------------------------------------------------------------
@@ -66,31 +90,68 @@ Rules:
 - If the text is ambiguous, prefer "note" as kind and lower confidence.
 - Output ONLY valid JSON, no markdown fences, no extra text."#;
 
+const DISTILLATION_SYSTEM_PROMPT: &str = r#"You are a knowledge curator for a long-lived, cross-tool memory shared by several AI coding assistants. You are given a digest of one working session (user prompts, assistant replies, and the tools that were run). Your job is to extract only the DURABLE KNOWLEDGE worth recalling in a completely different session weeks from now.
+
+Capture things like:
+- A decision and the reasoning behind it ("kind": "decision")
+- A non-obvious fact, constraint, gotcha, or API quirk discovered ("kind": "fact" or "constraint")
+- An architectural insight or how a tricky part of the system actually works ("kind": "observation")
+- A durable user preference expressed during the session ("kind": "fact")
+
+Do NOT capture:
+- Routine activity, step-by-step narration, or "what was done" ("I edited file X, ran the tests")
+- Lists of changed files, diff stats, or commit mechanics
+- Anything trivially re-derivable by reading the current code or git history
+- Transient state, in-progress work, speculation, or things specific to this one session
+
+Each captured memory must be SELF-CONTAINED: a reader with no access to this session must understand it. Prefer fewer, higher-value memories. If the session produced nothing durable, return an empty array — this is the correct and expected outcome for most routine sessions.
+
+Respond ONLY with a JSON array (possibly empty). Each element is an object with:
+- "content": the self-contained durable fact, decision, or insight (the memory body)
+- "kind": one of "note", "fact", "decision", "summary", "task", "observation", "constraint"
+- "title": a concise label (max 240 characters)
+- "summary": a one-sentence summary (max 1000 characters)
+- "tags": an array of 1 to 5 lowercase tags (no spaces, use hyphens)
+- "namespace": "global", or "project:<slug>", or "topic:<slug>"
+- "importance": integer 1 to 5 (1=trivial, 5=critical)
+- "confidence": float 0.0 to 1.0 — how certain you are this is durable knowledge worth keeping
+
+Output ONLY valid JSON, no markdown fences, no extra text. An empty session digest, or one with no durable knowledge, MUST yield []."#;
+
 // ---------------------------------------------------------------------------
 // Classify
 // ---------------------------------------------------------------------------
 
-/// Call an OpenAI-compatible chat completions endpoint to classify raw text.
-///
-/// Uses a mini tokio runtime for the HTTP call (same pattern as the OpenAI
-/// embedding backend) so this function is safe to call from synchronous code.
+/// Classify a single blob of text into structured memory fields.
 #[cfg(feature = "capture")]
 pub fn classify(text: &str, config: &CaptureConfig) -> Result<ClassificationResult> {
-    if !config.enabled {
-        return Err(ClioError::Config("capture pipeline is not enabled".into()));
-    }
+    parse_classification(&chat(CLASSIFICATION_SYSTEM_PROMPT, text, config)?)
+}
 
-    let api_key = match &config.api_key {
-        Some(key) if !key.is_empty() => key.clone(),
+/// Resolve the API key from config or the `OPENAI_API_KEY` environment variable.
+#[cfg(feature = "capture")]
+fn resolve_api_key(config: &CaptureConfig) -> Result<String> {
+    match &config.api_key {
+        Some(key) if !key.is_empty() => Ok(key.clone()),
         _ => std::env::var("OPENAI_API_KEY").map_err(|_| {
             ClioError::Config(
                 "capture API key required: set OPENAI_API_KEY or configure capture.api_key in settings"
                     .into(),
             )
-        })?,
-    };
+        }),
+    }
+}
 
-    get_or_create_runtime().block_on(classify_async(text, &api_key, config))
+/// Send a system + user prompt to the configured OpenAI-compatible chat
+/// completions endpoint and return the assistant message content. Shared by
+/// classify, distill, and consolidate. Safe to call from synchronous code.
+#[cfg(feature = "capture")]
+pub(crate) fn chat(system: &str, user: &str, config: &CaptureConfig) -> Result<String> {
+    if !config.enabled {
+        return Err(ClioError::Config("capture pipeline is not enabled".into()));
+    }
+    let api_key = resolve_api_key(config)?;
+    get_or_create_runtime().block_on(chat_async(system, user, &api_key, config))
 }
 
 /// Reuse a single tokio runtime across all capture classify calls.
@@ -106,11 +167,12 @@ fn get_or_create_runtime() -> &'static tokio::runtime::Runtime {
 }
 
 #[cfg(feature = "capture")]
-async fn classify_async(
-    text: &str,
+async fn chat_async(
+    system: &str,
+    user: &str,
     api_key: &str,
     config: &CaptureConfig,
-) -> Result<ClassificationResult> {
+) -> Result<String> {
     let base_url = config.base_url.trim_end_matches('/');
     let url = format!("{base_url}/chat/completions");
 
@@ -118,8 +180,8 @@ async fn classify_async(
         "model": config.model,
         "temperature": 0.1,
         "messages": [
-            { "role": "system", "content": CLASSIFICATION_SYSTEM_PROMPT },
-            { "role": "user", "content": text }
+            { "role": "system", "content": system },
+            { "role": "user", "content": user }
         ]
     });
 
@@ -140,9 +202,7 @@ async fn classify_async(
             .await
             .unwrap_or_else(|_| "unknown error".into());
         tracing::debug!("Capture API error body: {body}");
-        return Err(ClioError::Storage(format!(
-            "capture API returned {status}"
-        )));
+        return Err(ClioError::Storage(format!("capture API returned {status}")));
     }
 
     let json: serde_json::Value = response
@@ -150,13 +210,19 @@ async fn classify_async(
         .await
         .map_err(|e| ClioError::Storage(format!("capture API response parse error: {e}")))?;
 
-    let content_str = json["choices"][0]["message"]["content"]
+    json["choices"][0]["message"]["content"]
         .as_str()
+        .map(str::to_string)
         .ok_or_else(|| {
             ClioError::Storage("capture API: missing choices[0].message.content".into())
-        })?;
+        })
+}
 
-    parse_classification(content_str)
+/// Distil a longer body of text (e.g. a session transcript) into zero or more
+/// durable memories. An empty result is valid and expected for routine input.
+#[cfg(feature = "capture")]
+pub fn distill(text: &str, config: &CaptureConfig) -> Result<Vec<DistilledMemory>> {
+    parse_distillation(&chat(DISTILLATION_SYSTEM_PROMPT, text, config)?)
 }
 
 /// Parse the LLM's JSON response into a `ClassificationResult`, with
@@ -178,10 +244,15 @@ pub fn parse_classification(raw: &str) -> Result<ClassificationResult> {
         ClioError::Validation(format!("capture classification JSON parse error: {e}"))
     })?;
 
-    let kind = v["kind"]
-        .as_str()
-        .unwrap_or("note")
-        .to_lowercase();
+    Ok(classification_from_value(&v))
+}
+
+/// Normalise and clamp the classification fields of a JSON object. Shared by
+/// `parse_classification` and `parse_distillation` so both apply identical
+/// rules for kind validation, title/summary truncation, tag normalisation,
+/// and importance/confidence clamping.
+fn classification_from_value(v: &serde_json::Value) -> ClassificationResult {
+    let kind = v["kind"].as_str().unwrap_or("note").to_lowercase();
     let valid_kinds = [
         "note",
         "fact",
@@ -223,22 +294,13 @@ pub fn parse_classification(raw: &str) -> Result<ClassificationResult> {
         })
         .unwrap_or_default();
 
-    let namespace = v["namespace"]
-        .as_str()
-        .unwrap_or("global")
-        .to_string();
+    let namespace = v["namespace"].as_str().unwrap_or("global").to_string();
 
-    let importance = v["importance"]
-        .as_i64()
-        .unwrap_or(3)
-        .clamp(1, 5) as i32;
+    let importance = v["importance"].as_i64().unwrap_or(3).clamp(1, 5) as i32;
 
-    let confidence = v["confidence"]
-        .as_f64()
-        .unwrap_or(0.5)
-        .clamp(0.0, 1.0);
+    let confidence = v["confidence"].as_f64().unwrap_or(0.5).clamp(0.0, 1.0);
 
-    Ok(ClassificationResult {
+    ClassificationResult {
         kind,
         title,
         summary,
@@ -246,7 +308,64 @@ pub fn parse_classification(raw: &str) -> Result<ClassificationResult> {
         namespace,
         importance,
         confidence,
-    })
+    }
+}
+
+/// Parse the LLM's JSON response from the distillation step into zero or more
+/// [`DistilledMemory`] values. Accepts either a bare JSON array or an object
+/// wrapping the array under a `memories` key. Items whose `content` is empty or
+/// whitespace-only are dropped. An empty array is valid and yields no memories.
+pub fn parse_distillation(raw: &str) -> Result<Vec<DistilledMemory>> {
+    let trimmed = raw.trim();
+    let json_str = if trimmed.starts_with("```") {
+        trimmed
+            .trim_start_matches("```json")
+            .trim_start_matches("```")
+            .trim_end_matches("```")
+            .trim()
+    } else {
+        trimmed
+    };
+
+    let v: serde_json::Value = serde_json::from_str(json_str).map_err(|e| {
+        ClioError::Validation(format!("capture distillation JSON parse error: {e}"))
+    })?;
+
+    // Accept a bare array, or an object wrapping it under common keys.
+    let array = if let Some(arr) = v.as_array() {
+        arr.clone()
+    } else if let Some(arr) = v["memories"].as_array() {
+        arr.clone()
+    } else if let Some(arr) = v["items"].as_array() {
+        arr.clone()
+    } else {
+        return Err(ClioError::Validation(
+            "capture distillation expected a JSON array of memories".into(),
+        ));
+    };
+
+    let memories = array
+        .iter()
+        .filter_map(|item| {
+            let content = item["content"].as_str().unwrap_or("").trim().to_string();
+            if content.is_empty() {
+                return None;
+            }
+            let c = classification_from_value(item);
+            Some(DistilledMemory {
+                content,
+                kind: c.kind,
+                title: c.title,
+                summary: c.summary,
+                tags: c.tags,
+                namespace: c.namespace,
+                importance: c.importance,
+                confidence: c.confidence,
+            })
+        })
+        .collect();
+
+    Ok(memories)
 }
 
 // ---------------------------------------------------------------------------
@@ -286,12 +405,104 @@ pub fn capture_with_classification(
         .map(String::from)
         .unwrap_or_else(|| classification.namespace.clone());
 
+    store_or_queue(
+        conn,
+        text,
+        classification,
+        &namespace,
+        "capture",
+        None,
+        &serde_json::json!({}),
+        settings,
+    )
+}
+
+/// Distil a longer body of text into zero or more durable memories and store
+/// each through the same review-routing and auto-embed pipeline used by
+/// [`capture`]. Returns one [`CaptureResult`] per stored or queued memory; an
+/// empty vector means the text contained nothing worth remembering.
+///
+/// `namespace_override`, when provided, takes precedence over the namespace the
+/// LLM suggests for every distilled memory. `source` and `source_ref` are
+/// recorded on each memory for provenance.
+#[cfg(feature = "capture")]
+#[allow(clippy::too_many_arguments)]
+pub fn distill_and_store(
+    conn: &rusqlite::Connection,
+    text: &str,
+    config: &CaptureConfig,
+    namespace_override: Option<&str>,
+    source: &str,
+    source_ref: Option<&str>,
+    cwd: Option<&str>,
+    settings: &crate::settings::Settings,
+) -> Result<Vec<CaptureResult>> {
+    let memories = distill(text, config)?;
+
+    // Record the originating working directory so namespaces can later be
+    // matched to a real path (powers reliable "folder gone" cleanup).
+    let metadata = match cwd {
+        Some(c) => serde_json::json!({ "cwd": c }),
+        None => serde_json::json!({}),
+    };
+
+    let mut results = Vec::with_capacity(memories.len());
+    for (index, memory) in memories.iter().enumerate() {
+        let classification = ClassificationResult {
+            kind: memory.kind.clone(),
+            title: memory.title.clone(),
+            summary: memory.summary.clone(),
+            tags: memory.tags.clone(),
+            namespace: memory.namespace.clone(),
+            importance: memory.importance,
+            confidence: memory.confidence,
+        };
+        let namespace = namespace_override
+            .map(String::from)
+            .unwrap_or_else(|| classification.namespace.clone());
+
+        // A session yields many memories, so the shared `source_ref` must be
+        // made unique per memory — otherwise the UNIQUE(source, source_ref)
+        // index rejects every memory after the first. The session id stays the
+        // shared prefix for provenance.
+        let item_ref = source_ref.map(|r| format!("{r}-{index}"));
+
+        results.push(store_or_queue(
+            conn,
+            &memory.content,
+            &classification,
+            &namespace,
+            source,
+            item_ref.as_deref(),
+            &metadata,
+            settings,
+        )?);
+    }
+
+    Ok(results)
+}
+
+/// Store a classified memory, or route it to the review queue when its
+/// confidence falls below the configured threshold. Shared by the single-item
+/// capture path and the multi-item distillation path so both apply identical
+/// review-routing and auto-embed behaviour.
+#[allow(clippy::too_many_arguments)]
+fn store_or_queue(
+    conn: &rusqlite::Connection,
+    content: &str,
+    classification: &ClassificationResult,
+    namespace: &str,
+    source: &str,
+    source_ref: Option<&str>,
+    metadata: &serde_json::Value,
+    settings: &crate::settings::Settings,
+) -> Result<CaptureResult> {
     // Check whether this capture should be routed to the review queue.
     if let Some(threshold) = settings.capture.review_threshold {
         if classification.confidence < threshold {
             let review_input = ReviewInput {
-                content: text.to_string(),
-                suggested_namespace: namespace,
+                content: content.to_string(),
+                suggested_namespace: namespace.to_string(),
                 suggested_kind: classification.kind.clone(),
                 suggested_title: Some(classification.title.clone()),
                 suggested_summary: if classification.summary.is_empty() {
@@ -302,8 +513,8 @@ pub fn capture_with_classification(
                 suggested_tags: classification.tags.clone(),
                 suggested_importance: classification.importance,
                 suggested_confidence: Some(classification.confidence),
-                source_route: Some("capture".into()),
-                metadata: serde_json::json!({}),
+                source_route: Some(source.to_string()),
+                metadata: metadata.clone(),
             };
 
             let review_item = crate::review::queue_for_review(conn, &review_input)?;
@@ -312,7 +523,7 @@ pub fn capture_with_classification(
     }
 
     let input = RememberInput {
-        namespace,
+        namespace: namespace.to_string(),
         kind: classification.kind.clone(),
         title: Some(classification.title.clone()),
         summary: if classification.summary.is_empty() {
@@ -320,13 +531,13 @@ pub fn capture_with_classification(
         } else {
             Some(classification.summary.clone())
         },
-        content: text.to_string(),
+        content: content.to_string(),
         tags: classification.tags.clone(),
-        source: Some("capture".into()),
-        source_ref: None,
+        source: Some(source.to_string()),
+        source_ref: source_ref.map(String::from),
         confidence: Some(classification.confidence),
         importance: classification.importance,
-        metadata: serde_json::json!({}),
+        metadata: metadata.clone(),
         valid_from: None,
         valid_until: None,
         upsert: false,
@@ -436,6 +647,79 @@ mod tests {
         assert_eq!(result.title, "Untitled");
         assert_eq!(result.namespace, "global");
         assert_eq!(result.importance, 3);
+    }
+
+    #[test]
+    fn distill_parses_array_of_memories() {
+        let json = r#"[
+            {
+                "content": "Clio stores all business logic in clio-core; adapters stay thin.",
+                "kind": "fact",
+                "title": "Core/adapter boundary",
+                "summary": "Logic lives in clio-core.",
+                "tags": ["Architecture", "rust"],
+                "namespace": "project:clio",
+                "importance": 4,
+                "confidence": 0.9
+            },
+            {
+                "content": "Upsert is keyed on source + source_ref.",
+                "kind": "constraint",
+                "title": "Upsert key",
+                "summary": "",
+                "tags": ["upsert"],
+                "namespace": "project:clio",
+                "importance": 3,
+                "confidence": 0.8
+            }
+        ]"#;
+
+        let result = parse_distillation(json).unwrap();
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].kind, "fact");
+        assert_eq!(result[0].tags, vec!["architecture", "rust"]);
+        assert_eq!(result[1].kind, "constraint");
+        assert_eq!(result[1].content, "Upsert is keyed on source + source_ref.");
+    }
+
+    #[test]
+    fn distill_empty_array_yields_no_memories() {
+        let result = parse_distillation("[]").unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn distill_accepts_memories_wrapper_and_fences() {
+        let json = r#"```json
+{ "memories": [
+    { "content": "A durable fact.", "kind": "note", "title": "T",
+      "summary": "", "tags": [], "namespace": "global",
+      "importance": 3, "confidence": 0.5 }
+] }
+```"#;
+        let result = parse_distillation(json).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].content, "A durable fact.");
+    }
+
+    #[test]
+    fn distill_drops_items_with_empty_content() {
+        let json = r#"[
+            { "content": "   ", "kind": "note", "title": "blank",
+              "summary": "", "tags": [], "namespace": "global",
+              "importance": 1, "confidence": 0.5 },
+            { "content": "Real one.", "kind": "fact", "title": "ok",
+              "summary": "", "tags": [], "namespace": "global",
+              "importance": 3, "confidence": 0.7 }
+        ]"#;
+        let result = parse_distillation(json).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].content, "Real one.");
+    }
+
+    #[test]
+    fn distill_rejects_non_array_json() {
+        assert!(parse_distillation(r#"{"foo": "bar"}"#).is_err());
     }
 
     #[test]

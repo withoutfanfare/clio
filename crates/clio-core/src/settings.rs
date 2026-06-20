@@ -183,6 +183,70 @@ impl Default for AutoTitleConfig {
     }
 }
 
+/// Configuration for namespace cleanup (stale-namespace detection and purge).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct CleanupConfig {
+    /// A namespace with no activity for this many months is "stale by age".
+    #[serde(default = "default_stale_months")]
+    pub stale_months: u32,
+
+    /// Directory roots scanned to decide whether a `project:<slug>` namespace's
+    /// folder still exists on disk (the "folder gone" heuristic). `~` is
+    /// expanded to the home directory.
+    #[serde(default = "default_dev_roots")]
+    pub dev_roots: Vec<String>,
+
+    /// Record the working directory in memory metadata at capture time, so
+    /// future namespaces can be matched to a real path reliably.
+    #[serde(default = "default_true")]
+    pub record_cwd: bool,
+}
+
+fn default_stale_months() -> u32 {
+    6
+}
+
+fn default_dev_roots() -> Vec<String> {
+    vec![
+        "~/Development".into(),
+        "~/Projects".into(),
+        "~/Code".into(),
+        "~/dev".into(),
+        "~/src".into(),
+    ]
+}
+
+impl Default for CleanupConfig {
+    fn default() -> Self {
+        Self {
+            stale_months: default_stale_months(),
+            dev_roots: default_dev_roots(),
+            record_cwd: true,
+        }
+    }
+}
+
+/// Configuration for memory consolidation.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ConsolidateConfig {
+    /// Consolidate a namespace automatically once it has accrued at least this
+    /// many new memories since the last consolidation (used by `--if-due`).
+    #[serde(default = "default_consolidate_threshold")]
+    pub auto_threshold: u32,
+}
+
+fn default_consolidate_threshold() -> u32 {
+    10
+}
+
+impl Default for ConsolidateConfig {
+    fn default() -> Self {
+        Self {
+            auto_threshold: default_consolidate_threshold(),
+        }
+    }
+}
+
 /// All configurable Clio settings.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Settings {
@@ -213,6 +277,14 @@ pub struct Settings {
     /// Daemon configuration.
     #[serde(default)]
     pub daemon: DaemonConfig,
+
+    /// Namespace cleanup configuration.
+    #[serde(default)]
+    pub cleanup: CleanupConfig,
+
+    /// Memory consolidation configuration.
+    #[serde(default)]
+    pub consolidate: ConsolidateConfig,
 }
 
 fn default_true() -> bool {
@@ -229,6 +301,8 @@ impl Default for Settings {
             context: ContextConfig::default(),
             scoring: ScoringConfig::default(),
             daemon: DaemonConfig::default(),
+            cleanup: CleanupConfig::default(),
+            consolidate: ConsolidateConfig::default(),
         }
     }
 }

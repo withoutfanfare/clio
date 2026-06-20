@@ -6,7 +6,7 @@
 #   ./build.sh cli      # build only clio CLI
 #   ./build.sh mcp      # build only clio-mcp
 #   ./build.sh daemon   # build only clio-daemon and restart it
-#   ./build.sh tauri    # build only clio-tauri (dev mode — use dev.sh instead)
+#   ./build.sh tauri    # launch the desktop app in dev mode (hot reload)
 set -e
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
@@ -67,9 +67,13 @@ case "$TARGETS" in
   restart)
     restart_daemon
     ;;
+  tauri)
+    echo "Launching desktop app in dev mode (hot reload)..."
+    exec "$ROOT/dev.sh"
+    ;;
   *)
     echo "Unknown target: $TARGETS"
-    echo "Usage: ./build.sh [all|cli|mcp|daemon|restart]"
+    echo "Usage: ./build.sh [all|cli|mcp|daemon|restart|tauri]"
     exit 1
     ;;
 esac

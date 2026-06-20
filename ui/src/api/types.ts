@@ -117,6 +117,29 @@ export interface NamespaceInfo {
   last_activity: string | null;
 }
 
+// Namespace cleanup
+export type CleanupReason = "stale_by_age" | "all_archived" | "folder_gone";
+
+export interface CleanupCandidate {
+  namespace: string;
+  live_count: number;
+  archived_count: number;
+  last_activity: string | null;
+  reasons: CleanupReason[];
+}
+
+export interface CleanupReport {
+  backup_path: string | null;
+  namespaces_deleted: string[];
+  memories_purged: number;
+}
+
+// Consolidation
+export interface ConsolidationResult {
+  memory: Memory;
+  source_count: number;
+}
+
 // Integrity checks
 export interface IntegrityIssue {
   kind: string;

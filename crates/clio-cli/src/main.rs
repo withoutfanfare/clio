@@ -5,7 +5,7 @@ use std::process;
 use clap::{Parser, Subcommand};
 use tracing::error;
 
-use clio_core::assembly::{self, ContextPreset, ContextRequest, ContextBrief};
+use clio_core::assembly::{self, ContextBrief, ContextPreset, ContextRequest};
 use clio_core::capture::CaptureResult;
 use clio_core::config::resolve_db_path;
 use clio_core::context;
@@ -13,7 +13,10 @@ use clio_core::daemon::{self, DaemonStatus, HealthStatus};
 use clio_core::db;
 use clio_core::embeddings;
 use clio_core::export;
-use clio_core::models::{LinkInput, Memory, MemoryLink, MemoryStats, RecentEntry, RecallQuery, RecallResult, RememberInput, SortOrder};
+use clio_core::models::{
+    LinkInput, Memory, MemoryLink, MemoryStats, RecallQuery, RecallResult, RecentEntry,
+    RememberInput, SortOrder,
+};
 use clio_core::repository;
 use clio_core::review;
 use clio_core::settings;
@@ -77,6 +80,18 @@ enum Command {
     /// Move memories to a different namespace.
     Move(MoveArgs),
 
+    /// Permanently delete a memory by ID.
+    Delete {
+        /// The memory ID to delete.
+        id: String,
+    },
+
+    /// Find and optionally purge stale namespaces (dry-run by default).
+    Cleanup(CleanupArgs),
+
+    /// Roll a namespace's memories into a single AI-curated consolidated memory.
+    Consolidate(ConsolidateArgs),
+
     /// List all namespaces in use.
     Namespaces,
 
@@ -100,6 +115,10 @@ enum Command {
 
     /// Capture unstructured text: classify via LLM and store as a memory.
     Capture(CaptureArgs),
+
+    /// Distil a long body of text (e.g. a session transcript) into zero or
+    /// more durable memories via LLM.
+    Distill(DistillArgs),
 
     /// Manage the review queue (low-confidence captures).
     Inbox(InboxArgs),
@@ -309,6 +328,47 @@ struct MoveArgs {
 }
 
 #[derive(Parser)]
+struct CleanupArgs {
+    /// Flag namespaces with no activity for this many months (default from settings).
+    #[arg(long)]
+    stale_months: Option<u32>,
+
+    /// Flag namespaces whose memories are all archived.
+    #[arg(long)]
+    archived: bool,
+
+    /// Flag project namespaces whose folder is no longer on disk.
+    #[arg(long)]
+    folder_gone: bool,
+
+    /// Apply all criteria (stale + archived + folder-gone). This is the default
+    /// when no specific criterion flag is given.
+    #[arg(long)]
+    all: bool,
+
+    /// Actually purge the candidates. Without this it is a dry run. A database
+    /// backup is always taken before purging.
+    #[arg(long)]
+    execute: bool,
+}
+
+#[derive(Parser)]
+struct ConsolidateArgs {
+    /// Namespace to consolidate. Auto-detected from the working directory if omitted.
+    #[arg(long)]
+    namespace: Option<String>,
+
+    /// Consolidate every namespace (overrides --namespace).
+    #[arg(long)]
+    all: bool,
+
+    /// Only consolidate a namespace if it has accrued enough new memories since
+    /// its last consolidation (the configured auto_threshold). No-op otherwise.
+    #[arg(long)]
+    if_due: bool,
+}
+
+#[derive(Parser)]
 struct LinkArgs {
     /// Source memory ID.
     from: String,
@@ -379,6 +439,28 @@ struct CaptureArgs {
     namespace: Option<String>,
 
     /// Show classification without storing the memory.
+    #[arg(long)]
+    dry_run: bool,
+}
+
+#[derive(Parser)]
+struct DistillArgs {
+    /// The text to distil (e.g. a session transcript). Pass `-` to read from stdin.
+    text: String,
+
+    /// Override the namespace suggested by the LLM for every distilled memory.
+    #[arg(long)]
+    namespace: Option<String>,
+
+    /// Provenance source recorded on each distilled memory.
+    #[arg(long, default_value = "distill")]
+    source: String,
+
+    /// Provenance source_ref recorded on each distilled memory (e.g. session id).
+    #[arg(long)]
+    source_ref: Option<String>,
+
+    /// Show the distilled memories without storing them.
     #[arg(long)]
     dry_run: bool,
 }
@@ -753,6 +835,9 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         Command::Archive { id } => cmd_archive(cli.db_path.as_deref(), cli.json, &id),
         Command::Unarchive { id } => cmd_unarchive(cli.db_path.as_deref(), cli.json, &id),
         Command::Move(args) => cmd_move(cli.db_path.as_deref(), cli.json, args),
+        Command::Delete { id } => cmd_delete(cli.db_path.as_deref(), cli.json, &id),
+        Command::Cleanup(args) => cmd_cleanup(cli.db_path.as_deref(), cli.json, args),
+        Command::Consolidate(args) => cmd_consolidate(cli.db_path.as_deref(), cli.json, args),
         Command::Namespaces => cmd_namespaces(cli.db_path.as_deref(), cli.json),
         Command::Link(args) => cmd_link(cli.db_path.as_deref(), cli.json, args),
         Command::Export(args) => cmd_export(cli.db_path.as_deref(), args),
@@ -760,6 +845,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         Command::Schema => cmd_schema(cli.db_path.as_deref(), cli.json),
         Command::Search(args) => cmd_search(cli.db_path.as_deref(), cli.json, args),
         Command::Capture(args) => cmd_capture(cli.db_path.as_deref(), cli.json, args),
+        Command::Distill(args) => cmd_distill(cli.db_path.as_deref(), cli.json, args),
         Command::Inbox(args) => cmd_inbox(cli.db_path.as_deref(), cli.json, args),
         Command::Stats(args) => cmd_stats(cli.db_path.as_deref(), cli.json, args),
         Command::Activity(args) => cmd_activity(cli.db_path.as_deref(), cli.json, args),
@@ -773,14 +859,22 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         Command::Daemon { command } => cmd_daemon(cli.db_path.as_deref(), cli.json, command),
         Command::Cache { command } => match command {
             CacheCommand::Clear => {
-                println!("Cache management is only effective in long-running processes (MCP server, Tauri app).");
-                println!("The CLI creates a fresh process for each command, so there is no persistent cache to clear.");
+                println!(
+                    "Cache management is only effective in long-running processes (MCP server, Tauri app)."
+                );
+                println!(
+                    "The CLI creates a fresh process for each command, so there is no persistent cache to clear."
+                );
                 println!("\nTo clear the MCP server cache, use the memory_cache_clear tool.");
                 Ok(())
             }
             CacheCommand::Stats => {
-                println!("Cache management is only effective in long-running processes (MCP server, Tauri app).");
-                println!("The CLI creates a fresh process for each command, so there is no persistent cache.");
+                println!(
+                    "Cache management is only effective in long-running processes (MCP server, Tauri app)."
+                );
+                println!(
+                    "The CLI creates a fresh process for each command, so there is no persistent cache."
+                );
                 Ok(())
             }
         },
@@ -1027,11 +1121,7 @@ fn cmd_recall(
     Ok(())
 }
 
-fn cmd_show(
-    db_path: Option<&str>,
-    json: bool,
-    id: &str,
-) -> Result<(), Box<dyn std::error::Error>> {
+fn cmd_show(db_path: Option<&str>, json: bool, id: &str) -> Result<(), Box<dyn std::error::Error>> {
     let conn = open_db(db_path)?;
     let memory = repository::get(&conn, id)?;
 
@@ -1160,10 +1250,165 @@ fn cmd_move(
     Ok(())
 }
 
-fn cmd_namespaces(
+fn cmd_delete(
     db_path: Option<&str>,
     json: bool,
+    id: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let conn = open_db(db_path)?;
+    let memory = repository::delete(&conn, id)?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&memory)?);
+    } else {
+        eprintln!("Deleted.");
+        print_memory_card(&memory);
+    }
+    Ok(())
+}
+
+fn cmd_cleanup(
+    db_path: Option<&str>,
+    json: bool,
+    args: CleanupArgs,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let path = resolve_db_path(db_path)?;
+    let conn = db::open(&path)?;
+    let s = settings::load(&path)?;
+
+    // Default to all criteria when no specific criterion flag is given.
+    let any_specific = args.archived || args.folder_gone || args.stale_months.is_some();
+    let use_all = args.all || !any_specific;
+
+    let criteria = clio_core::cleanup::CleanupCriteria {
+        stale_months: if use_all || args.stale_months.is_some() {
+            Some(args.stale_months.unwrap_or(s.cleanup.stale_months))
+        } else {
+            None
+        },
+        all_archived: use_all || args.archived,
+        folder_gone: use_all || args.folder_gone,
+    };
+
+    let dev_roots = clio_core::cleanup::expand_dev_roots(&s.cleanup.dev_roots);
+    let candidates = clio_core::cleanup::find_candidates_now(&conn, &criteria, &dev_roots)?;
+
+    if !args.execute {
+        if json {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "dry_run": true,
+                    "candidates": candidates,
+                }))?
+            );
+        } else if candidates.is_empty() {
+            eprintln!("No stale namespaces found.");
+        } else {
+            eprintln!(
+                "Found {} candidate namespace(s) — dry run, pass --execute to purge (a backup is taken first):",
+                candidates.len()
+            );
+            for c in &candidates {
+                let reasons: Vec<String> =
+                    c.reasons.iter().map(|r| format!("{r:?}")).collect();
+                eprintln!(
+                    "  {} — {} live / {} archived — {}",
+                    c.namespace,
+                    c.live_count,
+                    c.archived_count,
+                    reasons.join(", ")
+                );
+            }
+        }
+        return Ok(());
+    }
+
+    let namespaces: Vec<String> = candidates.iter().map(|c| c.namespace.clone()).collect();
+    let report = clio_core::cleanup::execute_cleanup(&conn, &path, &namespaces, 10)?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        eprintln!(
+            "Purged {} namespace(s), {} memories.",
+            report.namespaces_deleted.len(),
+            report.memories_purged
+        );
+        if let Some(bp) = &report.backup_path {
+            eprintln!("Backup: {bp}");
+        }
+    }
+    Ok(())
+}
+
+fn cmd_consolidate(
+    db_path: Option<&str>,
+    json: bool,
+    args: ConsolidateArgs,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let path = resolve_db_path(db_path)?;
+    let conn = db::open(&path)?;
+    let s = settings::load(&path)?;
+
+    // Determine which namespaces to process.
+    let namespaces: Vec<String> = if args.all {
+        repository::list_namespaces(&conn)?
+    } else {
+        let ns = match args.namespace {
+            Some(ns) => ns,
+            None => std::env::current_dir()
+                .ok()
+                .as_deref()
+                .and_then(context::detect_namespace)
+                .map(|ctx| ctx.namespace)
+                .unwrap_or_else(|| "global".into()),
+        };
+        vec![ns]
+    };
+
+    let threshold = s.consolidate.auto_threshold as usize;
+    let mut done = Vec::new();
+    let mut skipped = 0usize;
+
+    for ns in &namespaces {
+        if args.if_due {
+            let new = clio_core::consolidate::new_since_last_consolidation(&conn, ns)?;
+            if new < threshold {
+                skipped += 1;
+                continue;
+            }
+        }
+        match clio_core::consolidate::consolidate(&conn, ns, &s.capture, &s) {
+            Ok(result) => done.push((ns.clone(), result.source_count)),
+            // With --all/--if-due, an empty namespace just means nothing to do.
+            Err(_) if args.all || args.if_due => skipped += 1,
+            Err(e) => return Err(e.into()),
+        }
+    }
+
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "consolidated": done.iter().map(|(ns, n)| serde_json::json!({"namespace": ns, "source_count": n})).collect::<Vec<_>>(),
+                "skipped": skipped,
+            }))?
+        );
+    } else if done.is_empty() {
+        eprintln!("Nothing consolidated ({skipped} namespace(s) skipped).");
+    } else {
+        for (ns, n) in &done {
+            eprintln!("Consolidated {n} memories into '{ns}'.");
+        }
+        if skipped > 0 {
+            eprintln!("({skipped} namespace(s) skipped.)");
+        }
+    }
+    Ok(())
+}
+
+fn cmd_namespaces(db_path: Option<&str>, json: bool) -> Result<(), Box<dyn std::error::Error>> {
     let conn = open_db(db_path)?;
     let namespaces = repository::list_namespaces(&conn)?;
 
@@ -1210,10 +1455,7 @@ fn cmd_link(
     Ok(())
 }
 
-fn cmd_export(
-    db_path: Option<&str>,
-    args: ExportArgs,
-) -> Result<(), Box<dyn std::error::Error>> {
+fn cmd_export(db_path: Option<&str>, args: ExportArgs) -> Result<(), Box<dyn std::error::Error>> {
     let conn = open_db(db_path)?;
 
     if args.output == "-" {
@@ -1240,10 +1482,7 @@ fn cmd_export(
     Ok(())
 }
 
-fn cmd_import(
-    db_path: Option<&str>,
-    args: ImportArgs,
-) -> Result<(), Box<dyn std::error::Error>> {
+fn cmd_import(db_path: Option<&str>, args: ImportArgs) -> Result<(), Box<dyn std::error::Error>> {
     let path = resolve_db_path(db_path)?;
     let conn = db::open(&path)?;
 
@@ -1311,10 +1550,7 @@ fn cmd_import(
     Ok(())
 }
 
-fn cmd_schema(
-    db_path: Option<&str>,
-    json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+fn cmd_schema(db_path: Option<&str>, json: bool) -> Result<(), Box<dyn std::error::Error>> {
     let conn = open_db(db_path)?;
     let info = repository::schema_info(&conn)?;
 
@@ -1428,6 +1664,81 @@ fn cmd_capture(
             } else {
                 eprintln!("Queued for review (confidence below threshold).");
                 print_review_item(&item);
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn cmd_distill(
+    db_path: Option<&str>,
+    json: bool,
+    args: DistillArgs,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let path = resolve_db_path(db_path)?;
+    let conn = db::open(&path)?;
+    let s = settings::load(&path)?;
+
+    let text = if args.text == "-" {
+        let mut buf = String::new();
+        io::stdin().read_to_string(&mut buf)?;
+        buf
+    } else {
+        args.text
+    };
+
+    if args.dry_run {
+        let memories = clio_core::capture::distill(&text, &s.capture)?;
+        if json {
+            println!("{}", serde_json::to_string_pretty(&memories)?);
+        } else if memories.is_empty() {
+            eprintln!("Dry run — nothing durable to distil.");
+        } else {
+            eprintln!("Dry run — {} memory(ies) distilled:", memories.len());
+            for m in &memories {
+                eprintln!("  [{}] {} (importance {})", m.kind, m.title, m.importance);
+            }
+        }
+        return Ok(());
+    }
+
+    // Record the working directory so namespaces can later be matched to a real
+    // path for reliable "folder gone" cleanup.
+    let cwd = if s.cleanup.record_cwd {
+        std::env::current_dir()
+            .ok()
+            .map(|p| p.display().to_string())
+    } else {
+        None
+    };
+
+    let results = clio_core::capture::distill_and_store(
+        &conn,
+        &text,
+        &s.capture,
+        args.namespace.as_deref(),
+        &args.source,
+        args.source_ref.as_deref(),
+        cwd.as_deref(),
+        &s,
+    )?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&results)?);
+    } else if results.is_empty() {
+        eprintln!("Nothing durable to distil.");
+    } else {
+        let stored = results
+            .iter()
+            .filter(|r| matches!(r, CaptureResult::Stored(_)))
+            .count();
+        let queued = results.len() - stored;
+        eprintln!("Distilled {stored} stored, {queued} queued for review.");
+        for result in &results {
+            match result {
+                CaptureResult::Stored(memory) => print_memory_card(memory),
+                CaptureResult::Queued(item) => print_review_item(item),
             }
         }
     }
@@ -1612,10 +1923,7 @@ fn print_migration_result(
     Ok(())
 }
 
-fn cmd_embed(
-    db_path: Option<&str>,
-    args: EmbedArgs,
-) -> Result<(), Box<dyn std::error::Error>> {
+fn cmd_embed(db_path: Option<&str>, args: EmbedArgs) -> Result<(), Box<dyn std::error::Error>> {
     let path = resolve_db_path(db_path)?;
     let conn = db::open(&path)?;
 
@@ -1688,10 +1996,19 @@ fn cmd_settings(
                 redact_api_keys(&mut val);
                 println!("{}", serde_json::to_string_pretty(&val)?);
             } else {
-                eprintln!("Settings (from {}):", settings::settings_path(&path).display());
-                eprintln!("  Embedding provider: {}", redact_embedding_display(&s.embeddings));
+                eprintln!(
+                    "Settings (from {}):",
+                    settings::settings_path(&path).display()
+                );
+                eprintln!(
+                    "  Embedding provider: {}",
+                    redact_embedding_display(&s.embeddings)
+                );
                 eprintln!("  Auto-embed: {}", if s.auto_embed { "on" } else { "off" });
-                eprintln!("  Capture enabled: {}", if s.capture.enabled { "on" } else { "off" });
+                eprintln!(
+                    "  Capture enabled: {}",
+                    if s.capture.enabled { "on" } else { "off" }
+                );
                 eprintln!("  Capture model: {}", s.capture.model);
             }
         }
@@ -1703,7 +2020,11 @@ fn cmd_settings(
             settings::save(&path, &s)?;
             eprintln!("Embedding provider set to local (all-MiniLM-L6-v2).");
         }
-        SettingsSubcommand::UseOpenai { api_key, model, base_url } => {
+        SettingsSubcommand::UseOpenai {
+            api_key,
+            model,
+            base_url,
+        } => {
             let mut s = settings::load(&path)?;
             s.embeddings = embeddings::EmbeddingConfig::OpenAi {
                 api_key,
@@ -1830,7 +2151,10 @@ fn cmd_brief(
 
 fn print_brief(brief: &ContextBrief) {
     println!("# Context Brief: {}", brief.preset);
-    println!("Namespace: {}  |  Generated: {}", brief.namespace, brief.generated_at);
+    println!(
+        "Namespace: {}  |  Generated: {}",
+        brief.namespace, brief.generated_at
+    );
     println!("Total memories: {}", brief.total_memories_used);
     println!();
 
@@ -1846,10 +2170,7 @@ fn print_brief(brief: &ContextBrief) {
 
         for mem in &section.items {
             let title = mem.title.as_deref().unwrap_or("(untitled)");
-            let preview = mem
-                .summary
-                .as_deref()
-                .unwrap_or(&mem.content);
+            let preview = mem.summary.as_deref().unwrap_or(&mem.content);
             let truncated = if preview.chars().count() > 120 {
                 let s: String = preview.chars().take(120).collect();
                 format!("{s}...")
@@ -2014,15 +2335,15 @@ fn print_memory_card(m: &Memory) {
     // Metadata (only if non-empty object)
     if let Some(obj) = m.metadata.as_object() {
         if !obj.is_empty() {
-            print_field("metadata", &serde_json::to_string(&m.metadata).unwrap_or_default());
+            print_field(
+                "metadata",
+                &serde_json::to_string(&m.metadata).unwrap_or_default(),
+            );
         }
     }
 
     // Divider
-    println!(
-        "\u{251c}{}\u{256f}",
-        "\u{2500}".repeat(BOX_WIDTH)
-    );
+    println!("\u{251c}{}\u{256f}", "\u{2500}".repeat(BOX_WIDTH));
 
     // Summary
     if let Some(ref summary) = m.summary {
@@ -2038,10 +2359,7 @@ fn print_memory_card(m: &Memory) {
     }
 
     // Bottom border
-    println!(
-        "\u{2570}{}\u{256f}",
-        "\u{2500}".repeat(BOX_WIDTH)
-    );
+    println!("\u{2570}{}\u{256f}", "\u{2500}".repeat(BOX_WIDTH));
 }
 
 fn print_review_item(item: &review::ReviewItem) {
@@ -2081,10 +2399,7 @@ fn print_review_item(item: &review::ReviewItem) {
     }
 
     // Divider
-    println!(
-        "\u{251c}{}\u{256f}",
-        "\u{2500}".repeat(BOX_WIDTH)
-    );
+    println!("\u{251c}{}\u{256f}", "\u{2500}".repeat(BOX_WIDTH));
 
     // Summary
     if let Some(ref summary) = item.suggested_summary {
@@ -2106,10 +2421,7 @@ fn print_review_item(item: &review::ReviewItem) {
     }
 
     // Bottom border
-    println!(
-        "\u{2570}{}\u{256f}",
-        "\u{2500}".repeat(BOX_WIDTH)
-    );
+    println!("\u{2570}{}\u{256f}", "\u{2500}".repeat(BOX_WIDTH));
 }
 
 fn print_field(label: &str, value: &str) {
@@ -2135,7 +2447,11 @@ fn print_recall_result(result: &RecallResult) {
         let title = m.title.as_deref().unwrap_or("(untitled)");
         let ns = &m.namespace;
         let kind = &m.kind;
-        let archived_marker = if m.archived_at.is_some() { " [archived]" } else { "" };
+        let archived_marker = if m.archived_at.is_some() {
+            " [archived]"
+        } else {
+            ""
+        };
 
         print!("  {}", &m.id[..std::cmp::min(m.id.len(), 8)]);
         print!("  {ns}/{kind}");
@@ -2160,10 +2476,7 @@ fn print_recall_result(result: &RecallResult) {
 
     if result.total > result.offset + result.count {
         println!();
-        println!(
-            "Use --offset {} to see more.",
-            result.offset + result.count
-        );
+        println!("Use --offset {} to see more.", result.offset + result.count);
     }
 }
 
@@ -2375,7 +2688,10 @@ fn find_daemon_binary() -> Result<PathBuf, Box<dyn std::error::Error>> {
 }
 
 /// Connect to the daemon control socket, send a command, and return the response.
-fn send_daemon_command(socket_path: &Path, command: &str) -> Result<String, Box<dyn std::error::Error>> {
+fn send_daemon_command(
+    socket_path: &Path,
+    command: &str,
+) -> Result<String, Box<dyn std::error::Error>> {
     use std::io::{BufRead, BufReader, Write};
     use std::os::unix::net::UnixStream;
     use std::time::Duration;
@@ -2499,7 +2815,10 @@ fn cmd_daemon_start(explicit_db: Option<&str>) -> Result<(), Box<dyn std::error:
     Ok(())
 }
 
-fn cmd_daemon_stop(explicit_db: Option<&str>, json: bool) -> Result<(), Box<dyn std::error::Error>> {
+fn cmd_daemon_stop(
+    explicit_db: Option<&str>,
+    json: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
     let socket_path = resolve_socket_path(explicit_db)?;
 
     match send_daemon_command(&socket_path, "stop") {
@@ -2525,7 +2844,9 @@ fn cmd_daemon_stop(explicit_db: Option<&str>, json: bool) -> Result<(), Box<dyn 
             if let Ok(pid_path) = daemon::default_pid_path() {
                 let pid_file = daemon::PidFile::new(pid_path);
                 if pid_file.is_running() {
-                    eprintln!("Could not connect to daemon socket, but process appears to be running.");
+                    eprintln!(
+                        "Could not connect to daemon socket, but process appears to be running."
+                    );
                     eprintln!("Socket error: {e}");
                     process::exit(1);
                 }
@@ -2537,7 +2858,10 @@ fn cmd_daemon_stop(explicit_db: Option<&str>, json: bool) -> Result<(), Box<dyn 
     Ok(())
 }
 
-fn cmd_daemon_status(explicit_db: Option<&str>, json: bool) -> Result<(), Box<dyn std::error::Error>> {
+fn cmd_daemon_status(
+    explicit_db: Option<&str>,
+    json: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
     let socket_path = resolve_socket_path(explicit_db)?;
 
     match send_daemon_command(&socket_path, "status") {
@@ -2574,7 +2898,9 @@ fn cmd_daemon_status(explicit_db: Option<&str>, json: bool) -> Result<(), Box<dy
                 let pid_file = daemon::PidFile::new(pid_path);
                 if pid_file.is_running() {
                     if let Ok(Some(pid)) = pid_file.read() {
-                        eprintln!("Daemon process is running (PID {pid}) but the control socket is not responding.");
+                        eprintln!(
+                            "Daemon process is running (PID {pid}) but the control socket is not responding."
+                        );
                         process::exit(1);
                     }
                 }
@@ -2591,7 +2917,10 @@ fn cmd_daemon_status(explicit_db: Option<&str>, json: bool) -> Result<(), Box<dy
     Ok(())
 }
 
-fn cmd_daemon_logs(explicit_db: Option<&str>, lines: usize) -> Result<(), Box<dyn std::error::Error>> {
+fn cmd_daemon_logs(
+    explicit_db: Option<&str>,
+    lines: usize,
+) -> Result<(), Box<dyn std::error::Error>> {
     let log_dir = resolve_log_dir(explicit_db)?;
 
     // Look for the most recent daily log file matching the daemon pattern.
@@ -2643,8 +2972,7 @@ fn cmd_daemon_install(explicit_db: Option<&str>) -> Result<(), Box<dyn std::erro
         .or_else(|| daemon::default_log_dir().ok())
         .ok_or("could not determine log directory")?;
 
-    let home = std::env::var("HOME")
-        .map_err(|_| "could not determine home directory")?;
+    let home = std::env::var("HOME").map_err(|_| "could not determine home directory")?;
     let plist_dir = PathBuf::from(&home).join("Library").join("LaunchAgents");
     std::fs::create_dir_all(&plist_dir)?;
     let plist_path = plist_dir.join("com.clio.daemon.plist");
@@ -2699,7 +3027,10 @@ fn cmd_daemon_install(explicit_db: Option<&str>) -> Result<(), Box<dyn std::erro
         eprintln!("LaunchAgent loaded. The daemon will start automatically on login.");
     } else {
         eprintln!("launchctl load failed (exit code {:?}).", status.code());
-        eprintln!("You may need to load it manually: launchctl load -w {}", plist_path.display());
+        eprintln!(
+            "You may need to load it manually: launchctl load -w {}",
+            plist_path.display()
+        );
         process::exit(1);
     }
 
@@ -2707,8 +3038,7 @@ fn cmd_daemon_install(explicit_db: Option<&str>) -> Result<(), Box<dyn std::erro
 }
 
 fn cmd_daemon_uninstall() -> Result<(), Box<dyn std::error::Error>> {
-    let home = std::env::var("HOME")
-        .map_err(|_| "could not determine home directory")?;
+    let home = std::env::var("HOME").map_err(|_| "could not determine home directory")?;
     let plist_path = PathBuf::from(&home)
         .join("Library")
         .join("LaunchAgents")
@@ -2736,7 +3066,10 @@ fn cmd_daemon_uninstall() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn cmd_daemon_doctor(explicit_db: Option<&str>, json: bool) -> Result<(), Box<dyn std::error::Error>> {
+fn cmd_daemon_doctor(
+    explicit_db: Option<&str>,
+    json: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
     let db_path = resolve_db_path(explicit_db)?;
     let s = settings::load(&db_path)?;
     let health = daemon::run_health_checks(&db_path, &s);
@@ -2853,7 +3186,9 @@ fn cmd_setup(
                 let existing = std::fs::read_to_string(&config_path).unwrap_or_default();
                 if existing.contains("[mcp_servers.clio]") {
                     println!("Clio is already configured in {}", config_path.display());
-                    println!("Remove the existing [mcp_servers.clio] section first to reconfigure.");
+                    println!(
+                        "Remove the existing [mcp_servers.clio] section first to reconfigure."
+                    );
                     return Ok(());
                 }
                 if let Some(parent) = config_path.parent() {
@@ -2903,9 +3238,9 @@ fn cmd_setup(
                 SetupClient::Windsurf => PathBuf::from(&home).join(".windsurf").join("mcp.json"),
                 SetupClient::Kilo => PathBuf::from(&home).join(".kilocode").join("mcp.json"),
                 SetupClient::Kimi => PathBuf::from(&home).join(".kimi").join("mcp.json"),
-                SetupClient::Copilot => {
-                    PathBuf::from(&home).join(".copilot").join("mcp-config.json")
-                }
+                SetupClient::Copilot => PathBuf::from(&home)
+                    .join(".copilot")
+                    .join("mcp-config.json"),
                 SetupClient::Gemini => PathBuf::from(&home).join(".gemini").join("settings.json"),
                 _ => return Err("unhandled setup client variant".into()),
             };
@@ -2969,7 +3304,10 @@ fn setup_json_merge(p: &SetupMergeParams<'_>) -> Result<(), Box<dyn std::error::
         && !p.json_output
     {
         println!("Clio is already configured in {}", config_path.display());
-        println!("To reconfigure, remove the \"{}\" entry from \"{}\" first.", server_name, root_key);
+        println!(
+            "To reconfigure, remove the \"{}\" entry from \"{}\" first.",
+            server_name, root_key
+        );
         return Ok(());
     }
 

@@ -124,13 +124,33 @@ clio capture --text "We decided to use Redis for caching" --dry-run
 clio capture --text "We decided to use Redis for caching"
 ```
 
----
+### Distil (transcript → durable memories)
 
-## Archiving
+`distill` sends a long body of text — typically a whole session transcript — to
+the LLM and extracts **zero or more** self-contained, durable memories
+(decisions, facts, constraints, insights). Routine input yields nothing, so
+noise is filtered by design. Uses the same capture pipeline (review routing,
+auto-embed) per extracted memory.
 
 ```sh
-clio archive <id>       # soft-archive
+# Preview the durable memories without storing
+clio distill - --dry-run < session-digest.txt
+
+# Distil and store, tagging provenance
+clio distill - --source claude-code-session --source-ref <session-id> < session-digest.txt
+```
+
+Pass `-` to read the text from stdin. `--namespace` overrides the namespace for
+every extracted memory. Requires the capture pipeline to be enabled.
+
+---
+
+## Archiving & Deletion
+
+```sh
+clio archive <id>       # soft-archive (hidden, restorable)
 clio unarchive <id>     # restore
+clio delete <id>        # permanent delete of a single memory
 ```
 
 ---
@@ -146,6 +166,92 @@ clio namespaces
 ```
 
 Detection order: `.clio-namespace` file > `.git` dir > `Cargo.toml`/`package.json` > `global`
+
+### Cleanup (stale namespaces)
+
+`cleanup` finds namespaces that are no longer useful and can purge them. It is
+**dry-run by default** — pass `--execute` to actually delete, and a database
+backup is always taken first.
+
+```sh
+# Dry run — show stale candidates and why they were flagged (all criteria)
+clio cleanup
+
+# Restrict to specific criteria
+clio cleanup --stale-months 6      # no activity for 6 months
+clio cleanup --archived            # every memory already archived
+clio cleanup --folder-gone         # project:<slug> with no folder on disk
+
+# Actually purge (backup taken first)
+clio cleanup --folder-gone --execute
+```
+
+Criteria:
+- **stale-months** — last activity older than N months (default from settings).
+- **archived** — the namespace has no live memories (all archived).
+- **folder-gone** — a `project:<slug>` namespace whose folder is not found under
+  any configured dev root (a heuristic — see `cleanup.dev_roots` in settings).
+
+With no criterion flag, all three are applied. The `global` namespace is never
+flagged. See `reference/settings.md` for `cleanup.*` configuration.
+
+### Consolidate (project memory)
+
+`consolidate` rolls a namespace's atomic memories into a single AI-curated
+"consolidated memory" document — a coherent, deduplicated summary of the
+project. It is stored as a singleton memory per namespace (`kind = summary`,
+upserted in place), and the session-start brief leads with it.
+
+```sh
+# Consolidate the current project (namespace auto-detected from cwd)
+clio consolidate
+
+# Consolidate a specific namespace
+clio consolidate --namespace project:clio
+```
+
+The document is a **derived cache**: each run reconciles it from the current
+atomic memories (no iterative self-editing, so it can't drift), and the atomic
+memories are left untouched. Requires the capture pipeline to be enabled.
+
+Triggers:
+
+```sh
+# Every namespace
+clio consolidate --all
+
+# Only namespaces with enough new memories since last run (the configured
+# consolidate.auto_threshold) — cheap to run often, no-op when nothing's due
+clio consolidate --if-due
+clio consolidate --all --if-due
+```
+
+The Stop hook (see `clio-hooks`) runs `clio consolidate --if-due` after each
+session that produced memories, so the consolidated document refreshes
+automatically once a project accrues enough new material.
+
+**Scheduling (macOS launchd):** to also refresh on a timer, drop a LaunchAgent
+at `~/Library/LaunchAgents/com.clio.consolidate.plist` and
+`launchctl load` it:
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key><string>com.clio.consolidate</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/YOU/.cargo/bin/clio</string>
+        <string>consolidate</string>
+        <string>--all</string>
+        <string>--if-due</string>
+    </array>
+    <key>StartCalendarInterval</key>
+    <dict><key>Hour</key><integer>6</integer><key>Minute</key><integer>0</integer></dict>
+</dict>
+</plist>
+```
 
 ---
 

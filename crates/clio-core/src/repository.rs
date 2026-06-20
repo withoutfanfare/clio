@@ -146,6 +146,18 @@ fn find_by_source_ref(conn: &Connection, source: &str, source_ref: &str) -> Resu
     Ok(id)
 }
 
+/// Fetch a memory by its `(source, source_ref)` provenance pair, if present.
+pub fn get_by_source_ref(
+    conn: &Connection,
+    source: &str,
+    source_ref: &str,
+) -> Result<Option<Memory>> {
+    match find_by_source_ref(conn, source, source_ref)? {
+        Some(id) => Ok(Some(get(conn, &id)?)),
+        None => Ok(None),
+    }
+}
+
 fn insert_tags(conn: &Connection, memory_id: &str, tags: &[String], now: &str) -> Result<()> {
     if tags.is_empty() {
         return Ok(());

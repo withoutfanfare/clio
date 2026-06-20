@@ -10,7 +10,8 @@ The single home for all logic: storage (SQLite, WAL, FTS5), recall and scoring,
 embeddings, migrations, capture, deduplication, auto-linking, backup/export.
 Module map: `repository.rs`, `db.rs`, `migrations.rs`/`migrate.rs`, `models.rs`,
 `embeddings.rs`, `assembly.rs`, `context.rs`, `deduplication.rs`, `integrity.rs`,
-`settings.rs`, `config.rs`, `capture.rs`, `review.rs`, `backup.rs`, `export.rs`.
+`settings.rs`, `config.rs`, `capture.rs`, `cleanup.rs`, `consolidate.rs`,
+`review.rs`, `backup.rs`, `export.rs`.
 
 ## Critical Invariants (bugs if violated)
 
