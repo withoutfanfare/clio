@@ -2,6 +2,7 @@ pub mod assembly;
 pub mod backup;
 pub mod cache;
 pub mod capture;
+pub mod cleanup;
 pub mod config;
 pub mod daemon;
 pub mod context;

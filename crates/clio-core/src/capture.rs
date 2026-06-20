@@ -472,6 +472,7 @@ pub fn capture_with_classification(
         &namespace,
         "capture",
         None,
+        &serde_json::json!({}),
         settings,
     )
 }
@@ -485,6 +486,7 @@ pub fn capture_with_classification(
 /// LLM suggests for every distilled memory. `source` and `source_ref` are
 /// recorded on each memory for provenance.
 #[cfg(feature = "capture")]
+#[allow(clippy::too_many_arguments)]
 pub fn distill_and_store(
     conn: &rusqlite::Connection,
     text: &str,
@@ -492,9 +494,17 @@ pub fn distill_and_store(
     namespace_override: Option<&str>,
     source: &str,
     source_ref: Option<&str>,
+    cwd: Option<&str>,
     settings: &crate::settings::Settings,
 ) -> Result<Vec<CaptureResult>> {
     let memories = distill(text, config)?;
+
+    // Record the originating working directory so namespaces can later be
+    // matched to a real path (powers reliable "folder gone" cleanup).
+    let metadata = match cwd {
+        Some(c) => serde_json::json!({ "cwd": c }),
+        None => serde_json::json!({}),
+    };
 
     let mut results = Vec::with_capacity(memories.len());
     for (index, memory) in memories.iter().enumerate() {
@@ -524,6 +534,7 @@ pub fn distill_and_store(
             &namespace,
             source,
             item_ref.as_deref(),
+            &metadata,
             settings,
         )?);
     }
@@ -535,6 +546,7 @@ pub fn distill_and_store(
 /// confidence falls below the configured threshold. Shared by the single-item
 /// capture path and the multi-item distillation path so both apply identical
 /// review-routing and auto-embed behaviour.
+#[allow(clippy::too_many_arguments)]
 fn store_or_queue(
     conn: &rusqlite::Connection,
     content: &str,
@@ -542,6 +554,7 @@ fn store_or_queue(
     namespace: &str,
     source: &str,
     source_ref: Option<&str>,
+    metadata: &serde_json::Value,
     settings: &crate::settings::Settings,
 ) -> Result<CaptureResult> {
     // Check whether this capture should be routed to the review queue.
@@ -561,7 +574,7 @@ fn store_or_queue(
                 suggested_importance: classification.importance,
                 suggested_confidence: Some(classification.confidence),
                 source_route: Some(source.to_string()),
-                metadata: serde_json::json!({}),
+                metadata: metadata.clone(),
             };
 
             let review_item = crate::review::queue_for_review(conn, &review_input)?;
@@ -584,7 +597,7 @@ fn store_or_queue(
         source_ref: source_ref.map(String::from),
         confidence: Some(classification.confidence),
         importance: classification.importance,
-        metadata: serde_json::json!({}),
+        metadata: metadata.clone(),
         valid_from: None,
         valid_until: None,
         upsert: false,

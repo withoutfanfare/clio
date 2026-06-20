@@ -3,10 +3,58 @@ use std::sync::Mutex;
 
 use tauri::State;
 
+use clio_core::cleanup::{self, CleanupCandidate, CleanupCriteria, CleanupReport};
 use clio_core::context::{self, DetectedContext};
 use clio_core::models::NamespaceInfo;
 
 use crate::{AppState, CommandError};
+
+/// Find namespaces matching the cleanup criteria. When no specific criterion is
+/// requested, all criteria are applied.
+#[tauri::command]
+pub fn cmd_find_cleanup_candidates(
+    state: State<'_, Mutex<AppState>>,
+    stale_months: Option<u32>,
+    archived: bool,
+    folder_gone: bool,
+    all: bool,
+) -> Result<Vec<CleanupCandidate>, CommandError> {
+    let app = state
+        .lock()
+        .map_err(|e| CommandError::Core(format!("Lock poisoned: {e}")))?;
+
+    let any_specific = archived || folder_gone || stale_months.is_some();
+    let use_all = all || !any_specific;
+
+    let criteria = CleanupCriteria {
+        stale_months: if use_all || stale_months.is_some() {
+            Some(stale_months.unwrap_or(app.settings.cleanup.stale_months))
+        } else {
+            None
+        },
+        all_archived: use_all || archived,
+        folder_gone: use_all || folder_gone,
+    };
+
+    let dev_roots = cleanup::expand_dev_roots(&app.settings.cleanup.dev_roots);
+    let candidates = cleanup::find_candidates_now(&app.conn, &criteria, &dev_roots)?;
+    Ok(candidates)
+}
+
+/// Purge the given namespaces (and all their memories), taking a backup first.
+/// The caller passes the explicit list the user confirmed.
+#[tauri::command]
+pub fn cmd_run_cleanup(
+    state: State<'_, Mutex<AppState>>,
+    namespaces: Vec<String>,
+) -> Result<CleanupReport, CommandError> {
+    let app = state
+        .lock()
+        .map_err(|e| CommandError::Core(format!("Lock poisoned: {e}")))?;
+    let report = cleanup::execute_cleanup(&app.conn, &app.db_path, &namespaces, 10)?;
+    app.cache.clear_all();
+    Ok(report)
+}
 
 #[tauri::command]
 pub fn cmd_namespaces(

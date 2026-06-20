@@ -173,6 +173,8 @@ pub fn run() {
             commands::namespaces::cmd_merge_namespaces,
             commands::namespaces::cmd_delete_namespace,
             commands::namespaces::cmd_purge_namespace,
+            commands::namespaces::cmd_find_cleanup_candidates,
+            commands::namespaces::cmd_run_cleanup,
             commands::namespaces::cmd_init_namespace,
             commands::namespaces::cmd_detect_namespace,
             commands::namespaces::cmd_integrity_check,

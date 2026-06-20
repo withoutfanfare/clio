@@ -145,11 +145,12 @@ every extracted memory. Requires the capture pipeline to be enabled.
 
 ---
 
-## Archiving
+## Archiving & Deletion
 
 ```sh
-clio archive <id>       # soft-archive
+clio archive <id>       # soft-archive (hidden, restorable)
 clio unarchive <id>     # restore
+clio delete <id>        # permanent delete of a single memory
 ```
 
 ---
@@ -165,6 +166,34 @@ clio namespaces
 ```
 
 Detection order: `.clio-namespace` file > `.git` dir > `Cargo.toml`/`package.json` > `global`
+
+### Cleanup (stale namespaces)
+
+`cleanup` finds namespaces that are no longer useful and can purge them. It is
+**dry-run by default** — pass `--execute` to actually delete, and a database
+backup is always taken first.
+
+```sh
+# Dry run — show stale candidates and why they were flagged (all criteria)
+clio cleanup
+
+# Restrict to specific criteria
+clio cleanup --stale-months 6      # no activity for 6 months
+clio cleanup --archived            # every memory already archived
+clio cleanup --folder-gone         # project:<slug> with no folder on disk
+
+# Actually purge (backup taken first)
+clio cleanup --folder-gone --execute
+```
+
+Criteria:
+- **stale-months** — last activity older than N months (default from settings).
+- **archived** — the namespace has no live memories (all archived).
+- **folder-gone** — a `project:<slug>` namespace whose folder is not found under
+  any configured dev root (a heuristic — see `cleanup.dev_roots` in settings).
+
+With no criterion flag, all three are applied. The `global` namespace is never
+flagged. See `reference/settings.md` for `cleanup.*` configuration.
 
 ---
 

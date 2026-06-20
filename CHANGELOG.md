@@ -16,6 +16,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Distilled memories from one session get a per-index `source_ref` suffix (`<ref>-<n>`) so the `UNIQUE(source, source_ref)` index is respected while keeping a shared session prefix for provenance.
 - Reuses the existing capture pipeline per memory (review-queue routing below `review_threshold`, auto-embed) via a shared `store_or_queue` helper.
 
+**Namespace Cleanup**
+- New `clio-core::cleanup` module: `find_candidates` flags stale namespaces by age, all-archived state, or a missing project folder (the "folder gone" heuristic, which prunes the disk scan at project roots); `execute_cleanup` purges them after taking a database backup.
+- `CleanupConfig` settings: `stale_months` (default 6), `dev_roots`, `record_cwd`.
+- CLI: `clio cleanup` (dry-run by default; `--stale-months`, `--archived`, `--folder-gone`, `--execute`) and `clio delete <id>` (previously the CLI had no delete).
+- Desktop app: a "Find stale" panel in the Namespaces view lists candidates with reasons and purges the selected ones (backup taken first). Backed by `cmd_find_cleanup_candidates` / `cmd_run_cleanup`.
+
 ## [0.3.0] - 2026-03-03
 
 ### Added

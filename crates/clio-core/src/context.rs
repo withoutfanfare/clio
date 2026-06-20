@@ -177,7 +177,7 @@ pub fn init_namespace(dir: &Path, namespace: &str) -> std::io::Result<()> {
 }
 
 /// Convert a directory name into a URL-safe slug.
-fn slugify(name: &str) -> String {
+pub fn slugify(name: &str) -> String {
     name.chars()
         .map(|c| {
             if c.is_ascii_alphanumeric() || c == '-' || c == '_' {

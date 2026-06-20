@@ -3,6 +3,8 @@ import type {
   BackupListEntry,
   BackupResult,
   BulkResult,
+  CleanupCandidate,
+  CleanupReport,
   DetectedContext,
   DuplicateScanResult,
   ImportResult,
@@ -247,6 +249,28 @@ export async function deleteNamespace(namespace: string): Promise<boolean> {
 
 export async function purgeNamespace(namespace: string): Promise<number> {
   return invoke<number>("cmd_purge_namespace", { namespace });
+}
+
+export interface CleanupCriteriaInput {
+  staleMonths?: number | null;
+  archived?: boolean;
+  folderGone?: boolean;
+  all?: boolean;
+}
+
+export async function findCleanupCandidates(
+  criteria: CleanupCriteriaInput = {},
+): Promise<CleanupCandidate[]> {
+  return invoke<CleanupCandidate[]>("cmd_find_cleanup_candidates", {
+    staleMonths: criteria.staleMonths ?? null,
+    archived: criteria.archived ?? false,
+    folderGone: criteria.folderGone ?? false,
+    all: criteria.all ?? false,
+  });
+}
+
+export async function runCleanup(namespaces: string[]): Promise<CleanupReport> {
+  return invoke<CleanupReport>("cmd_run_cleanup", { namespaces });
 }
 
 // Integrity checks

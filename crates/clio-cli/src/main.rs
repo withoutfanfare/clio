@@ -80,6 +80,15 @@ enum Command {
     /// Move memories to a different namespace.
     Move(MoveArgs),
 
+    /// Permanently delete a memory by ID.
+    Delete {
+        /// The memory ID to delete.
+        id: String,
+    },
+
+    /// Find and optionally purge stale namespaces (dry-run by default).
+    Cleanup(CleanupArgs),
+
     /// List all namespaces in use.
     Namespaces,
 
@@ -313,6 +322,31 @@ struct MoveArgs {
     /// Target namespace.
     #[arg(long)]
     to: String,
+}
+
+#[derive(Parser)]
+struct CleanupArgs {
+    /// Flag namespaces with no activity for this many months (default from settings).
+    #[arg(long)]
+    stale_months: Option<u32>,
+
+    /// Flag namespaces whose memories are all archived.
+    #[arg(long)]
+    archived: bool,
+
+    /// Flag project namespaces whose folder is no longer on disk.
+    #[arg(long)]
+    folder_gone: bool,
+
+    /// Apply all criteria (stale + archived + folder-gone). This is the default
+    /// when no specific criterion flag is given.
+    #[arg(long)]
+    all: bool,
+
+    /// Actually purge the candidates. Without this it is a dry run. A database
+    /// backup is always taken before purging.
+    #[arg(long)]
+    execute: bool,
 }
 
 #[derive(Parser)]
@@ -782,6 +816,8 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         Command::Archive { id } => cmd_archive(cli.db_path.as_deref(), cli.json, &id),
         Command::Unarchive { id } => cmd_unarchive(cli.db_path.as_deref(), cli.json, &id),
         Command::Move(args) => cmd_move(cli.db_path.as_deref(), cli.json, args),
+        Command::Delete { id } => cmd_delete(cli.db_path.as_deref(), cli.json, &id),
+        Command::Cleanup(args) => cmd_cleanup(cli.db_path.as_deref(), cli.json, args),
         Command::Namespaces => cmd_namespaces(cli.db_path.as_deref(), cli.json),
         Command::Link(args) => cmd_link(cli.db_path.as_deref(), cli.json, args),
         Command::Export(args) => cmd_export(cli.db_path.as_deref(), args),
@@ -1194,6 +1230,98 @@ fn cmd_move(
     Ok(())
 }
 
+fn cmd_delete(
+    db_path: Option<&str>,
+    json: bool,
+    id: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let conn = open_db(db_path)?;
+    let memory = repository::delete(&conn, id)?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&memory)?);
+    } else {
+        eprintln!("Deleted.");
+        print_memory_card(&memory);
+    }
+    Ok(())
+}
+
+fn cmd_cleanup(
+    db_path: Option<&str>,
+    json: bool,
+    args: CleanupArgs,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let path = resolve_db_path(db_path)?;
+    let conn = db::open(&path)?;
+    let s = settings::load(&path)?;
+
+    // Default to all criteria when no specific criterion flag is given.
+    let any_specific = args.archived || args.folder_gone || args.stale_months.is_some();
+    let use_all = args.all || !any_specific;
+
+    let criteria = clio_core::cleanup::CleanupCriteria {
+        stale_months: if use_all || args.stale_months.is_some() {
+            Some(args.stale_months.unwrap_or(s.cleanup.stale_months))
+        } else {
+            None
+        },
+        all_archived: use_all || args.archived,
+        folder_gone: use_all || args.folder_gone,
+    };
+
+    let dev_roots = clio_core::cleanup::expand_dev_roots(&s.cleanup.dev_roots);
+    let candidates = clio_core::cleanup::find_candidates_now(&conn, &criteria, &dev_roots)?;
+
+    if !args.execute {
+        if json {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "dry_run": true,
+                    "candidates": candidates,
+                }))?
+            );
+        } else if candidates.is_empty() {
+            eprintln!("No stale namespaces found.");
+        } else {
+            eprintln!(
+                "Found {} candidate namespace(s) — dry run, pass --execute to purge (a backup is taken first):",
+                candidates.len()
+            );
+            for c in &candidates {
+                let reasons: Vec<String> =
+                    c.reasons.iter().map(|r| format!("{r:?}")).collect();
+                eprintln!(
+                    "  {} — {} live / {} archived — {}",
+                    c.namespace,
+                    c.live_count,
+                    c.archived_count,
+                    reasons.join(", ")
+                );
+            }
+        }
+        return Ok(());
+    }
+
+    let namespaces: Vec<String> = candidates.iter().map(|c| c.namespace.clone()).collect();
+    let report = clio_core::cleanup::execute_cleanup(&conn, &path, &namespaces, 10)?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        eprintln!(
+            "Purged {} namespace(s), {} memories.",
+            report.namespaces_deleted.len(),
+            report.memories_purged
+        );
+        if let Some(bp) = &report.backup_path {
+            eprintln!("Backup: {bp}");
+        }
+    }
+    Ok(())
+}
+
 fn cmd_namespaces(db_path: Option<&str>, json: bool) -> Result<(), Box<dyn std::error::Error>> {
     let conn = open_db(db_path)?;
     let namespaces = repository::list_namespaces(&conn)?;
@@ -1489,6 +1617,16 @@ fn cmd_distill(
         return Ok(());
     }
 
+    // Record the working directory so namespaces can later be matched to a real
+    // path for reliable "folder gone" cleanup.
+    let cwd = if s.cleanup.record_cwd {
+        std::env::current_dir()
+            .ok()
+            .map(|p| p.display().to_string())
+    } else {
+        None
+    };
+
     let results = clio_core::capture::distill_and_store(
         &conn,
         &text,
@@ -1496,6 +1634,7 @@ fn cmd_distill(
         args.namespace.as_deref(),
         &args.source,
         args.source_ref.as_deref(),
+        cwd.as_deref(),
         &s,
     )?;
 

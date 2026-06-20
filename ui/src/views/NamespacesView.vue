@@ -2,7 +2,7 @@
 import { ref, onMounted } from "vue";
 import * as api from "@/api/memory";
 import { useMemoryStore } from "@/stores/memories";
-import type { NamespaceInfo } from "@/api/types";
+import type { CleanupCandidate, CleanupReason, NamespaceInfo } from "@/api/types";
 
 const store = useMemoryStore();
 const namespaces = ref<NamespaceInfo[]>([]);
@@ -25,6 +25,20 @@ const mergeTarget = ref("");
 
 // Delete
 const confirmingDelete = ref<string | null>(null);
+
+// Cleanup
+const showCleanup = ref(false);
+const cleanupCandidates = ref<CleanupCandidate[]>([]);
+const cleanupLoading = ref(false);
+const selectedForCleanup = ref<Set<string>>(new Set());
+const confirmingCleanup = ref(false);
+const cleanupRunning = ref(false);
+
+const reasonLabels: Record<CleanupReason, string> = {
+  stale_by_age: "Stale",
+  all_archived: "All archived",
+  folder_gone: "Folder gone",
+};
 
 async function loadNamespaces() {
   loading.value = true;
@@ -131,6 +145,59 @@ async function deleteNs(ns: string, memoryCount: number) {
   }
 }
 
+async function findStale() {
+  showCleanup.value = true;
+  cleanupLoading.value = true;
+  confirmingCleanup.value = false;
+  clearMessages();
+  try {
+    cleanupCandidates.value = await api.findCleanupCandidates({ all: true });
+    selectedForCleanup.value = new Set(
+      cleanupCandidates.value.map((c) => c.namespace),
+    );
+  } catch (e) {
+    error.value = String(e);
+  } finally {
+    cleanupLoading.value = false;
+  }
+}
+
+function toggleCleanup(ns: string) {
+  const set = new Set(selectedForCleanup.value);
+  if (set.has(ns)) set.delete(ns);
+  else set.add(ns);
+  selectedForCleanup.value = set;
+  confirmingCleanup.value = false;
+}
+
+async function runCleanupSelected() {
+  const targets = [...selectedForCleanup.value];
+  if (!targets.length) return;
+  if (!confirmingCleanup.value) {
+    confirmingCleanup.value = true;
+    return;
+  }
+  cleanupRunning.value = true;
+  error.value = null;
+  try {
+    const report = await api.runCleanup(targets);
+    success.value =
+      `Purged ${report.namespaces_deleted.length} namespace(s) and ` +
+      `${report.memories_purged} ${report.memories_purged === 1 ? "memory" : "memories"}.` +
+      (report.backup_path ? " A backup was saved first." : "");
+    showCleanup.value = false;
+    confirmingCleanup.value = false;
+    cleanupCandidates.value = [];
+    store.invalidateSearchCache();
+    await loadNamespaces();
+    await store.fetchNamespaces();
+  } catch (e) {
+    error.value = String(e);
+  } finally {
+    cleanupRunning.value = false;
+  }
+}
+
 function formatDate(iso: string | null): string {
   if (!iso) return "—";
   return new Date(iso).toLocaleDateString("en-GB", {
@@ -154,12 +221,20 @@ onMounted(() => {
   <div class="ns-view">
     <div class="ns-header">
       <h1 class="ns-title">Namespaces</h1>
-      <button class="ns-create-btn" @click="showCreate = !showCreate; clearMessages()">
-        <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
-          <path d="M8 3v10M3 8h10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-        </svg>
-        {{ showCreate ? "Cancel" : "Create" }}
-      </button>
+      <div class="ns-header-actions">
+        <button class="ns-create-btn ghost" @click="findStale(); clearMessages()">
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+            <path d="M2 4h12M4 4l.8 8.4a1 1 0 001 .9h4.4a1 1 0 001-.9L13 4M6 7v4M10 7v4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+          Find stale
+        </button>
+        <button class="ns-create-btn" @click="showCreate = !showCreate; clearMessages()">
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+            <path d="M8 3v10M3 8h10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+          </svg>
+          {{ showCreate ? "Cancel" : "Create" }}
+        </button>
+      </div>
     </div>
 
     <Transition name="fade">
@@ -177,6 +252,77 @@ onMounted(() => {
         >
           {{ creating ? "Creating\u2026" : "Create" }}
         </button>
+      </div>
+    </Transition>
+
+    <Transition name="fade">
+      <div v-if="showCleanup" class="cleanup-panel">
+        <div class="cleanup-head">
+          <span class="cleanup-title">Stale namespace cleanup</span>
+          <button class="ns-action-btn" @click="showCleanup = false">Close</button>
+        </div>
+
+        <div v-if="cleanupLoading" class="ns-loading">Scanning for stale namespaces…</div>
+
+        <template v-else>
+          <div v-if="!cleanupCandidates.length" class="cleanup-empty">
+            Nothing stale found — your namespaces all look active.
+          </div>
+
+          <template v-else>
+            <p class="cleanup-hint">
+              Found {{ cleanupCandidates.length }} candidate{{ cleanupCandidates.length === 1 ? "" : "s" }}.
+              Untick any you want to keep. Purging is permanent — a database backup is taken first.
+            </p>
+
+            <label
+              v-for="c in cleanupCandidates"
+              :key="c.namespace"
+              class="cleanup-row"
+            >
+              <input
+                type="checkbox"
+                :checked="selectedForCleanup.has(c.namespace)"
+                @change="toggleCleanup(c.namespace)"
+              />
+              <div class="cleanup-row-info">
+                <span class="ns-name">{{ c.namespace }}</span>
+                <span class="ns-meta">
+                  {{ c.live_count }} live &middot; {{ c.archived_count }} archived
+                  &middot; last active {{ formatDate(c.last_activity) }}
+                </span>
+              </div>
+              <div class="cleanup-reasons">
+                <span v-for="r in c.reasons" :key="r" class="cleanup-tag">
+                  {{ reasonLabels[r] }}
+                </span>
+              </div>
+            </label>
+
+            <div class="cleanup-actions">
+              <button
+                class="ns-action-btn danger"
+                :disabled="!selectedForCleanup.size || cleanupRunning"
+                @click="runCleanupSelected"
+              >
+                <template v-if="cleanupRunning">Purging…</template>
+                <template v-else-if="confirmingCleanup">
+                  Click again to purge {{ selectedForCleanup.size }}
+                </template>
+                <template v-else>
+                  Purge {{ selectedForCleanup.size }} selected
+                </template>
+              </button>
+              <button
+                v-if="confirmingCleanup"
+                class="ns-action-btn"
+                @click="confirmingCleanup = false"
+              >
+                Cancel
+              </button>
+            </div>
+          </template>
+        </template>
       </div>
     </Transition>
 
@@ -300,6 +446,91 @@ onMounted(() => {
 
 .ns-create-btn:hover {
   background: var(--colour-accent-hover);
+}
+
+.ns-header-actions {
+  display: flex;
+  gap: var(--space-2);
+}
+
+.ns-create-btn.ghost {
+  background: var(--colour-surface-input);
+  color: var(--colour-text);
+  border: 1px solid var(--colour-border);
+}
+
+.ns-create-btn.ghost:hover {
+  background: var(--colour-surface-hover);
+}
+
+.cleanup-panel {
+  margin-bottom: var(--space-4);
+  padding: var(--space-3);
+  background: var(--colour-surface-input);
+  border: 1px solid var(--colour-border);
+  border-radius: var(--radius-md);
+}
+
+.cleanup-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: var(--space-2);
+}
+
+.cleanup-title {
+  font-size: var(--text-sm);
+  font-weight: var(--font-semibold);
+  color: var(--colour-text);
+}
+
+.cleanup-hint,
+.cleanup-empty {
+  font-size: var(--text-sm);
+  color: var(--colour-text-muted);
+  margin-bottom: var(--space-3);
+}
+
+.cleanup-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.cleanup-row:hover {
+  background: var(--colour-surface-hover);
+}
+
+.cleanup-row-info {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+}
+
+.cleanup-reasons {
+  display: flex;
+  gap: var(--space-1);
+  flex-wrap: wrap;
+}
+
+.cleanup-tag {
+  font-size: var(--text-xs);
+  padding: 1px var(--space-2);
+  border-radius: var(--radius-sm);
+  background: var(--colour-surface);
+  border: 1px solid var(--colour-border);
+  color: var(--colour-text-muted);
+  white-space: nowrap;
+}
+
+.cleanup-actions {
+  display: flex;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
 }
 
 .create-form {
