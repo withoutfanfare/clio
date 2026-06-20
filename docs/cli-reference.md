@@ -124,6 +124,25 @@ clio capture --text "We decided to use Redis for caching" --dry-run
 clio capture --text "We decided to use Redis for caching"
 ```
 
+### Distil (transcript → durable memories)
+
+`distill` sends a long body of text — typically a whole session transcript — to
+the LLM and extracts **zero or more** self-contained, durable memories
+(decisions, facts, constraints, insights). Routine input yields nothing, so
+noise is filtered by design. Uses the same capture pipeline (review routing,
+auto-embed) per extracted memory.
+
+```sh
+# Preview the durable memories without storing
+clio distill - --dry-run < session-digest.txt
+
+# Distil and store, tagging provenance
+clio distill - --source claude-code-session --source-ref <session-id> < session-digest.txt
+```
+
+Pass `-` to read the text from stdin. `--namespace` overrides the namespace for
+every extracted memory. Requires the capture pipeline to be enabled.
+
 ---
 
 ## Archiving
