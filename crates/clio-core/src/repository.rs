@@ -1,4 +1,4 @@
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::error::{ClioError, Result};
 use crate::models::*;
@@ -12,7 +12,11 @@ use crate::validate;
 ///
 /// The insert (or update) and tag writes are wrapped in a savepoint so that
 /// a failure in any step rolls back the entire operation atomically.
-pub fn remember(conn: &Connection, input: &RememberInput, settings: &crate::settings::Settings) -> Result<Memory> {
+pub fn remember(
+    conn: &Connection,
+    input: &RememberInput,
+    settings: &crate::settings::Settings,
+) -> Result<Memory> {
     validate::remember_input(input)?;
 
     let tags = normalise_tags(&input.tags);
@@ -27,7 +31,16 @@ pub fn remember(conn: &Connection, input: &RememberInput, settings: &crate::sett
     if input.upsert {
         if let (Some(source), Some(source_ref)) = (&input.source, &input.source_ref) {
             if let Some(existing_id) = find_by_source_ref(conn, source, source_ref)? {
-                return update_existing(conn, &existing_id, input, &tags, &tags_text, &metadata_str, &now, settings);
+                return update_existing(
+                    conn,
+                    &existing_id,
+                    input,
+                    &tags,
+                    &tags_text,
+                    &metadata_str,
+                    &now,
+                    settings,
+                );
             }
         }
         // If upsert requested but source/source_ref incomplete, fall through to insert.
@@ -204,7 +217,12 @@ fn normalise_tags(tags: &[String]) -> Vec<String> {
 // ---------------------------------------------------------------------------
 
 /// Update an existing memory by ID with the provided fields.
-pub fn update(conn: &Connection, id: &str, input: &RememberInput, settings: &crate::settings::Settings) -> Result<Memory> {
+pub fn update(
+    conn: &Connection,
+    id: &str,
+    input: &RememberInput,
+    settings: &crate::settings::Settings,
+) -> Result<Memory> {
     // Verify memory exists.
     get_raw(conn, id)?;
 
@@ -215,7 +233,16 @@ pub fn update(conn: &Connection, id: &str, input: &RememberInput, settings: &cra
     let metadata_str = serde_json::to_string(&input.metadata)?;
     let now = now_utc();
 
-    update_existing(conn, id, input, &tags, &tags_text, &metadata_str, &now, settings)
+    update_existing(
+        conn,
+        id,
+        input,
+        &tags,
+        &tags_text,
+        &metadata_str,
+        &now,
+        settings,
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -258,11 +285,9 @@ pub(crate) fn get_raw(conn: &Connection, id: &str) -> Result<Memory> {
 /// Check whether a memory exists by ID. Lightweight — no row parsing.
 fn exists(conn: &Connection, id: &str) -> Result<bool> {
     let found: Option<i32> = conn
-        .query_row(
-            "SELECT 1 FROM memories WHERE id = ?1",
-            params![id],
-            |row| row.get(0),
-        )
+        .query_row("SELECT 1 FROM memories WHERE id = ?1", params![id], |row| {
+            row.get(0)
+        })
         .optional()?;
     Ok(found.is_some())
 }
@@ -428,8 +453,7 @@ fn touch_accessed_chunk(conn: &Connection, ids: &[&str]) -> Result<()> {
         .collect();
     params.push(Box::new(now));
 
-    let param_refs: Vec<&dyn rusqlite::types::ToSql> =
-        params.iter().map(|p| p.as_ref()).collect();
+    let param_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
 
     conn.execute(&sql, param_refs.as_slice())?;
 
@@ -453,8 +477,7 @@ fn get_links_bulk(conn: &Connection, memory_ids: &[String]) -> Result<Vec<Memory
         .iter()
         .map(|id| -> Box<dyn rusqlite::types::ToSql> { Box::new(id.clone()) })
         .collect();
-    let param_refs: Vec<&dyn rusqlite::types::ToSql> =
-        params.iter().map(|p| p.as_ref()).collect();
+    let param_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
     let mut stmt = conn.prepare(&sql)?;
     let rows = stmt.query_map(param_refs.as_slice(), |row| {
         Ok(MemoryLinkRow {
@@ -514,9 +537,8 @@ fn append_linked_memories(conn: &Connection, result: &mut RecallResult) -> Resul
     let fetched = get_many(conn, &ids_to_fetch)?;
 
     // Build a map of id -> source for linking.
-    let source_map: std::collections::HashMap<String, String> = target_to_source
-        .into_iter()
-        .collect();
+    let source_map: std::collections::HashMap<String, String> =
+        target_to_source.into_iter().collect();
 
     let mut linked_items: Vec<RecallItem> = Vec::new();
     for memory in fetched {
@@ -611,7 +633,8 @@ fn recall_fts(conn: &Connection, fts_query: &str, q: &RecallQuery) -> Result<Rec
     sql.push_str(&format!(" OFFSET ?{next_idx}"));
     param_values.push(Box::new(q.offset));
 
-    let param_refs: Vec<&dyn rusqlite::types::ToSql> = param_values.iter().map(|p| p.as_ref()).collect();
+    let param_refs: Vec<&dyn rusqlite::types::ToSql> =
+        param_values.iter().map(|p| p.as_ref()).collect();
 
     // Total count (uses params without LIMIT/OFFSET and scoring params).
     let count_param_end = if scoring_opt.is_some() {
@@ -619,8 +642,10 @@ fn recall_fts(conn: &Connection, fts_query: &str, q: &RecallQuery) -> Result<Rec
     } else {
         param_values.len() - 2 // skip limit, offset
     };
-    let count_refs: Vec<&dyn rusqlite::types::ToSql> =
-        param_values[..count_param_end].iter().map(|p| p.as_ref()).collect();
+    let count_refs: Vec<&dyn rusqlite::types::ToSql> = param_values[..count_param_end]
+        .iter()
+        .map(|p| p.as_ref())
+        .collect();
     let total: u32 = conn.query_row(&count_sql, count_refs.as_slice(), |row| row.get(0))?;
 
     let mut stmt = conn.prepare(&sql)?;
@@ -692,7 +717,8 @@ fn recall_recent(conn: &Connection, q: &RecallQuery) -> Result<RecallResult> {
     sql.push_str(&format!(" OFFSET ?{next_idx}"));
     param_values.push(Box::new(q.offset));
 
-    let param_refs: Vec<&dyn rusqlite::types::ToSql> = param_values.iter().map(|p| p.as_ref()).collect();
+    let param_refs: Vec<&dyn rusqlite::types::ToSql> =
+        param_values.iter().map(|p| p.as_ref()).collect();
 
     let mut stmt = conn.prepare(&sql)?;
     let rows = stmt.query_map(param_refs.as_slice(), |row| {
@@ -938,11 +964,7 @@ pub fn move_namespace(conn: &Connection, id: &str, namespace: &str) -> Result<Me
 
 /// Move all memories in one namespace to another. Returns the number of
 /// memories moved.
-pub fn move_namespace_bulk(
-    conn: &Connection,
-    from: &str,
-    to: &str,
-) -> Result<usize> {
+pub fn move_namespace_bulk(conn: &Connection, from: &str, to: &str) -> Result<usize> {
     if to.is_empty() || to.len() > 120 {
         return Err(ClioError::Validation(
             "namespace must be between 1 and 120 characters.".into(),
@@ -1074,10 +1096,7 @@ pub fn delete_bulk(conn: &Connection, ids: &[String]) -> Result<u32> {
     conn.execute_batch("SAVEPOINT bulk_delete")?;
     let mut count = 0u32;
     for id in ids {
-        let affected = conn.execute(
-            "DELETE FROM memories WHERE id = ?1",
-            params![id],
-        )?;
+        let affected = conn.execute("DELETE FROM memories WHERE id = ?1", params![id])?;
         count += affected as u32;
     }
     conn.execute_batch("RELEASE bulk_delete")?;
@@ -1102,9 +1121,8 @@ pub fn add_tag_bulk(conn: &Connection, ids: &[String], tag: &str) -> Result<u32>
         if affected > 0 {
             // Update tags_text
             let tags: Vec<String> = {
-                let mut stmt = conn.prepare(
-                    "SELECT tag FROM memory_tags WHERE memory_id = ?1 ORDER BY tag",
-                )?;
+                let mut stmt =
+                    conn.prepare("SELECT tag FROM memory_tags WHERE memory_id = ?1 ORDER BY tag")?;
                 let rows = stmt.query_map(params![id], |row| row.get(0))?;
                 rows.collect::<std::result::Result<Vec<_>, _>>()?
             };
@@ -1136,9 +1154,8 @@ pub fn remove_tag_bulk(conn: &Connection, ids: &[String], tag: &str) -> Result<u
         )?;
         if affected > 0 {
             let tags: Vec<String> = {
-                let mut stmt = conn.prepare(
-                    "SELECT tag FROM memory_tags WHERE memory_id = ?1 ORDER BY tag",
-                )?;
+                let mut stmt =
+                    conn.prepare("SELECT tag FROM memory_tags WHERE memory_id = ?1 ORDER BY tag")?;
                 let rows = stmt.query_map(params![id], |row| row.get(0))?;
                 rows.collect::<std::result::Result<Vec<_>, _>>()?
             };
@@ -1308,10 +1325,7 @@ pub fn get_neighbours(conn: &Connection, memory_id: &str, depth: u32) -> Result<
     }
 
     // Collect all discovered memories (excluding the root) in a single batch.
-    let discovered: Vec<String> = visited
-        .into_iter()
-        .filter(|id| id != memory_id)
-        .collect();
+    let discovered: Vec<String> = visited.into_iter().filter(|id| id != memory_id).collect();
     get_many(conn, &discovered)
 }
 
@@ -1341,8 +1355,7 @@ fn get_many(conn: &Connection, ids: &[String]) -> Result<Vec<Memory>> {
         .iter()
         .map(|id| -> Box<dyn rusqlite::types::ToSql> { Box::new(id.clone()) })
         .collect();
-    let param_refs: Vec<&dyn rusqlite::types::ToSql> =
-        params.iter().map(|p| p.as_ref()).collect();
+    let param_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
     let mut stmt = conn.prepare(&sql)?;
     let rows = stmt.query_map(param_refs.as_slice(), row_to_memory_raw)?;
     let mut result = Vec::new();
@@ -1378,11 +1391,11 @@ pub fn schema_info(conn: &Connection) -> Result<String> {
     info.push_str(&format!("Tables: {table_count}\n"));
     info.push_str(&format!("Total memories: {memory_count}\n"));
     info.push_str(&format!("Active memories: {active_count}\n"));
-    info.push_str(&format!("Archived memories: {}\n", memory_count - active_count));
     info.push_str(&format!(
-        "Migrations applied: {}\n",
-        versions.join(", ")
+        "Archived memories: {}\n",
+        memory_count - active_count
     ));
+    info.push_str(&format!("Migrations applied: {}\n", versions.join(", ")));
 
     Ok(info)
 }

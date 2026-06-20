@@ -11,8 +11,8 @@ struct Migration {
 
 const MIGRATIONS: &[Migration] = &[
     Migration {
-    version: "001_initial",
-    sql: r#"
+        version: "001_initial",
+        sql: r#"
         CREATE TABLE memories (
             id TEXT PRIMARY KEY,
             namespace TEXT NOT NULL DEFAULT 'global',

@@ -28,9 +28,8 @@ pub fn resolve_db_path(explicit: Option<&str>) -> Result<PathBuf> {
 fn platform_default() -> Result<PathBuf> {
     #[cfg(target_os = "macos")]
     {
-        let home = dirs_home().ok_or_else(|| {
-            ClioError::Config("could not determine home directory".into())
-        })?;
+        let home = dirs_home()
+            .ok_or_else(|| ClioError::Config("could not determine home directory".into()))?;
         Ok(home
             .join("Library")
             .join("Application Support")
@@ -45,9 +44,8 @@ fn platform_default() -> Result<PathBuf> {
                 return Ok(PathBuf::from(xdg).join("clio").join("memory.db"));
             }
         }
-        let home = dirs_home().ok_or_else(|| {
-            ClioError::Config("could not determine home directory".into())
-        })?;
+        let home = dirs_home()
+            .ok_or_else(|| ClioError::Config("could not determine home directory".into()))?;
         Ok(home
             .join(".local")
             .join("share")
@@ -57,9 +55,8 @@ fn platform_default() -> Result<PathBuf> {
 
     #[cfg(target_os = "windows")]
     {
-        let appdata = std::env::var("APPDATA").map_err(|_| {
-            ClioError::Config("APPDATA not set".into())
-        })?;
+        let appdata =
+            std::env::var("APPDATA").map_err(|_| ClioError::Config("APPDATA not set".into()))?;
         Ok(PathBuf::from(appdata).join("clio").join("memory.db"))
     }
 
@@ -77,10 +74,7 @@ fn dirs_home() -> Option<PathBuf> {
 
 /// Return the default inbox directory path, sibling to the database.
 pub fn default_inbox_dir(db_path: &Path) -> PathBuf {
-    db_path
-        .parent()
-        .unwrap_or(Path::new("."))
-        .join("inbox")
+    db_path.parent().unwrap_or(Path::new(".")).join("inbox")
 }
 
 /// Create the default inbox directory and register it in settings if not

@@ -213,9 +213,7 @@ async fn chat_async(
     json["choices"][0]["message"]["content"]
         .as_str()
         .map(str::to_string)
-        .ok_or_else(|| {
-            ClioError::Storage("capture API: missing choices[0].message.content".into())
-        })
+        .ok_or_else(|| ClioError::Storage("capture API: missing choices[0].message.content".into()))
 }
 
 /// Distil a longer body of text (e.g. a session transcript) into zero or more
@@ -352,6 +350,13 @@ pub fn parse_distillation(raw: &str) -> Result<Vec<DistilledMemory>> {
                 return None;
             }
             let c = classification_from_value(item);
+            // Deterministic backstop: even with the distillation prompt forbidding
+            // it, the LLM occasionally emits a "session summary"/"commit summary"
+            // memory describing the working session itself rather than durable
+            // knowledge. Drop those rather than letting them pollute recall.
+            if is_session_noise(&c.title) {
+                return None;
+            }
             Some(DistilledMemory {
                 content,
                 kind: c.kind,
@@ -366,6 +371,35 @@ pub fn parse_distillation(raw: &str) -> Result<Vec<DistilledMemory>> {
         .collect();
 
     Ok(memories)
+}
+
+/// True when a distilled memory's title describes the working session or commit
+/// mechanics itself ("Stuntrocketv3 Session Summary", "Recent commits on main
+/// branch", "Exploratory session in ...") rather than a piece of durable
+/// knowledge. These are exactly the low-value summaries the distillation prompt
+/// already forbids; this match is the deterministic safety net for when the LLM
+/// ignores it.
+///
+/// Matching is on title phrases, not bare words: a legitimate memory may mention
+/// "session" (e.g. "Session token expiry is 24h") and must not be dropped.
+pub fn is_session_noise(title: &str) -> bool {
+    let normalised = title.to_lowercase();
+    const NOISE_PHRASES: &[&str] = &[
+        "exploratory session",
+        "session summary",
+        "session update",
+        "session recap",
+        "session notes",
+        "development session",
+        "coding session",
+        "work session",
+        "session on branch",
+        "commit summary",
+        "summary of commits",
+        "recent commits",
+        "branch summary",
+    ];
+    NOISE_PHRASES.iter().any(|p| normalised.contains(p))
 }
 
 // ---------------------------------------------------------------------------
@@ -720,6 +754,52 @@ mod tests {
     #[test]
     fn distill_rejects_non_array_json() {
         assert!(parse_distillation(r#"{"foo": "bar"}"#).is_err());
+    }
+
+    #[test]
+    fn is_session_noise_matches_session_summaries() {
+        // Real titles previously produced by the retired hook pipelines.
+        for title in [
+            "Exploratory Session on Branch Main",
+            "Recent commits on main branch",
+            "Summary of commits on branch feat/release-packaging",
+            "Stuntrocketv3 Branch Commit Summary",
+            "Session Summary for Stuntrocketv3 Branch",
+            "Commit Summary for Stuntrocketv3",
+            "Connect4 Development Session Update",
+            "Connect4 Development Session",
+        ] {
+            assert!(is_session_noise(title), "should flag noise: {title}");
+        }
+    }
+
+    #[test]
+    fn is_session_noise_keeps_durable_titles() {
+        // Legitimate titles, including one that mentions "session" in a durable
+        // sense, must not be dropped.
+        for title in [
+            "Move Item Functionality in Rust",
+            "Settings Panel Redesign Requirements",
+            "Run Embed Backfill Command After Bulk Imports",
+            "Session token expiry is 24 hours",
+        ] {
+            assert!(!is_session_noise(title), "should keep durable: {title}");
+        }
+    }
+
+    #[test]
+    fn distill_drops_session_noise_memories() {
+        let json = r#"[
+            { "content": "Edited 18 files and committed.", "kind": "summary",
+              "title": "Stuntrocketv3 Session Summary", "summary": "",
+              "tags": [], "namespace": "global", "importance": 2, "confidence": 0.6 },
+            { "content": "Upsert is keyed on source + source_ref.", "kind": "constraint",
+              "title": "Upsert key", "summary": "", "tags": [],
+              "namespace": "project:clio", "importance": 4, "confidence": 0.9 }
+        ]"#;
+        let result = parse_distillation(json).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].title, "Upsert key");
     }
 
     #[test]

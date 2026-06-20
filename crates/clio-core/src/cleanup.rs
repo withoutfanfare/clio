@@ -365,8 +365,11 @@ mod tests {
     }
 
     fn now() -> OffsetDateTime {
-        OffsetDateTime::parse("2026-06-20T00:00:00Z", &time::format_description::well_known::Rfc3339)
-            .unwrap()
+        OffsetDateTime::parse(
+            "2026-06-20T00:00:00Z",
+            &time::format_description::well_known::Rfc3339,
+        )
+        .unwrap()
     }
 
     #[test]

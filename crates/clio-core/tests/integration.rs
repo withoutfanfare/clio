@@ -41,7 +41,10 @@ fn remember_with_tags(conn: &rusqlite::Connection, content: &str, tags: &[&str])
 }
 
 fn remember_in(conn: &rusqlite::Connection, namespace: &str, content: &str) -> Memory {
-    let input = RememberInput { namespace: namespace.into(), ..base_input(content) };
+    let input = RememberInput {
+        namespace: namespace.into(),
+        ..base_input(content)
+    };
     repository::remember(conn, &input, &Settings::default()).unwrap()
 }
 
@@ -347,7 +350,10 @@ fn fts_recall_finds_by_content() {
     assert_eq!(result.total, 1);
     assert_eq!(result.items.len(), 1);
     assert!(result.items[0].rank.is_some());
-    assert_eq!(result.items[0].memory.title, Some("Architecture decision".into()));
+    assert_eq!(
+        result.items[0].memory.title,
+        Some("Architecture decision".into())
+    );
 }
 
 #[test]
@@ -414,7 +420,7 @@ fn recent_recall_returns_by_updated_at_desc() {
                 valid_until: None,
                 upsert: false,
             },
-        &Settings::default(),
+            &Settings::default(),
         )
         .unwrap();
     }
@@ -453,7 +459,7 @@ fn recall_filters_by_namespace() {
                 valid_until: None,
                 upsert: false,
             },
-        &Settings::default(),
+            &Settings::default(),
         )
         .unwrap();
     }
@@ -791,7 +797,7 @@ fn list_namespaces_returns_distinct_sorted() {
                 valid_until: None,
                 upsert: false,
             },
-        &Settings::default(),
+            &Settings::default(),
         )
         .unwrap();
     }
@@ -958,7 +964,10 @@ fn export_jsonl_shape() {
     assert_eq!(parsed["namespace"], "project:ai");
     assert_eq!(parsed["kind"], "decision");
     assert_eq!(parsed["title"], "Use SQLite");
-    assert_eq!(parsed["tags"], serde_json::json!(["architecture", "sqlite"]));
+    assert_eq!(
+        parsed["tags"],
+        serde_json::json!(["architecture", "sqlite"])
+    );
     assert_eq!(parsed["source"], "codex");
     assert_eq!(parsed["source_ref"], "design-001");
     assert_eq!(parsed["confidence"], 0.93);
@@ -996,7 +1005,7 @@ fn import_jsonl_round_trip() {
                 valid_until: None,
                 upsert: false,
             },
-        &Settings::default(),
+            &Settings::default(),
         )
         .unwrap();
     }
@@ -1038,7 +1047,11 @@ fn stats_returns_counts() {
     let conn = test_db();
 
     // Insert some memories across namespaces and kinds.
-    for (ns, kind) in &[("global", "note"), ("global", "decision"), ("project:ai", "note")] {
+    for (ns, kind) in &[
+        ("global", "note"),
+        ("global", "decision"),
+        ("project:ai", "note"),
+    ] {
         let _ = repository::remember(
             &conn,
             &RememberInput {
@@ -1057,7 +1070,7 @@ fn stats_returns_counts() {
                 valid_until: None,
                 upsert: false,
             },
-        &Settings::default(),
+            &Settings::default(),
         )
         .unwrap();
     }
@@ -1333,12 +1346,22 @@ fn recall_with_include_links_appends_linked_memories() {
     .unwrap();
 
     // Should have at least 2 items: the direct match + the linked memory.
-    assert!(result.items.len() >= 2, "expected at least 2, got {}", result.items.len());
+    assert!(
+        result.items.len() >= 2,
+        "expected at least 2, got {}",
+        result.items.len()
+    );
 
     // The linked memory should have linked_from set.
     let linked_item = result.items.iter().find(|i| i.memory.id == mem_b.id);
-    assert!(linked_item.is_some(), "linked memory B should be in results");
-    assert_eq!(linked_item.unwrap().linked_from.as_deref(), Some(mem_a.id.as_str()));
+    assert!(
+        linked_item.is_some(),
+        "linked memory B should be in results"
+    );
+    assert_eq!(
+        linked_item.unwrap().linked_from.as_deref(),
+        Some(mem_a.id.as_str())
+    );
 
     // Without include_links, should only find the direct match.
     let result_no_links = repository::recall(
@@ -1360,92 +1383,128 @@ fn bulk_link_expansion_returns_linked_memories() {
     let settings = Settings::default();
 
     // Create three memories.
-    let a = repository::remember(&conn, &RememberInput {
-        namespace: "global".into(),
-        kind: "note".into(),
-        title: Some("Memory A".into()),
-        summary: None,
-        content: "First memory about apples".into(),
-        tags: vec![],
-        source: None,
-        source_ref: None,
-        confidence: None,
-        importance: 3,
-        metadata: serde_json::json!({}),
-        valid_from: None,
-        valid_until: None,
-        upsert: false,
-    }, &settings).unwrap();
+    let a = repository::remember(
+        &conn,
+        &RememberInput {
+            namespace: "global".into(),
+            kind: "note".into(),
+            title: Some("Memory A".into()),
+            summary: None,
+            content: "First memory about apples".into(),
+            tags: vec![],
+            source: None,
+            source_ref: None,
+            confidence: None,
+            importance: 3,
+            metadata: serde_json::json!({}),
+            valid_from: None,
+            valid_until: None,
+            upsert: false,
+        },
+        &settings,
+    )
+    .unwrap();
 
-    let b = repository::remember(&conn, &RememberInput {
-        namespace: "global".into(),
-        kind: "note".into(),
-        title: Some("Memory B".into()),
-        summary: None,
-        content: "Second memory about bananas".into(),
-        tags: vec![],
-        source: None,
-        source_ref: None,
-        confidence: None,
-        importance: 3,
-        metadata: serde_json::json!({}),
-        valid_from: None,
-        valid_until: None,
-        upsert: false,
-    }, &settings).unwrap();
+    let b = repository::remember(
+        &conn,
+        &RememberInput {
+            namespace: "global".into(),
+            kind: "note".into(),
+            title: Some("Memory B".into()),
+            summary: None,
+            content: "Second memory about bananas".into(),
+            tags: vec![],
+            source: None,
+            source_ref: None,
+            confidence: None,
+            importance: 3,
+            metadata: serde_json::json!({}),
+            valid_from: None,
+            valid_until: None,
+            upsert: false,
+        },
+        &settings,
+    )
+    .unwrap();
 
-    let c = repository::remember(&conn, &RememberInput {
-        namespace: "global".into(),
-        kind: "note".into(),
-        title: Some("Memory C".into()),
-        summary: None,
-        content: "Third memory about cherries".into(),
-        tags: vec![],
-        source: None,
-        source_ref: None,
-        confidence: None,
-        importance: 3,
-        metadata: serde_json::json!({}),
-        valid_from: None,
-        valid_until: None,
-        upsert: false,
-    }, &settings).unwrap();
+    let c = repository::remember(
+        &conn,
+        &RememberInput {
+            namespace: "global".into(),
+            kind: "note".into(),
+            title: Some("Memory C".into()),
+            summary: None,
+            content: "Third memory about cherries".into(),
+            tags: vec![],
+            source: None,
+            source_ref: None,
+            confidence: None,
+            importance: 3,
+            metadata: serde_json::json!({}),
+            valid_from: None,
+            valid_until: None,
+            upsert: false,
+        },
+        &settings,
+    )
+    .unwrap();
 
     // Link A -> B and A -> C.
-    repository::link(&conn, &LinkInput {
-        from_memory_id: a.id.clone(),
-        to_memory_id: b.id.clone(),
-        relationship: "relates_to".into(),
-        metadata: serde_json::json!({}),
-    }).unwrap();
-    repository::link(&conn, &LinkInput {
-        from_memory_id: a.id.clone(),
-        to_memory_id: c.id.clone(),
-        relationship: "relates_to".into(),
-        metadata: serde_json::json!({}),
-    }).unwrap();
+    repository::link(
+        &conn,
+        &LinkInput {
+            from_memory_id: a.id.clone(),
+            to_memory_id: b.id.clone(),
+            relationship: "relates_to".into(),
+            metadata: serde_json::json!({}),
+        },
+    )
+    .unwrap();
+    repository::link(
+        &conn,
+        &LinkInput {
+            from_memory_id: a.id.clone(),
+            to_memory_id: c.id.clone(),
+            relationship: "relates_to".into(),
+            metadata: serde_json::json!({}),
+        },
+    )
+    .unwrap();
 
     // Recall with include_links — should return A plus linked B and C.
-    let result = repository::recall(&conn, &RecallQuery {
-        query: Some("apples".into()),
-        namespace: None,
-        kind: None,
-        tags: vec![],
-        match_all_tags: true,
-        include_archived: false,
-        include_links: true,
-        importance_min: None,
-        importance_max: None,
-        sort_by: None,
-        offset: 0,
-        limit: 50,
-        scoring: None,
-    }).unwrap();
+    let result = repository::recall(
+        &conn,
+        &RecallQuery {
+            query: Some("apples".into()),
+            namespace: None,
+            kind: None,
+            tags: vec![],
+            match_all_tags: true,
+            include_archived: false,
+            include_links: true,
+            importance_min: None,
+            importance_max: None,
+            sort_by: None,
+            offset: 0,
+            limit: 50,
+            scoring: None,
+        },
+    )
+    .unwrap();
 
     let ids: Vec<&str> = result.items.iter().map(|i| i.memory.id.as_str()).collect();
-    assert!(ids.contains(&a.id.as_str()), "should contain source memory A");
-    assert!(ids.contains(&b.id.as_str()), "should contain linked memory B");
-    assert!(ids.contains(&c.id.as_str()), "should contain linked memory C");
+    assert!(
+        ids.contains(&a.id.as_str()),
+        "should contain source memory A"
+    );
+    assert!(
+        ids.contains(&b.id.as_str()),
+        "should contain linked memory B"
+    );
+    assert!(
+        ids.contains(&c.id.as_str()),
+        "should contain linked memory C"
+    );
 
     // Verify linked_from is set on the linked items.
     let b_item = result.items.iter().find(|i| i.memory.id == b.id).unwrap();
@@ -1473,7 +1532,10 @@ fn merge_retains_tags_in_memory_tags_table() {
             |r| r.get(0),
         )
         .unwrap();
-    assert_eq!(count, 3, "kept memory should hold the union of tags (alpha, beta, gamma)");
+    assert_eq!(
+        count, 3,
+        "kept memory should hold the union of tags (alpha, beta, gamma)"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1493,7 +1555,10 @@ fn recall_multi_term_matches_documents_containing_all_terms() {
     let res = repository::recall(&conn, &q).unwrap();
 
     // Both terms appear in the first doc but are not adjacent; multi-term AND must match it.
-    assert_eq!(res.count, 1, "multi-term query should match the doc containing both terms");
+    assert_eq!(
+        res.count, 1,
+        "multi-term query should match the doc containing both terms"
+    );
     assert!(res.items[0].memory.content.contains("rust"));
 }
 
@@ -1522,7 +1587,10 @@ fn backup_produces_standalone_snapshot_without_wal() {
     let n: i64 = bconn
         .query_row("SELECT COUNT(*) FROM memories", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(n, 1, "the snapshot must contain the row, even if it was still in the WAL");
+    assert_eq!(
+        n, 1,
+        "the snapshot must contain the row, even if it was still in the WAL"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1540,7 +1608,12 @@ fn restore_creates_pre_restore_safety_snapshot() {
     let res = clio_core::backup::backup(&db_path, Some(&dest), 5).unwrap();
 
     // Change the live DB after the backup, then restore.
-    repository::remember(&conn, &base_input("added after backup"), &Settings::default()).unwrap();
+    repository::remember(
+        &conn,
+        &base_input("added after backup"),
+        &Settings::default(),
+    )
+    .unwrap();
     drop(conn);
 
     let r = clio_core::backup::restore(&db_path, std::path::Path::new(&res.path)).unwrap();
@@ -1558,7 +1631,10 @@ fn restore_creates_pre_restore_safety_snapshot() {
     let n: i64 = conn2
         .query_row("SELECT COUNT(*) FROM memories", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(n, 1, "restored DB should match the backup, not the post-backup state");
+    assert_eq!(
+        n, 1,
+        "restored DB should match the backup, not the post-backup state"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1571,10 +1647,16 @@ fn validates_namespace_length_by_characters_not_bytes() {
     // 120 two-byte characters = 240 bytes, but 120 chars — valid by the schema's
     // character-based CHECK constraint.
     let namespace = "é".repeat(120);
-    let input = RememberInput { namespace, ..base_input("multibyte namespace content") };
+    let input = RememberInput {
+        namespace,
+        ..base_input("multibyte namespace content")
+    };
 
     let result = repository::remember(&conn, &input, &Settings::default());
-    assert!(result.is_ok(), "a 120-character namespace must pass character-based validation");
+    assert!(
+        result.is_ok(),
+        "a 120-character namespace must pass character-based validation"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1596,7 +1678,10 @@ fn merge_does_not_inflate_access_count() {
             |r| r.get(0),
         )
         .unwrap();
-    assert_eq!(access_count, 0, "a merge is maintenance and must not bump access_count");
+    assert_eq!(
+        access_count, 0,
+        "a merge is maintenance and must not bump access_count"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1620,5 +1705,8 @@ fn recall_scoped_total_counts_each_namespace_once() {
     let res = repository::recall_scoped(&conn, &q, "proj").unwrap();
 
     assert_eq!(res.count, 3, "should merge 2 project + 1 global match");
-    assert_eq!(res.total, 3, "disjoint namespaces — each counted once, no double count");
+    assert_eq!(
+        res.total, 3,
+        "disjoint namespaces — each counted once, no double count"
+    );
 }

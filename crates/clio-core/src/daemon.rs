@@ -43,7 +43,6 @@ pub struct DaemonConfig {
     pub auto_link: AutoLinkConfig,
 }
 
-
 // ---------------------------------------------------------------------------
 // Health types
 // ---------------------------------------------------------------------------
@@ -178,10 +177,7 @@ impl PidFile {
         })?;
 
         let pid: u32 = content.trim().parse().map_err(|e| {
-            ClioError::Config(format!(
-                "invalid PID in {}: {e}",
-                self.path.display()
-            ))
+            ClioError::Config(format!("invalid PID in {}: {e}", self.path.display()))
         })?;
 
         Ok(Some(pid))
@@ -268,7 +264,10 @@ fn daemon_runtime_dir() -> Result<PathBuf> {
     #[cfg(target_os = "macos")]
     {
         let home = dirs_home()?;
-        Ok(home.join("Library").join("Application Support").join("clio"))
+        Ok(home
+            .join("Library")
+            .join("Application Support")
+            .join("clio"))
     }
 
     #[cfg(target_os = "linux")]
@@ -308,21 +307,20 @@ pub fn check_database_health(db_path: &Path) -> HealthCheck {
         };
     }
 
-    match rusqlite::Connection::open_with_flags(
-        db_path,
-        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
-    ) {
-        Ok(conn) => match conn.query_row("SELECT count(*) FROM memories", [], |r| r.get::<_, i64>(0))
-        {
-            Ok(count) => HealthCheck {
-                status: HealthStatus::Healthy,
-                message: format!("{count} memories in database"),
-            },
-            Err(e) => HealthCheck {
-                status: HealthStatus::Degraded,
-                message: format!("query failed: {e}"),
-            },
-        },
+    match rusqlite::Connection::open_with_flags(db_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+    {
+        Ok(conn) => {
+            match conn.query_row("SELECT count(*) FROM memories", [], |r| r.get::<_, i64>(0)) {
+                Ok(count) => HealthCheck {
+                    status: HealthStatus::Healthy,
+                    message: format!("{count} memories in database"),
+                },
+                Err(e) => HealthCheck {
+                    status: HealthStatus::Degraded,
+                    message: format!("query failed: {e}"),
+                },
+            }
+        }
         Err(e) => HealthCheck {
             status: HealthStatus::Unhealthy,
             message: format!("could not open database: {e}"),

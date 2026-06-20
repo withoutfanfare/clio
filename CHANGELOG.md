@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 **Knowledge Distillation**
 - `distill` / `distill_and_store` in `clio-core::capture`: send a long body of text (e.g. a session transcript) to the LLM and extract **zero or more** self-contained, durable memories (decisions, facts, constraints, insights). Routine input yields nothing, so noise is filtered by design.
 - `DistilledMemory` struct and `parse_distillation` (tolerant of bare arrays or `{"memories": […]}`, drops empty-content items).
+- `is_session_noise` deterministic backstop in `parse_distillation`: drops memories whose title narrates the working session or commit mechanics (e.g. "Session Summary", "Commit Summary", "Exploratory session", "Recent commits on branch") for the cases where the LLM ignores the prompt's instruction not to.
 - `clio distill` CLI command (stdin via `-`, `--dry-run`, `--source`, `--source-ref`, `--namespace`).
 - Distilled memories from one session get a per-index `source_ref` suffix (`<ref>-<n>`) so the `UNIQUE(source, source_ref)` index is respected while keeping a shared session prefix for provenance.
 - Reuses the existing capture pipeline per memory (review-queue routing below `review_threshold`, auto-embed) via a shared `store_or_queue` helper.
@@ -32,6 +33,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Triggers: `clio consolidate --all` (every namespace) and `--if-due` (only namespaces past `consolidate.auto_threshold` new memories). The Stop hook runs `--if-due` after each productive session; a launchd plist can schedule `--all --if-due` (documented in the CLI reference).
 - `ConsolidateConfig` setting `auto_threshold` (default 10).
 - Desktop app: a per-namespace "Consolidate" button in the Namespaces view (`cmd_consolidate_namespace`).
+
+### Changed
+
+**Desktop app**
+- Memory cards now show importance with the same accent-fill dots used in the compose and drawer editors, replacing an inconsistent multi-colour scale.
+- Archive, delete and namespace-purge actions report success and failure via toast notifications; archiving offers an inline **Undo**.
+
+### Fixed
+
+**Desktop app**
+- Compose "Add details" now persists the title and tags entered — previously only the body text and namespace were saved, so those fields were silently discarded.
+- Keyboard navigation (`j`/`k`) now highlights the correct card when memories are pinned or grouped; focus order follows the rendered order rather than the raw recall order.
 
 ## [0.3.0] - 2026-03-03
 

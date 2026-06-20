@@ -310,20 +310,26 @@ impl Default for Settings {
 impl Settings {
     /// Resolve the API key for auto-title, falling back to capture config.
     pub fn auto_title_api_key(&self) -> Option<String> {
-        self.auto_title.api_key.clone()
+        self.auto_title
+            .api_key
+            .clone()
             .or_else(|| self.capture.api_key.clone())
             .or_else(|| std::env::var("OPENAI_API_KEY").ok())
     }
 
     /// Resolve the base URL for auto-title, falling back to capture config.
     pub fn auto_title_base_url(&self) -> String {
-        self.auto_title.base_url.clone()
+        self.auto_title
+            .base_url
+            .clone()
             .unwrap_or_else(|| self.capture.base_url.clone())
     }
 
     /// Resolve the model for auto-title, falling back to capture config.
     pub fn auto_title_model(&self) -> String {
-        self.auto_title.model.clone()
+        self.auto_title
+            .model
+            .clone()
             .unwrap_or_else(|| self.capture.model.clone())
     }
 }
@@ -358,12 +364,8 @@ pub fn load(db_path: &Path) -> Result<Settings> {
         }
     };
 
-    let settings: Settings = serde_json::from_str(&content).map_err(|e| {
-        ClioError::Config(format!(
-            "invalid settings in {}: {e}",
-            path.display()
-        ))
-    })?;
+    let settings: Settings = serde_json::from_str(&content)
+        .map_err(|e| ClioError::Config(format!("invalid settings in {}: {e}", path.display())))?;
 
     tracing::debug!(path = %path.display(), "loaded settings");
     Ok(settings)

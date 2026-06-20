@@ -23,9 +23,7 @@ pub fn remember_input(input: &RememberInput) -> Result<()> {
     }
 
     if input.namespace.is_empty() {
-        return Err(ClioError::Validation(
-            "namespace must not be empty.".into(),
-        ));
+        return Err(ClioError::Validation("namespace must not be empty.".into()));
     }
 
     if input.namespace.chars().count() > 120 {
@@ -90,9 +88,9 @@ pub fn remember_input(input: &RememberInput) -> Result<()> {
     }
 
     if input.tags.len() > MAX_TAGS {
-        return Err(ClioError::Validation(
-            format!("at most {MAX_TAGS} tags are allowed."),
-        ));
+        return Err(ClioError::Validation(format!(
+            "at most {MAX_TAGS} tags are allowed."
+        )));
     }
 
     for tag in &input.tags {

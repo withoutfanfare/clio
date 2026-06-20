@@ -51,12 +51,7 @@ pub fn backup(db_path: &Path, dest_dir: Option<&Path>, max_backups: u32) -> Resu
 
     let backup_dir = dest_dir
         .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            db_path
-                .parent()
-                .unwrap_or(Path::new("."))
-                .join("backups")
-        });
+        .unwrap_or_else(|| db_path.parent().unwrap_or(Path::new(".")).join("backups"));
 
     std::fs::create_dir_all(&backup_dir).map_err(|e| {
         ClioError::Export(format!(
@@ -72,9 +67,8 @@ pub fn backup(db_path: &Path, dest_dir: Option<&Path>, max_backups: u32) -> Resu
     // a complete database with no -wal/-shm sidecars, avoiding torn-copy corruption
     // that plain file copies risk under WAL mode.
     let _ = std::fs::remove_file(&backup_path); // VACUUM INTO requires the target not exist
-    let src = rusqlite::Connection::open(db_path).map_err(|e| {
-        ClioError::Export(format!("could not open database for backup: {e}"))
-    })?;
+    let src = rusqlite::Connection::open(db_path)
+        .map_err(|e| ClioError::Export(format!("could not open database for backup: {e}")))?;
     src.busy_timeout(Duration::from_millis(5000))
         .map_err(|e| ClioError::Export(format!("could not set busy timeout for backup: {e}")))?;
     src.execute(
@@ -101,12 +95,7 @@ pub fn backup(db_path: &Path, dest_dir: Option<&Path>, max_backups: u32) -> Resu
 pub fn list_backups(db_path: &Path, backup_dir: Option<&Path>) -> Result<Vec<BackupListEntry>> {
     let dir = backup_dir
         .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            db_path
-                .parent()
-                .unwrap_or(Path::new("."))
-                .join("backups")
-        });
+        .unwrap_or_else(|| db_path.parent().unwrap_or(Path::new(".")).join("backups"));
 
     if !dir.exists() {
         return Ok(Vec::new());
@@ -114,9 +103,9 @@ pub fn list_backups(db_path: &Path, backup_dir: Option<&Path>) -> Result<Vec<Bac
 
     let mut entries: Vec<BackupListEntry> = Vec::new();
 
-    for entry in std::fs::read_dir(&dir).map_err(|e| {
-        ClioError::Export(format!("could not read backup directory: {e}"))
-    })? {
+    for entry in std::fs::read_dir(&dir)
+        .map_err(|e| ClioError::Export(format!("could not read backup directory: {e}")))?
+    {
         let entry = entry.map_err(|e| ClioError::Export(format!("directory entry error: {e}")))?;
         let path = entry.path();
 
@@ -175,9 +164,7 @@ pub fn restore(db_path: &Path, backup_path: &Path) -> Result<RestoreResult> {
         let _ = std::fs::remove_file(&safety);
         match rusqlite::Connection::open(db_path) {
             Err(e) => {
-                tracing::warn!(
-                    "could not open live database for pre-restore safety snapshot: {e}"
-                );
+                tracing::warn!("could not open live database for pre-restore safety snapshot: {e}");
             }
             Ok(live) => {
                 let _ = live.busy_timeout(Duration::from_millis(5000));
@@ -237,9 +224,9 @@ fn check_integrity(path: &Path) -> Result<bool> {
 fn enforce_retention(backup_dir: &Path, max_backups: u32) -> Result<()> {
     let mut files: Vec<(PathBuf, std::time::SystemTime)> = Vec::new();
 
-    for entry in std::fs::read_dir(backup_dir).map_err(|e| {
-        ClioError::Export(format!("could not read backup directory: {e}"))
-    })? {
+    for entry in std::fs::read_dir(backup_dir)
+        .map_err(|e| ClioError::Export(format!("could not read backup directory: {e}")))?
+    {
         let entry = entry.map_err(|e| ClioError::Export(format!("directory entry error: {e}")))?;
         let path = entry.path();
         if let Some(name) = path.file_name().and_then(|n| n.to_str()) {

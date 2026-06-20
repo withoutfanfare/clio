@@ -52,7 +52,9 @@ pub fn generate_title_ai(content: &str, settings: &Settings) -> Option<String> {
     let base_url = settings.auto_title_base_url();
     let model = settings.auto_title_model();
 
-    match get_or_create_runtime().block_on(generate_title_ai_async(content, &api_key, &base_url, &model)) {
+    match get_or_create_runtime().block_on(generate_title_ai_async(
+        content, &api_key, &base_url, &model,
+    )) {
         Ok(title) => Some(title),
         Err(e) => {
             tracing::warn!("AI title generation failed, falling back to string-based: {e}");
@@ -145,7 +147,11 @@ pub fn generate_title_ai(_content: &str, _settings: &Settings) -> Option<String>
 /// Resolve the title for a memory.
 ///
 /// Priority: explicit title > AI-generated > string-based extraction.
-pub fn resolve_title(explicit_title: Option<String>, content: &str, settings: &Settings) -> Option<String> {
+pub fn resolve_title(
+    explicit_title: Option<String>,
+    content: &str,
+    settings: &Settings,
+) -> Option<String> {
     if explicit_title.is_some() {
         return explicit_title;
     }
