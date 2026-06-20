@@ -1310,8 +1310,7 @@ fn cmd_cleanup(
                 candidates.len()
             );
             for c in &candidates {
-                let reasons: Vec<String> =
-                    c.reasons.iter().map(|r| format!("{r:?}")).collect();
+                let reasons: Vec<String> = c.reasons.iter().map(|r| format!("{r:?}")).collect();
                 eprintln!(
                     "  {} — {} live / {} archived — {}",
                     c.namespace,
@@ -1713,11 +1712,21 @@ fn cmd_distill(
         None
     };
 
+    // Default each memory to the working directory's namespace so a session's
+    // memories land in the right project, instead of trusting the LLM's guess.
+    // An explicit `--namespace` still wins, and the LLM may still promote a
+    // fact to "global".
+    let default_namespace = std::env::current_dir()
+        .ok()
+        .and_then(|p| context::detect_namespace(&p))
+        .map(|ctx| ctx.namespace);
+
     let results = clio_core::capture::distill_and_store(
         &conn,
         &text,
         &s.capture,
         args.namespace.as_deref(),
+        default_namespace.as_deref(),
         &args.source,
         args.source_ref.as_deref(),
         cwd.as_deref(),

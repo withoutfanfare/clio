@@ -19,8 +19,8 @@ pub async fn watch(
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let (tx, mut rx) = tokio::sync::mpsc::channel::<PathBuf>(100);
 
-    let mut watcher = notify::recommended_watcher(move |res: Result<Event, notify::Error>| {
-        match res {
+    let mut watcher =
+        notify::recommended_watcher(move |res: Result<Event, notify::Error>| match res {
             Ok(event) => {
                 if matches!(event.kind, EventKind::Create(_)) {
                     for path in event.paths {
@@ -31,8 +31,7 @@ pub async fn watch(
             Err(e) => {
                 tracing::warn!("filesystem watcher error: {e}");
             }
-        }
-    })?;
+        })?;
 
     let mut canonical_inbox_dirs = Vec::with_capacity(paths.len());
     for path in &paths {
@@ -294,9 +293,7 @@ fn move_to_processed(file_path: &Path) {
             .file_stem()
             .and_then(|s| s.to_str())
             .unwrap_or("file");
-        let ext = file_path
-            .extension()
-            .and_then(|s| s.to_str());
+        let ext = file_path.extension().and_then(|s| s.to_str());
         let dedup = uuid::Uuid::now_v7();
         let new_name = match ext {
             Some(e) => format!("{stem}-{dedup}.{e}"),

@@ -31,7 +31,9 @@ pub async fn serve(
     match std::fs::remove_file(&socket_path) {
         Ok(()) => tracing::debug!(path = %socket_path.display(), "removed stale socket file"),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-        Err(e) => tracing::warn!(path = %socket_path.display(), "could not remove stale socket: {e}"),
+        Err(e) => {
+            tracing::warn!(path = %socket_path.display(), "could not remove stale socket: {e}")
+        }
     }
 
     // Ensure the parent directory exists.
@@ -146,15 +148,15 @@ fn handle_command(
                 started_at: None,
             };
 
-            serde_json::to_value(status).unwrap_or_else(|e| {
-                serde_json::json!({"error": format!("serialisation failed: {e}")})
-            })
+            serde_json::to_value(status).unwrap_or_else(
+                |e| serde_json::json!({"error": format!("serialisation failed: {e}")}),
+            )
         }
         "health" => {
             let health = clio_core::daemon::run_health_checks(db_path, settings);
-            serde_json::to_value(health).unwrap_or_else(|e| {
-                serde_json::json!({"error": format!("serialisation failed: {e}")})
-            })
+            serde_json::to_value(health).unwrap_or_else(
+                |e| serde_json::json!({"error": format!("serialisation failed: {e}")}),
+            )
         }
         "stop" => {
             tracing::info!("stop command received via control socket");

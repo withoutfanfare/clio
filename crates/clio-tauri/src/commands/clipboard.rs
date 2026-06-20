@@ -34,8 +34,7 @@ fn copy_via_osascript(text: &str) -> Result<(), CommandError> {
 
     let _ = std::fs::remove_file(&tmp);
 
-    let output =
-        output.map_err(|e| CommandError::Core(format!("Failed to run osascript: {e}")))?;
+    let output = output.map_err(|e| CommandError::Core(format!("Failed to run osascript: {e}")))?;
 
     if output.status.success() {
         Ok(())
@@ -64,6 +63,8 @@ fn copy_via_pbcopy(text: &str) -> Result<(), CommandError> {
     if status.success() {
         Ok(())
     } else {
-        Err(CommandError::Core("pbcopy exited with non-zero status".into()))
+        Err(CommandError::Core(
+            "pbcopy exited with non-zero status".into(),
+        ))
     }
 }

@@ -459,7 +459,6 @@ fn default_response_format() -> String {
     "markdown".into()
 }
 
-
 fn default_activity_limit() -> u32 {
     20
 }
@@ -631,10 +630,7 @@ fn memory_card_md(item: &RecallItem) -> String {
 
     md.push('\n');
 
-    let preview = m
-        .summary
-        .as_deref()
-        .unwrap_or(&m.content);
+    let preview = m.summary.as_deref().unwrap_or(&m.content);
     let truncated = if preview.len() > 200 {
         format!("{}...", truncate_chars(preview, 200))
     } else {
@@ -725,68 +721,108 @@ fn format_memory_response(memory: &Memory, format: &str) -> String {
     }
 }
 
-
 /// Format memory stats as Markdown.
 fn format_stats_md(stats: &clio_core::models::MemoryStats) -> String {
-    let mut md = String::from("# Memory Statistics
+    let mut md = String::from(
+        "# Memory Statistics
 
-");
+",
+    );
     md.push_str("| Metric | Value |\n");
     md.push_str("|---|---|\n");
-    md.push_str(&format!("| Total memories | {} |
-", stats.total_memories));
-    md.push_str(&format!("| Active | {} |
-", stats.active_memories));
-    md.push_str(&format!("| Archived | {} |
-", stats.archived_memories));
-    md.push_str(&format!("| Total embeddings | {} |
-", stats.total_embeddings));
-    md.push_str(&format!("| Embedding coverage | {:.1}% |
-", stats.embedding_coverage));
-    md.push_str(&format!("| Total links | {} |
-", stats.total_links));
-    md.push_str(&format!("| Link density | {:.2} links/memory |
-", stats.link_density));
+    md.push_str(&format!(
+        "| Total memories | {} |
+",
+        stats.total_memories
+    ));
+    md.push_str(&format!(
+        "| Active | {} |
+",
+        stats.active_memories
+    ));
+    md.push_str(&format!(
+        "| Archived | {} |
+",
+        stats.archived_memories
+    ));
+    md.push_str(&format!(
+        "| Total embeddings | {} |
+",
+        stats.total_embeddings
+    ));
+    md.push_str(&format!(
+        "| Embedding coverage | {:.1}% |
+",
+        stats.embedding_coverage
+    ));
+    md.push_str(&format!(
+        "| Total links | {} |
+",
+        stats.total_links
+    ));
+    md.push_str(&format!(
+        "| Link density | {:.2} links/memory |
+",
+        stats.link_density
+    ));
 
     if !stats.by_namespace.is_empty() {
-        md.push_str("
+        md.push_str(
+            "
 ## By Namespace
 
-");
-        md.push_str("| Namespace | Count |
+",
+        );
+        md.push_str(
+            "| Namespace | Count |
 |---|---|
-");
+",
+        );
         for (ns, count) in &stats.by_namespace {
-            md.push_str(&format!("| {ns} | {count} |
-"));
+            md.push_str(&format!(
+                "| {ns} | {count} |
+"
+            ));
         }
     }
 
     if !stats.by_kind.is_empty() {
-        md.push_str("
+        md.push_str(
+            "
 ## By Kind
 
-");
-        md.push_str("| Kind | Count |
+",
+        );
+        md.push_str(
+            "| Kind | Count |
 |---|---|
-");
+",
+        );
         for (kind, count) in &stats.by_kind {
-            md.push_str(&format!("| {kind} | {count} |
-"));
+            md.push_str(&format!(
+                "| {kind} | {count} |
+"
+            ));
         }
     }
 
     if !stats.top_tags.is_empty() {
-        md.push_str("
+        md.push_str(
+            "
 ## Top Tags
 
-");
-        md.push_str("| Tag | Count |
+",
+        );
+        md.push_str(
+            "| Tag | Count |
 |---|---|
-");
+",
+        );
         for (tag, count) in &stats.top_tags {
-            md.push_str(&format!("| {tag} | {count} |
-"));
+            md.push_str(&format!(
+                "| {tag} | {count} |
+"
+            ));
         }
     }
 
@@ -799,13 +835,19 @@ fn format_activity_md(entries: &[clio_core::models::RecentEntry]) -> String {
         return "No recent activity.".to_string();
     }
 
-    let mut md = String::from("# Recent Activity
+    let mut md = String::from(
+        "# Recent Activity
 
-");
-    md.push_str("| Action | ID | Namespace | Kind | Title | Timestamp |
-");
-    md.push_str("|---|---|---|---|---|---|
-");
+",
+    );
+    md.push_str(
+        "| Action | ID | Namespace | Kind | Title | Timestamp |
+",
+    );
+    md.push_str(
+        "|---|---|---|---|---|---|
+",
+    );
 
     for entry in entries {
         let title = entry.title.as_deref().unwrap_or("(untitled)");
@@ -826,13 +868,19 @@ fn format_suggestions_md(suggestions: &[(Memory, f64)]) -> String {
         return "No link suggestions found above the threshold.".to_string();
     }
 
-    let mut md = String::from("# Suggested Links
+    let mut md = String::from(
+        "# Suggested Links
 
-");
-    md.push_str("| ID | Namespace | Kind | Title | Similarity |
-");
-    md.push_str("|---|---|---|---|---|
-");
+",
+    );
+    md.push_str(
+        "| ID | Namespace | Kind | Title | Similarity |
+",
+    );
+    md.push_str(
+        "|---|---|---|---|---|
+",
+    );
 
     for (mem, similarity) in suggestions {
         let title = mem.title.as_deref().unwrap_or("(untitled)");
@@ -901,7 +949,10 @@ fn review_item_md(item: &clio_core::review::ReviewItem) -> String {
     md.push_str(&format!("- **Namespace:** {}\n", item.suggested_namespace));
     md.push_str(&format!("- **Kind:** {}\n", item.suggested_kind));
     md.push_str(&format!("- **Tags:** {tags_str}\n"));
-    md.push_str(&format!("- **Importance:** {}\n", item.suggested_importance));
+    md.push_str(&format!(
+        "- **Importance:** {}\n",
+        item.suggested_importance
+    ));
     md.push_str(&format!("- **Confidence:** {confidence_str}\n"));
     md.push_str(&format!("- **Created:** {}\n", item.created_at));
     md.push('\n');
@@ -1005,20 +1056,22 @@ impl ClioServer {
                 valid_until: params.valid_until,
                 upsert: params.upsert,
             };
-            let memory =
-                cache.remember(&conn, &input, &settings).map_err(|e| format_clio_error(&e))?;
+            let memory = cache
+                .remember(&conn, &input, &settings)
+                .map_err(|e| format_clio_error(&e))?;
 
             // Auto-embed if enabled.
             if settings.auto_embed {
                 if let Some(ref be) = *backend {
-                    if let Err(e) = clio_core::embeddings::embed_and_store(&conn, be.as_ref(), &memory) {
+                    if let Err(e) =
+                        clio_core::embeddings::embed_and_store(&conn, be.as_ref(), &memory)
+                    {
                         tracing::warn!("auto-embed failed: {e}");
                     }
                 }
             }
 
-            serde_json::to_string_pretty(&memory)
-                .map_err(|e| format!("Serialisation error: {e}"))
+            serde_json::to_string_pretty(&memory).map_err(|e| format!("Serialisation error: {e}"))
         })
         .await
         .map_err(|e| format!("Internal error: task failed: {e}"))?
@@ -1066,17 +1119,20 @@ impl ClioServer {
             // --namespace: search only that exact namespace.
             // Neither: use scoped-then-global recall (project namespace + global fallback).
             let result = if params.global {
-                cache.recall(&conn, &query)
+                cache
+                    .recall(&conn, &query)
                     .map_err(|e| format_clio_error(&e))?
             } else if params.namespace.is_some() {
                 let scoped_query = RecallQuery {
                     namespace: Some(detected_ns),
                     ..query
                 };
-                cache.recall(&conn, &scoped_query)
+                cache
+                    .recall(&conn, &scoped_query)
                     .map_err(|e| format_clio_error(&e))?
             } else {
-                cache.recall_scoped(&conn, &query, &detected_ns)
+                cache
+                    .recall_scoped(&conn, &query, &detected_ns)
                     .map_err(|e| format_clio_error(&e))?
             };
 
@@ -1098,7 +1154,8 @@ impl ClioServer {
         let cache = self.cache.clone();
         tokio::task::spawn_blocking(move || {
             let conn = conn.lock().map_err(|e| format!("lock error: {e}"))?;
-            let memory = cache.get(&conn, &params.memory_id)
+            let memory = cache
+                .get(&conn, &params.memory_id)
                 .map_err(|e| format_clio_error(&e))?;
             Ok(format_memory_response(&memory, &params.response_format))
         })
@@ -1133,7 +1190,8 @@ impl ClioServer {
                 scoring: Some(settings.scoring.clone()),
                 ..Default::default()
             };
-            let result = cache.recall(&conn, &query)
+            let result = cache
+                .recall(&conn, &query)
                 .map_err(|e| format_clio_error(&e))?;
             Ok(format_recall_response(&result, &params.response_format))
         })
@@ -1165,8 +1223,9 @@ impl ClioServer {
                 relationship: params.relationship,
                 metadata: params.metadata,
             };
-            let link =
-                cache.link(&conn, &input).map_err(|e| format_clio_error(&e))?;
+            let link = cache
+                .link(&conn, &input)
+                .map_err(|e| format_clio_error(&e))?;
             serde_json::to_string_pretty(&link).map_err(|e| format!("Serialisation error: {e}"))
         })
         .await
@@ -1184,10 +1243,10 @@ impl ClioServer {
         let cache = self.cache.clone();
         tokio::task::spawn_blocking(move || {
             let conn = conn.lock().map_err(|e| format!("lock error: {e}"))?;
-            let memory = cache.archive(&conn, &params.memory_id)
+            let memory = cache
+                .archive(&conn, &params.memory_id)
                 .map_err(|e| format_clio_error(&e))?;
-            serde_json::to_string_pretty(&memory)
-                .map_err(|e| format!("Serialisation error: {e}"))
+            serde_json::to_string_pretty(&memory).map_err(|e| format!("Serialisation error: {e}"))
         })
         .await
         .map_err(|e| format!("Internal error: task failed: {e}"))?
@@ -1204,10 +1263,10 @@ impl ClioServer {
         let cache = self.cache.clone();
         tokio::task::spawn_blocking(move || {
             let conn = conn.lock().map_err(|e| format!("lock error: {e}"))?;
-            let memory = cache.unarchive(&conn, &params.memory_id)
+            let memory = cache
+                .unarchive(&conn, &params.memory_id)
                 .map_err(|e| format_clio_error(&e))?;
-            serde_json::to_string_pretty(&memory)
-                .map_err(|e| format!("Serialisation error: {e}"))
+            serde_json::to_string_pretty(&memory).map_err(|e| format!("Serialisation error: {e}"))
         })
         .await
         .map_err(|e| format!("Internal error: task failed: {e}"))?
@@ -1224,10 +1283,10 @@ impl ClioServer {
         let cache = self.cache.clone();
         tokio::task::spawn_blocking(move || {
             let conn = conn.lock().map_err(|e| format!("lock error: {e}"))?;
-            let memory = cache.delete(&conn, &params.memory_id)
+            let memory = cache
+                .delete(&conn, &params.memory_id)
                 .map_err(|e| format_clio_error(&e))?;
-            serde_json::to_string_pretty(&memory)
-                .map_err(|e| format!("Serialisation error: {e}"))
+            serde_json::to_string_pretty(&memory).map_err(|e| format!("Serialisation error: {e}"))
         })
         .await
         .map_err(|e| format!("Internal error: task failed: {e}"))?
@@ -1247,11 +1306,10 @@ impl ClioServer {
         let cache = self.cache.clone();
         tokio::task::spawn_blocking(move || {
             let conn = conn.lock().map_err(|e| format!("lock error: {e}"))?;
-            let memory =
-                cache.move_namespace(&conn, &params.memory_id, &params.namespace)
-                    .map_err(|e| format_clio_error(&e))?;
-            serde_json::to_string_pretty(&memory)
-                .map_err(|e| format!("Serialisation error: {e}"))
+            let memory = cache
+                .move_namespace(&conn, &params.memory_id, &params.namespace)
+                .map_err(|e| format_clio_error(&e))?;
+            serde_json::to_string_pretty(&memory).map_err(|e| format!("Serialisation error: {e}"))
         })
         .await
         .map_err(|e| format!("Internal error: task failed: {e}"))?
@@ -1264,8 +1322,9 @@ impl ClioServer {
         let cache = self.cache.clone();
         tokio::task::spawn_blocking(move || {
             let conn = conn.lock().map_err(|e| format!("lock error: {e}"))?;
-            let namespaces =
-                cache.list_namespaces(&conn).map_err(|e| format_clio_error(&e))?;
+            let namespaces = cache
+                .list_namespaces(&conn)
+                .map_err(|e| format_clio_error(&e))?;
             serde_json::to_string_pretty(&namespaces)
                 .map_err(|e| format!("Serialisation error: {e}"))
         })
@@ -1284,17 +1343,19 @@ impl ClioServer {
         let cache = self.cache.clone();
         tokio::task::spawn_blocking(move || {
             let conn = conn.lock().map_err(|e| format!("lock error: {e}"))?;
-            let links = cache.get_links(&conn, &params.memory_id)
+            let links = cache
+                .get_links(&conn, &params.memory_id)
                 .map_err(|e| format_clio_error(&e))?;
-            serde_json::to_string_pretty(&links)
-                .map_err(|e| format!("Serialisation error: {e}"))
+            serde_json::to_string_pretty(&links).map_err(|e| format!("Serialisation error: {e}"))
         })
         .await
         .map_err(|e| format!("Internal error: task failed: {e}"))?
     }
 
     /// LLM-classify text into a memory (or queue for review if below threshold).
-    #[tool(description = "LLM-classify unstructured text into a structured memory. May queue for review if confidence is low.")]
+    #[tool(
+        description = "LLM-classify unstructured text into a structured memory. May queue for review if confidence is low."
+    )]
     async fn memory_capture(
         &self,
         Parameters(params): Parameters<CaptureParams>,
@@ -1326,8 +1387,7 @@ impl ClioServer {
                 &settings,
             )
             .map_err(|e| format_clio_error(&e))?;
-            serde_json::to_string_pretty(&result)
-                .map_err(|e| format!("Serialisation error: {e}"))
+            serde_json::to_string_pretty(&result).map_err(|e| format!("Serialisation error: {e}"))
         })
         .await
         .map_err(|e| format!("Internal error: task failed: {e}"))?
@@ -1366,8 +1426,10 @@ impl ClioServer {
                 }
             };
 
-            let be = backend.as_ref().as_ref()
-                .ok_or_else(|| "Embedding backend not available. Ensure embeddings are configured in settings.".to_string())?;
+            let be = backend.as_ref().as_ref().ok_or_else(|| {
+                "Embedding backend not available. Ensure embeddings are configured in settings."
+                    .to_string()
+            })?;
 
             let query_embedding = be
                 .embed_one(&params.query)
@@ -1433,12 +1495,9 @@ impl ClioServer {
         let conn = self.conn.clone();
         tokio::task::spawn_blocking(move || {
             let conn = conn.lock().map_err(|e| format!("lock error: {e}"))?;
-            let entries = clio_core::stats::recent_activity(
-                &conn,
-                params.namespace.as_deref(),
-                limit,
-            )
-            .map_err(|e| format_clio_error(&e))?;
+            let entries =
+                clio_core::stats::recent_activity(&conn, params.namespace.as_deref(), limit)
+                    .map_err(|e| format_clio_error(&e))?;
 
             if params.response_format == "json" {
                 serde_json::to_string_pretty(&entries)
@@ -1465,8 +1524,10 @@ impl ClioServer {
         let backend = self.embedding_backend.clone();
         tokio::task::spawn_blocking(move || {
             let conn = conn.lock().map_err(|e| format!("lock error: {e}"))?;
-            let be = backend.as_ref().as_ref()
-                .ok_or_else(|| "Embedding backend not available. Ensure embeddings are configured in settings.".to_string())?;
+            let be = backend.as_ref().as_ref().ok_or_else(|| {
+                "Embedding backend not available. Ensure embeddings are configured in settings."
+                    .to_string()
+            })?;
 
             let suggestions = clio_core::embeddings::suggest_links(
                 &conn,
@@ -1498,7 +1559,9 @@ impl ClioServer {
     }
 
     /// Build a context brief.
-    #[tool(description = "Build a scoped context brief combining recent, important, and filtered memories.")]
+    #[tool(
+        description = "Build a scoped context brief combining recent, important, and filtered memories."
+    )]
     async fn memory_context(
         &self,
         Parameters(params): Parameters<ContextParams>,
@@ -1545,7 +1608,9 @@ impl ClioServer {
     }
 
     /// List pending review items.
-    #[tool(description = "List pending review queue items (low-confidence captures awaiting review).")]
+    #[tool(
+        description = "List pending review queue items (low-confidence captures awaiting review)."
+    )]
     async fn memory_inbox_list(
         &self,
         Parameters(params): Parameters<InboxListParams>,
@@ -1555,8 +1620,8 @@ impl ClioServer {
         let conn = self.conn.clone();
         tokio::task::spawn_blocking(move || {
             let conn = conn.lock().map_err(|e| format!("lock error: {e}"))?;
-            let items = clio_core::review::list_pending(&conn, limit)
-                .map_err(|e| format_clio_error(&e))?;
+            let items =
+                clio_core::review::list_pending(&conn, limit).map_err(|e| format_clio_error(&e))?;
 
             if params.response_format == "json" {
                 serde_json::to_string_pretty(&items)
@@ -1582,8 +1647,7 @@ impl ClioServer {
             let conn = conn.lock().map_err(|e| format!("lock error: {e}"))?;
             let memory = clio_core::review::approve_review(&conn, &params.id, &settings)
                 .map_err(|e| format_clio_error(&e))?;
-            serde_json::to_string_pretty(&memory)
-                .map_err(|e| format!("Serialisation error: {e}"))
+            serde_json::to_string_pretty(&memory).map_err(|e| format!("Serialisation error: {e}"))
         })
         .await
         .map_err(|e| format!("Internal error: task failed: {e}"))?
@@ -1601,8 +1665,7 @@ impl ClioServer {
             let conn = conn.lock().map_err(|e| format!("lock error: {e}"))?;
             let item = clio_core::review::reject_review(&conn, &params.id)
                 .map_err(|e| format_clio_error(&e))?;
-            serde_json::to_string_pretty(&item)
-                .map_err(|e| format!("Serialisation error: {e}"))
+            serde_json::to_string_pretty(&item).map_err(|e| format!("Serialisation error: {e}"))
         })
         .await
         .map_err(|e| format!("Internal error: task failed: {e}"))?
@@ -1635,23 +1698,23 @@ impl ClioServer {
             };
             let item = clio_core::review::edit_review(&conn, &params.id, &edits)
                 .map_err(|e| format_clio_error(&e))?;
-            serde_json::to_string_pretty(&item)
-                .map_err(|e| format!("Serialisation error: {e}"))
+            serde_json::to_string_pretty(&item).map_err(|e| format!("Serialisation error: {e}"))
         })
         .await
         .map_err(|e| format!("Internal error: task failed: {e}"))?
     }
 
     /// Clear all in-memory caches.
-    #[tool(description = "Clear all in-memory caches (memory, recall, namespace, embedding). Returns counts of entries cleared.")]
+    #[tool(
+        description = "Clear all in-memory caches (memory, recall, namespace, embedding). Returns counts of entries cleared."
+    )]
     async fn memory_cache_clear(
         &self,
         Parameters(_params): Parameters<CacheClearParams>,
     ) -> Result<String, String> {
         let cache = self.cache.clone();
         let result = cache.clear_all();
-        serde_json::to_string_pretty(&result)
-            .map_err(|e| format!("Serialisation error: {e}"))
+        serde_json::to_string_pretty(&result).map_err(|e| format!("Serialisation error: {e}"))
     }
 }
 
@@ -1734,9 +1797,7 @@ impl ServerHandler for ClioServer {
                         uri_template: "memory://recent/{namespace}".into(),
                         name: "Recent Memories".into(),
                         title: None,
-                        description: Some(
-                            "Recent memories for a given namespace.".into(),
-                        ),
+                        description: Some("Recent memories for a given namespace.".into()),
                         mime_type: Some("text/markdown".into()),
                         icons: None,
                     },
@@ -1756,9 +1817,9 @@ impl ServerHandler for ClioServer {
         let cache = self.cache.clone();
 
         let content = tokio::task::spawn_blocking(move || -> Result<String, ClioError> {
-            let conn = conn.lock().map_err(|e| {
-                ClioError::Storage(format!("lock error: {e}"))
-            })?;
+            let conn = conn
+                .lock()
+                .map_err(|e| ClioError::Storage(format!("lock error: {e}")))?;
 
             if uri == "memory://schema" {
                 return clio_core::repository::schema_info(&conn);
@@ -1782,9 +1843,7 @@ impl ServerHandler for ClioServer {
             Err(ClioError::NotFound(format!("Unknown resource URI: {uri}")))
         })
         .await
-        .map_err(|e| {
-            ErrorData::internal_error(format!("Task failed: {e}"), None)
-        })?
+        .map_err(|e| ErrorData::internal_error(format!("Task failed: {e}"), None))?
         .map_err(|e| match e {
             ClioError::NotFound(msg) => ErrorData::resource_not_found(msg, None),
             other => ErrorData::internal_error(format_clio_error(&other), None),
@@ -1828,8 +1887,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (conn, settings, backend) = {
         let path = db_path.clone();
         tokio::task::spawn_blocking(move || {
-            let conn = clio_core::db::open(&path)
-                .map_err(|e| format!("failed to open database: {e}"))?;
+            let conn =
+                clio_core::db::open(&path).map_err(|e| format!("failed to open database: {e}"))?;
             let settings = match clio_core::settings::load(&path) {
                 Ok(s) => s,
                 Err(e) => {
@@ -1854,12 +1913,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let server = ClioServer::new(db_path, conn, settings, backend);
     let transport = rmcp::transport::io::stdio();
-    let service = server
-        .serve(transport)
-        .await
-        .inspect_err(|e| {
-            tracing::error!("Server failed to start: {e}");
-        })?;
+    let service = server.serve(transport).await.inspect_err(|e| {
+        tracing::error!("Server failed to start: {e}");
+    })?;
 
     tracing::info!("Clio MCP server running");
     service.waiting().await?;

@@ -73,9 +73,7 @@ pub fn cmd_run_cleanup(
 }
 
 #[tauri::command]
-pub fn cmd_namespaces(
-    state: State<'_, Mutex<AppState>>,
-) -> Result<Vec<String>, CommandError> {
+pub fn cmd_namespaces(state: State<'_, Mutex<AppState>>) -> Result<Vec<String>, CommandError> {
     let app = state
         .lock()
         .map_err(|e| CommandError::Core(format!("Lock poisoned: {e}")))?;
@@ -142,17 +140,13 @@ pub fn cmd_purge_namespace(
     let app = state
         .lock()
         .map_err(|e| CommandError::Core(format!("Lock poisoned: {e}")))?;
-    let count =
-        clio_core::repository::delete_namespace_with_memories(&app.conn, &namespace)?;
+    let count = clio_core::repository::delete_namespace_with_memories(&app.conn, &namespace)?;
     app.cache.clear_all();
     Ok(count as u32)
 }
 
 #[tauri::command]
-pub fn cmd_init_namespace(
-    directory: String,
-    namespace: String,
-) -> Result<(), CommandError> {
+pub fn cmd_init_namespace(directory: String, namespace: String) -> Result<(), CommandError> {
     let dir = Path::new(&directory);
     if !dir.is_dir() {
         return Err(CommandError::Config(format!(
@@ -169,9 +163,7 @@ pub fn cmd_init_namespace(
 }
 
 #[tauri::command]
-pub fn cmd_detect_namespace(
-    directory: String,
-) -> Result<Option<DetectedContext>, CommandError> {
+pub fn cmd_detect_namespace(directory: String) -> Result<Option<DetectedContext>, CommandError> {
     let dir = Path::new(&directory);
     if !dir.is_dir() {
         return Err(CommandError::Config(format!(

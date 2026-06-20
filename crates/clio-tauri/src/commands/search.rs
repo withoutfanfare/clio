@@ -26,9 +26,9 @@ pub fn cmd_search(
             ));
         }
         BackendState::Unavailable(reason) => {
-            return Err(CommandError::Config(
-                format!("Embedding backend unavailable: {reason}"),
-            ));
+            return Err(CommandError::Config(format!(
+                "Embedding backend unavailable: {reason}"
+            )));
         }
     };
 
@@ -72,9 +72,9 @@ pub fn cmd_suggest_links(
             ));
         }
         BackendState::Unavailable(reason) => {
-            return Err(CommandError::Config(
-                format!("Embedding backend unavailable: {reason}"),
-            ));
+            return Err(CommandError::Config(format!(
+                "Embedding backend unavailable: {reason}"
+            )));
         }
     };
 
@@ -99,9 +99,7 @@ pub struct SuggestionResult {
 }
 
 #[tauri::command]
-pub fn cmd_backend_status(
-    state: State<'_, Mutex<AppState>>,
-) -> Result<String, CommandError> {
+pub fn cmd_backend_status(state: State<'_, Mutex<AppState>>) -> Result<String, CommandError> {
     let app = state
         .lock()
         .map_err(|e| CommandError::Core(format!("Lock poisoned: {e}")))?;

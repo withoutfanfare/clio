@@ -10,9 +10,9 @@ mod watcher;
 use std::path::PathBuf;
 use std::time::Instant;
 
+use tracing_subscriber::EnvFilter;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
-use tracing_subscriber::EnvFilter;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Parse minimal CLI args.
@@ -23,8 +23,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map_err(|e| format!("failed to resolve database path: {e}"))?;
 
     // Load settings from the file next to the database.
-    let settings = clio_core::settings::load(&db_path)
-        .map_err(|e| format!("failed to load settings: {e}"))?;
+    let settings =
+        clio_core::settings::load(&db_path).map_err(|e| format!("failed to load settings: {e}"))?;
 
     // Resolve log directory and ensure it exists.
     let log_dir = settings
@@ -44,8 +44,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let file_appender = tracing_appender::rolling::daily(&log_dir, "clio-daemon.log");
     let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
 
-    let env_filter =
-        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
 
     let stderr_layer = tracing_subscriber::fmt::layer()
         .with_writer(std::io::stderr)
@@ -205,9 +204,8 @@ async fn shutdown_signal() {
 
     #[cfg(unix)]
     {
-        let mut sigterm =
-            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-                .expect("failed to register SIGTERM handler — the OS does not support signal handling");
+        let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("failed to register SIGTERM handler — the OS does not support signal handling");
         tokio::select! {
             _ = ctrl_c => {}
             _ = sigterm.recv() => {}
