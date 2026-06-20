@@ -43,8 +43,11 @@ async function ctxDelete() {
     }
     await store.fetchNamespaces();
     store.loadRecent();
+    store.pushToast(`Deleted project "${ns}"`, "info");
   } catch {
-    // Deletion failed
+    ctxMenu.value = null;
+    ctxConfirming.value = false;
+    store.pushToast(`Couldn't delete project "${ns}"`, "error");
   }
 }
 

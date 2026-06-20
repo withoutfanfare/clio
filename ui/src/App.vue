@@ -11,7 +11,6 @@ import BulkActionBar from "./components/BulkActionBar.vue";
 import NotificationToast from "./components/NotificationToast.vue";
 import { useMemoryStore } from "@/stores/memories";
 import { useKeyboard } from "@/composables/useKeyboard";
-import * as api from "@/api/memory";
 
 const store = useMemoryStore();
 
@@ -37,31 +36,22 @@ async function archiveFocused() {
   if (store.drawerOpen) {
     // Archive the drawer memory
     if (!store.drawerMemory) return;
-    try {
-      if (store.drawerMemory.archived_at) {
-        await api.unarchive(store.drawerMemory.id);
-      } else {
-        await api.archive(store.drawerMemory.id);
-      }
-      store.closeDrawer();
-      store.loadRecent();
-    } catch {
-      // Archive failed
+    const { id, archived_at } = store.drawerMemory;
+    store.closeDrawer();
+    if (archived_at) {
+      await store.unarchiveMemory(id);
+    } else {
+      await store.archiveMemory(id);
     }
     return;
   }
   // Archive the focused list item
   const item = store.navigableItems[store.focusedIndex];
   if (!item) return;
-  try {
-    if (item.archived_at) {
-      await api.unarchive(item.id);
-    } else {
-      await api.archive(item.id);
-    }
-    store.loadRecent();
-  } catch {
-    // Archive failed
+  if (item.archived_at) {
+    await store.unarchiveMemory(item.id);
+  } else {
+    await store.archiveMemory(item.id);
   }
 }
 
