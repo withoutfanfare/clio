@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, nextTick, watch } from "vue";
+import { ref, computed, nextTick, watch } from "vue";
 import { SButton, SCard, SFormField, SInput, SKbd } from "@stuntrocket/ui";
 import { useMemoryStore } from "@/stores/memories";
 import TagInput from "./TagInput.vue";
@@ -37,14 +37,34 @@ function reset() {
   detailsOpen.value = false;
 }
 
+// True when the user has set any explicit detail; if so we honour those fields
+// verbatim instead of letting the capture classifier derive them.
+const hasDetails = computed(
+  () =>
+    title.value.trim() !== "" ||
+    tags.value.length > 0 ||
+    kind.value !== "note" ||
+    importance.value !== 3,
+);
+
 async function submit() {
   if (!text.value.trim() || submitting.value) return;
   submitting.value = true;
+  const ns = namespace.value !== "global" ? namespace.value : undefined;
   try {
-    await store.captureMemory(
-      text.value.trim(),
-      namespace.value !== "global" ? namespace.value : undefined,
-    );
+    if (hasDetails.value) {
+      await store.quickCreate({
+        content: text.value.trim(),
+        namespace: ns,
+        kind: kind.value,
+        tags: tags.value.length ? tags.value : undefined,
+        title: title.value.trim() || undefined,
+        importance: importance.value,
+      });
+      store.composeOpen = false;
+    } else {
+      await store.captureMemory(text.value.trim(), ns);
+    }
     reset();
   } finally {
     submitting.value = false;

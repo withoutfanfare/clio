@@ -17,7 +17,7 @@ const store = useMemoryStore();
 
 function navigateDown() {
   if (store.drawerOpen || store.paletteOpen) return;
-  const max = store.items.length - 1;
+  const max = store.navigableItems.length - 1;
   if (max < 0) return;
   store.focusedIndex = Math.min(store.focusedIndex + 1, max);
 }
@@ -29,7 +29,7 @@ function navigateUp() {
 
 function openFocused() {
   if (store.drawerOpen || store.paletteOpen) return;
-  const item = store.items[store.focusedIndex];
+  const item = store.navigableItems[store.focusedIndex];
   if (item) store.openDrawer(item.id);
 }
 
@@ -51,7 +51,7 @@ async function archiveFocused() {
     return;
   }
   // Archive the focused list item
-  const item = store.items[store.focusedIndex];
+  const item = store.navigableItems[store.focusedIndex];
   if (!item) return;
   try {
     if (item.archived_at) {

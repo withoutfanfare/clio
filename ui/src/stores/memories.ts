@@ -1,6 +1,7 @@
 import { defineStore } from "pinia";
 import { ref, computed } from "vue";
 import * as api from "@/api/memory";
+import { groupMemories, type GroupBy } from "@/composables/useGroupedMemories";
 import type {
   Memory,
   RecallItem,
@@ -142,6 +143,16 @@ export const useMemoryStore = defineStore("memories", () => {
   );
 
   const pinnedCount = computed(() => pinnedIds.value.length);
+
+  // Flattened list in the exact order cards are rendered on the home view:
+  // pinned first, then unpinned in their grouped/sorted render order. Keyboard
+  // navigation and the focus highlight both index into this single list.
+  const navigableItems = computed(() => [
+    ...pinnedItems.value,
+    ...groupMemories(unpinnedItems.value, groupBy.value as GroupBy).flatMap(
+      (g) => g.items,
+    ),
+  ]);
 
   function isPinned(memoryId: string): boolean {
     return pinnedIds.value.includes(memoryId);
@@ -615,6 +626,7 @@ export const useMemoryStore = defineStore("memories", () => {
     pinnedIds,
     pinnedItems,
     unpinnedItems,
+    navigableItems,
     pinnedCount,
     isPinned,
     togglePin,

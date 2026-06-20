@@ -98,22 +98,25 @@ function groupNone(items: RecallItem[]): MemoryGroup[] {
   return [{ label: "All memories", items }];
 }
 
+/** Pure grouping — shared by the composable and the store's navigation order. */
+export function groupMemories(items: RecallItem[], groupBy: GroupBy): MemoryGroup[] {
+  switch (groupBy) {
+    case "importance":
+      return groupByImportance(items);
+    case "date":
+      return groupByDate(items);
+    case "kind":
+      return groupByKind(items);
+    case "none":
+      return groupNone(items);
+    default:
+      return groupByImportance(items);
+  }
+}
+
 export function useGroupedMemories(
   items: Ref<RecallItem[]>,
   groupBy: Ref<GroupBy>,
 ) {
-  return computed<MemoryGroup[]>(() => {
-    switch (groupBy.value) {
-      case "importance":
-        return groupByImportance(items.value);
-      case "date":
-        return groupByDate(items.value);
-      case "kind":
-        return groupByKind(items.value);
-      case "none":
-        return groupNone(items.value);
-      default:
-        return groupByImportance(items.value);
-    }
-  });
+  return computed<MemoryGroup[]>(() => groupMemories(items.value, groupBy.value));
 }

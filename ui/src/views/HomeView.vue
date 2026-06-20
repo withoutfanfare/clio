@@ -356,7 +356,7 @@ watch(
               :key="item.id"
               :memory="item"
               :mode="store.viewMode"
-              :focused="store.items.indexOf(item) === store.focusedIndex"
+              :focused="store.navigableItems.indexOf(item) === store.focusedIndex"
             />
           </div>
         </Transition>
@@ -374,7 +374,7 @@ watch(
             :key="item.id"
             :memory="item"
             :mode="store.viewMode"
-            :focused="store.unpinnedItems.indexOf(item) === store.focusedIndex"
+            :focused="store.navigableItems.indexOf(item) === store.focusedIndex"
           />
         </DateGroup>
       </div>
