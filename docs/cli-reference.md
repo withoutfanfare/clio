@@ -140,8 +140,13 @@ clio distill - --dry-run < session-digest.txt
 clio distill - --source claude-code-session --source-ref <session-id> < session-digest.txt
 ```
 
-Pass `-` to read the text from stdin. `--namespace` overrides the namespace for
-every extracted memory. Requires the capture pipeline to be enabled.
+Pass `-` to read the text from stdin. Requires the capture pipeline to be enabled.
+
+By default each memory is filed under the **working directory's namespace**
+(detected the same way as `clio context`), so a session's memories land in the
+right project rather than wherever the model guesses. The model may still
+promote a genuinely cross-project fact to `global`. `--namespace` overrides both,
+forcing every extracted memory into the given namespace.
 
 ---
 

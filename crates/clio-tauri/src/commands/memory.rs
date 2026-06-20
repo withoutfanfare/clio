@@ -3,7 +3,9 @@ use std::sync::Mutex;
 use tauri::State;
 
 use clio_core::capture::CaptureResult;
-use clio_core::models::{LinkInput, Memory, MemoryLink, RecallQuery, RecallResult, RememberInput, SortOrder};
+use clio_core::models::{
+    LinkInput, Memory, MemoryLink, RecallQuery, RecallResult, RememberInput, SortOrder,
+};
 
 use crate::{AppState, BackendState, CommandError};
 
@@ -99,7 +101,9 @@ pub fn cmd_update(
         upsert: false,
     };
 
-    let memory = app.cache.update(&app.conn, &memory_id, &input, &app.settings)?;
+    let memory = app
+        .cache
+        .update(&app.conn, &memory_id, &input, &app.settings)?;
 
     // Auto-embed using the cached backend.
     if app.settings.auto_embed {
@@ -403,12 +407,13 @@ pub fn cmd_export_memories(
             )?;
         }
         _ => {
-            return Err(CommandError::Config(format!("Unsupported export format: {fmt}")));
+            return Err(CommandError::Config(format!(
+                "Unsupported export format: {fmt}"
+            )));
         }
     }
 
-    String::from_utf8(buf)
-        .map_err(|e| CommandError::Core(format!("UTF-8 encoding error: {e}")))
+    String::from_utf8(buf).map_err(|e| CommandError::Core(format!("UTF-8 encoding error: {e}")))
 }
 
 #[derive(serde::Serialize)]

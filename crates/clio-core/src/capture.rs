@@ -81,8 +81,15 @@ Respond ONLY with a JSON object containing these fields:
 - "summary": a one-sentence summary (max 1000 characters)
 - "tags": an array of 1 to 5 lowercase tags
 - "namespace": suggest "global", or "project:<slug>", or "topic:<slug>"
-- "importance": integer 1 to 5 (1=trivial, 5=critical)
+- "importance": integer 1 to 5, calibrated strictly (see scale below)
 - "confidence": float 0.0 to 1.0 — how certain you are about this classification
+
+Importance scale (do not inflate — most items are 3):
+- 5: an invariant, security/data-loss risk, or something that breaks things if forgotten
+- 4: an important architectural decision or a hard-won, non-obvious fact
+- 3: useful context worth keeping (the default)
+- 2: a minor preference or detail
+- 1: trivial
 
 Rules:
 - Tags must be lowercase, no spaces, use hyphens if needed.
@@ -113,8 +120,15 @@ Respond ONLY with a JSON array (possibly empty). Each element is an object with:
 - "summary": a one-sentence summary (max 1000 characters)
 - "tags": an array of 1 to 5 lowercase tags (no spaces, use hyphens)
 - "namespace": "global", or "project:<slug>", or "topic:<slug>"
-- "importance": integer 1 to 5 (1=trivial, 5=critical)
+- "importance": integer 1 to 5, calibrated strictly (see scale below)
 - "confidence": float 0.0 to 1.0 — how certain you are this is durable knowledge worth keeping
+
+Importance scale (do not inflate — if everything is a 4, the scale is useless; most items are 3):
+- 5: an invariant, security/data-loss risk, or something that breaks things if forgotten
+- 4: an important architectural decision or a hard-won, non-obvious fact
+- 3: useful context worth keeping (the default)
+- 2: a minor preference or detail
+- 1: trivial
 
 Output ONLY valid JSON, no markdown fences, no extra text. An empty session digest, or one with no durable knowledge, MUST yield []."#;
 
@@ -402,6 +416,26 @@ pub fn is_session_noise(title: &str) -> bool {
     NOISE_PHRASES.iter().any(|p| normalised.contains(p))
 }
 
+/// Resolve the namespace for a single distilled memory. Precedence:
+/// `override_ns` (explicit `--namespace`) → the model's `"global"` promotion →
+/// `default_ns` (the working directory's namespace) → the model's suggestion.
+/// See [`distill_and_store`] for the rationale.
+fn resolve_distill_namespace(
+    override_ns: Option<&str>,
+    llm_choice: &str,
+    default_ns: Option<&str>,
+) -> String {
+    if let Some(o) = override_ns {
+        o.to_string()
+    } else if llm_choice == "global" {
+        "global".to_string()
+    } else if let Some(def) = default_ns {
+        def.to_string()
+    } else {
+        llm_choice.to_string()
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Full capture pipeline
 // ---------------------------------------------------------------------------
@@ -456,9 +490,16 @@ pub fn capture_with_classification(
 /// [`capture`]. Returns one [`CaptureResult`] per stored or queued memory; an
 /// empty vector means the text contained nothing worth remembering.
 ///
-/// `namespace_override`, when provided, takes precedence over the namespace the
-/// LLM suggests for every distilled memory. `source` and `source_ref` are
-/// recorded on each memory for provenance.
+/// Namespace resolution for each distilled memory, in precedence order:
+/// 1. `namespace_override` (an explicit `--namespace`) — always wins.
+/// 2. the LLM's choice when it is `"global"` — respects a deliberate promotion
+///    of a genuinely cross-project fact.
+/// 3. `default_namespace` (typically the working directory's namespace) —
+///    overrides the LLM's unreliable per-project guess so a session's memories
+///    land in the right drawer.
+/// 4. the LLM's suggested namespace — the fallback when no default is given.
+///
+/// `source` and `source_ref` are recorded on each memory for provenance.
 #[cfg(feature = "capture")]
 #[allow(clippy::too_many_arguments)]
 pub fn distill_and_store(
@@ -466,6 +507,7 @@ pub fn distill_and_store(
     text: &str,
     config: &CaptureConfig,
     namespace_override: Option<&str>,
+    default_namespace: Option<&str>,
     source: &str,
     source_ref: Option<&str>,
     cwd: Option<&str>,
@@ -491,9 +533,11 @@ pub fn distill_and_store(
             importance: memory.importance,
             confidence: memory.confidence,
         };
-        let namespace = namespace_override
-            .map(String::from)
-            .unwrap_or_else(|| classification.namespace.clone());
+        let namespace = resolve_distill_namespace(
+            namespace_override,
+            &classification.namespace,
+            default_namespace,
+        );
 
         // A session yields many memories, so the shared `source_ref` must be
         // made unique per memory — otherwise the UNIQUE(source, source_ref)
@@ -800,6 +844,41 @@ mod tests {
         let result = parse_distillation(json).unwrap();
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].title, "Upsert key");
+    }
+
+    #[test]
+    fn resolve_namespace_explicit_override_always_wins() {
+        assert_eq!(
+            resolve_distill_namespace(Some("project:x"), "global", Some("project:clio")),
+            "project:x"
+        );
+    }
+
+    #[test]
+    fn resolve_namespace_respects_global_promotion() {
+        // The model promoted a cross-project fact; keep it global even though a
+        // working-directory default is available.
+        assert_eq!(
+            resolve_distill_namespace(None, "global", Some("project:clio")),
+            "global"
+        );
+    }
+
+    #[test]
+    fn resolve_namespace_default_overrides_llm_guess() {
+        // The model guessed an unrelated project; the cwd namespace wins.
+        assert_eq!(
+            resolve_distill_namespace(None, "project:notes", Some("project:clio")),
+            "project:clio"
+        );
+    }
+
+    #[test]
+    fn resolve_namespace_falls_back_to_llm_when_no_default() {
+        assert_eq!(
+            resolve_distill_namespace(None, "project:notes", None),
+            "project:notes"
+        );
     }
 
     #[test]

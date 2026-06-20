@@ -111,11 +111,16 @@ pub fn run() {
                 .map_err(|e| format!("failed to open Clio database: {e}"))?;
 
             let settings = clio_core::settings::load(&db_path).unwrap_or_default();
-            tracing::info!("Embeddings provider: {}", match &settings.embeddings {
-                clio_core::embeddings::EmbeddingConfig::Local { model } => format!("Local ({model})"),
-                clio_core::embeddings::EmbeddingConfig::OpenAi { model, .. } => format!("OpenAI ({model})"),
-                clio_core::embeddings::EmbeddingConfig::Disabled => "Disabled".to_string(),
-            });
+            tracing::info!(
+                "Embeddings provider: {}",
+                match &settings.embeddings {
+                    clio_core::embeddings::EmbeddingConfig::Local { model } =>
+                        format!("Local ({model})"),
+                    clio_core::embeddings::EmbeddingConfig::OpenAi { model, .. } =>
+                        format!("OpenAI ({model})"),
+                    clio_core::embeddings::EmbeddingConfig::Disabled => "Disabled".to_string(),
+                }
+            );
             let embedding_config = settings.embeddings.clone();
             let cache = clio_core::cache::ClioCache::with_defaults();
 
@@ -128,7 +133,8 @@ pub fn run() {
             }));
 
             // Register global hotkey: Cmd+Shift+M to show/hide the window.
-            app.global_shortcut().register("CmdOrCtrl+Shift+M")
+            app.global_shortcut()
+                .register("CmdOrCtrl+Shift+M")
                 .map_err(|e| format!("failed to register global shortcut: {e}"))?;
 
             // Load embedding backend on a background thread so the window
