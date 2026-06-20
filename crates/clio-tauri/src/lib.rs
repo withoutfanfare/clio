@@ -96,6 +96,15 @@ pub fn run() {
                 })
                 .build(),
         )
+        .on_window_event(|window, event| {
+            // Keep Clio running in the background when the window is closed:
+            // hide it instead of quitting. Reopen via the dock icon or the
+            // Cmd+Shift+M global shortcut. Cmd+Q still quits.
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                let _ = window.hide();
+                api.prevent_close();
+            }
+        })
         .setup(|app| {
             let db_path = resolve_db_path();
             let conn = clio_core::db::open(&db_path)
@@ -188,8 +197,18 @@ pub fn run() {
             commands::deduplication::cmd_preview_merge,
             commands::deduplication::cmd_merge_memories,
         ])
-        .run(tauri::generate_context!())
-        .expect("Failed to run Clio");
+        .build(tauri::generate_context!())
+        .expect("Failed to build Clio")
+        .run(|app_handle, event| {
+            // macOS fires Reopen when the app is reactivated (e.g. dock-icon
+            // click) after its window was hidden — bring the window back.
+            if let tauri::RunEvent::Reopen { .. } = event {
+                if let Some(window) = app_handle.get_webview_window("main") {
+                    let _ = window.show();
+                    let _ = window.set_focus();
+                }
+            }
+        });
 }
 
 /// Resolve the database path from env or platform default.

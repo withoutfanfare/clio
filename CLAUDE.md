@@ -97,6 +97,10 @@ Update parent docs when parent-level structure, ownership, workflow, or child in
 
 When the user requests a durable behavior change, record it here or in the relevant child CLAUDE.md
 
+- The desktop app stays running in the background when its window is closed
+  (hide-on-close, not quit). Reopen via the dock icon or the Cmd+Shift+M global
+  shortcut; Cmd+Q quits. Implemented in `crates/clio-tauri/src/lib.rs`.
+
 ## Child DOX Index
 
 - [crates](crates/CLAUDE.md) — Rust workspace: core/adapter boundary, build/test. Indexes `clio-core`.
