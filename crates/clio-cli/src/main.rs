@@ -357,6 +357,15 @@ struct ConsolidateArgs {
     /// Namespace to consolidate. Auto-detected from the working directory if omitted.
     #[arg(long)]
     namespace: Option<String>,
+
+    /// Consolidate every namespace (overrides --namespace).
+    #[arg(long)]
+    all: bool,
+
+    /// Only consolidate a namespace if it has accrued enough new memories since
+    /// its last consolidation (the configured auto_threshold). No-op otherwise.
+    #[arg(long)]
+    if_due: bool,
 }
 
 #[derive(Parser)]
@@ -1342,26 +1351,59 @@ fn cmd_consolidate(
     let conn = db::open(&path)?;
     let s = settings::load(&path)?;
 
-    let namespace = match args.namespace {
-        Some(ns) => ns,
-        None => std::env::current_dir()
-            .ok()
-            .as_deref()
-            .and_then(context::detect_namespace)
-            .map(|ctx| ctx.namespace)
-            .unwrap_or_else(|| "global".into()),
+    // Determine which namespaces to process.
+    let namespaces: Vec<String> = if args.all {
+        repository::list_namespaces(&conn)?
+    } else {
+        let ns = match args.namespace {
+            Some(ns) => ns,
+            None => std::env::current_dir()
+                .ok()
+                .as_deref()
+                .and_then(context::detect_namespace)
+                .map(|ctx| ctx.namespace)
+                .unwrap_or_else(|| "global".into()),
+        };
+        vec![ns]
     };
 
-    let result = clio_core::consolidate::consolidate(&conn, &namespace, &s.capture, &s)?;
+    let threshold = s.consolidate.auto_threshold as usize;
+    let mut done = Vec::new();
+    let mut skipped = 0usize;
+
+    for ns in &namespaces {
+        if args.if_due {
+            let new = clio_core::consolidate::new_since_last_consolidation(&conn, ns)?;
+            if new < threshold {
+                skipped += 1;
+                continue;
+            }
+        }
+        match clio_core::consolidate::consolidate(&conn, ns, &s.capture, &s) {
+            Ok(result) => done.push((ns.clone(), result.source_count)),
+            // With --all/--if-due, an empty namespace just means nothing to do.
+            Err(_) if args.all || args.if_due => skipped += 1,
+            Err(e) => return Err(e.into()),
+        }
+    }
 
     if json {
-        println!("{}", serde_json::to_string_pretty(&result.memory)?);
-    } else {
-        eprintln!(
-            "Consolidated {} memories into '{}'.",
-            result.source_count, namespace
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "consolidated": done.iter().map(|(ns, n)| serde_json::json!({"namespace": ns, "source_count": n})).collect::<Vec<_>>(),
+                "skipped": skipped,
+            }))?
         );
-        print_memory_card(&result.memory);
+    } else if done.is_empty() {
+        eprintln!("Nothing consolidated ({skipped} namespace(s) skipped).");
+    } else {
+        for (ns, n) in &done {
+            eprintln!("Consolidated {n} memories into '{ns}'.");
+        }
+        if skipped > 0 {
+            eprintln!("({skipped} namespace(s) skipped.)");
+        }
     }
     Ok(())
 }

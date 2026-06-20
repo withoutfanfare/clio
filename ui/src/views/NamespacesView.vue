@@ -26,6 +26,24 @@ const mergeTarget = ref("");
 // Delete
 const confirmingDelete = ref<string | null>(null);
 
+// Consolidate
+const consolidatingNs = ref<string | null>(null);
+
+async function consolidateNs(ns: string) {
+  consolidatingNs.value = ns;
+  clearMessages();
+  try {
+    const result = await api.consolidateNamespace(ns);
+    success.value = `Consolidated ${result.source_count} memories in '${ns}' into one project memory`;
+    store.invalidateSearchCache();
+    await loadNamespaces();
+  } catch (e) {
+    error.value = String(e);
+  } finally {
+    consolidatingNs.value = null;
+  }
+}
+
 // Cleanup
 const showCleanup = ref(false);
 const cleanupCandidates = ref<CleanupCandidate[]>([]);
@@ -373,6 +391,17 @@ onMounted(() => {
               </span>
             </div>
             <div class="ns-actions">
+              <button
+                class="ns-action-btn"
+                :disabled="consolidatingNs === ns.name"
+                @click="consolidateNs(ns.name)"
+                title="Consolidate into one AI-curated project memory"
+              >
+                <template v-if="consolidatingNs === ns.name">…</template>
+                <svg v-else width="12" height="12" viewBox="0 0 16 16" fill="none">
+                  <path d="M2 4h12M2 8h12M2 12h7" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
+                </svg>
+              </button>
               <button class="ns-action-btn" @click="startRename(ns.name)" title="Rename">
                 <svg width="12" height="12" viewBox="0 0 16 16" fill="none">
                   <path d="M11.5 1.5l3 3L5 14H2v-3l9.5-9.5z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/>

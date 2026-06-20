@@ -91,6 +91,12 @@ Three variants (tagged by `provider`):
 | `dev_roots` | string[] | `["~/Development", "~/Projects", "~/Code", "~/dev", "~/src"]` | Roots scanned for the "folder gone" heuristic; `~` expands to `$HOME` |
 | `record_cwd` | bool | `true` | Record the working directory in memory metadata at capture time, for reliable future path matching |
 
+## consolidate
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `auto_threshold` | int | `10` | Consolidate a namespace automatically once it has this many new memories since the last consolidation (used by `clio consolidate --if-due`) |
+
 ## Example
 
 ```json

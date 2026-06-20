@@ -4,10 +4,26 @@ use std::sync::Mutex;
 use tauri::State;
 
 use clio_core::cleanup::{self, CleanupCandidate, CleanupCriteria, CleanupReport};
+use clio_core::consolidate::{self, ConsolidationResult};
 use clio_core::context::{self, DetectedContext};
 use clio_core::models::NamespaceInfo;
 
 use crate::{AppState, CommandError};
+
+/// Roll a namespace's memories into its AI-curated consolidated memory.
+#[tauri::command]
+pub fn cmd_consolidate_namespace(
+    state: State<'_, Mutex<AppState>>,
+    namespace: String,
+) -> Result<ConsolidationResult, CommandError> {
+    let app = state
+        .lock()
+        .map_err(|e| CommandError::Core(format!("Lock poisoned: {e}")))?;
+    let result =
+        consolidate::consolidate(&app.conn, &namespace, &app.settings.capture, &app.settings)?;
+    app.cache.clear_all();
+    Ok(result)
+}
 
 /// Find namespaces matching the cleanup criteria. When no specific criterion is
 /// requested, all criteria are applied.

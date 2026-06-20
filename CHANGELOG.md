@@ -28,7 +28,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The `project-brief` context now leads with the consolidated memory when one exists, so sessions open with the curated project summary.
 - CLI: `clio consolidate [--namespace]`.
 - Shared the OpenAI-compatible chat call across classify/distill/consolidate (`capture::chat`).
-- `new_since_last_consolidation` helper counts memories added since the last run (for an upcoming auto-consolidate trigger).
+- `new_since_last_consolidation` helper counts memories added since the last run.
+- Triggers: `clio consolidate --all` (every namespace) and `--if-due` (only namespaces past `consolidate.auto_threshold` new memories). The Stop hook runs `--if-due` after each productive session; a launchd plist can schedule `--all --if-due` (documented in the CLI reference).
+- `ConsolidateConfig` setting `auto_threshold` (default 10).
+- Desktop app: a per-namespace "Consolidate" button in the Namespaces view (`cmd_consolidate_namespace`).
 
 ## [0.3.0] - 2026-03-03
 

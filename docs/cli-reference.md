@@ -214,6 +214,45 @@ The document is a **derived cache**: each run reconciles it from the current
 atomic memories (no iterative self-editing, so it can't drift), and the atomic
 memories are left untouched. Requires the capture pipeline to be enabled.
 
+Triggers:
+
+```sh
+# Every namespace
+clio consolidate --all
+
+# Only namespaces with enough new memories since last run (the configured
+# consolidate.auto_threshold) — cheap to run often, no-op when nothing's due
+clio consolidate --if-due
+clio consolidate --all --if-due
+```
+
+The Stop hook (see `clio-hooks`) runs `clio consolidate --if-due` after each
+session that produced memories, so the consolidated document refreshes
+automatically once a project accrues enough new material.
+
+**Scheduling (macOS launchd):** to also refresh on a timer, drop a LaunchAgent
+at `~/Library/LaunchAgents/com.clio.consolidate.plist` and
+`launchctl load` it:
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key><string>com.clio.consolidate</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/YOU/.cargo/bin/clio</string>
+        <string>consolidate</string>
+        <string>--all</string>
+        <string>--if-due</string>
+    </array>
+    <key>StartCalendarInterval</key>
+    <dict><key>Hour</key><integer>6</integer><key>Minute</key><integer>0</integer></dict>
+</dict>
+</plist>
+```
+
 ---
 
 ## Stats & Activity

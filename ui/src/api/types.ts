@@ -134,6 +134,12 @@ export interface CleanupReport {
   memories_purged: number;
 }
 
+// Consolidation
+export interface ConsolidationResult {
+  memory: Memory;
+  source_count: number;
+}
+
 // Integrity checks
 export interface IntegrityIssue {
   kind: string;

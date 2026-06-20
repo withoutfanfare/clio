@@ -5,6 +5,7 @@ import type {
   BulkResult,
   CleanupCandidate,
   CleanupReport,
+  ConsolidationResult,
   DetectedContext,
   DuplicateScanResult,
   ImportResult,
@@ -271,6 +272,12 @@ export async function findCleanupCandidates(
 
 export async function runCleanup(namespaces: string[]): Promise<CleanupReport> {
   return invoke<CleanupReport>("cmd_run_cleanup", { namespaces });
+}
+
+export async function consolidateNamespace(
+  namespace: string,
+): Promise<ConsolidationResult> {
+  return invoke<ConsolidationResult>("cmd_consolidate_namespace", { namespace });
 }
 
 // Integrity checks

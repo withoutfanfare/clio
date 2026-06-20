@@ -226,6 +226,27 @@ impl Default for CleanupConfig {
     }
 }
 
+/// Configuration for memory consolidation.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ConsolidateConfig {
+    /// Consolidate a namespace automatically once it has accrued at least this
+    /// many new memories since the last consolidation (used by `--if-due`).
+    #[serde(default = "default_consolidate_threshold")]
+    pub auto_threshold: u32,
+}
+
+fn default_consolidate_threshold() -> u32 {
+    10
+}
+
+impl Default for ConsolidateConfig {
+    fn default() -> Self {
+        Self {
+            auto_threshold: default_consolidate_threshold(),
+        }
+    }
+}
+
 /// All configurable Clio settings.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Settings {
@@ -260,6 +281,10 @@ pub struct Settings {
     /// Namespace cleanup configuration.
     #[serde(default)]
     pub cleanup: CleanupConfig,
+
+    /// Memory consolidation configuration.
+    #[serde(default)]
+    pub consolidate: ConsolidateConfig,
 }
 
 fn default_true() -> bool {
@@ -277,6 +302,7 @@ impl Default for Settings {
             scoring: ScoringConfig::default(),
             daemon: DaemonConfig::default(),
             cleanup: CleanupConfig::default(),
+            consolidate: ConsolidateConfig::default(),
         }
     }
 }
