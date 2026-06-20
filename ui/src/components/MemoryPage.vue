@@ -5,7 +5,6 @@ import type { SDropdownMenuItem } from "@stuntrocket/ui";
 import { useMemoryStore } from "@/stores/memories";
 import { useNamespaceColours } from "@/composables/useNamespaceColours";
 import { copyToClipboard, downloadMarkdown } from "@/utils/memoryExport";
-import * as api from "@/api/memory";
 import type { RecallItem } from "@/api/types";
 
 const props = defineProps<{
@@ -83,15 +82,10 @@ function onTogglePin() {
 }
 
 async function onArchive() {
-  try {
-    if (props.memory.archived_at) {
-      await api.unarchive(props.memory.id);
-    } else {
-      await api.archive(props.memory.id);
-    }
-    store.loadRecent();
-  } catch {
-    // Archive failed
+  if (props.memory.archived_at) {
+    await store.unarchiveMemory(props.memory.id);
+  } else {
+    await store.archiveMemory(props.memory.id);
   }
 }
 
@@ -100,12 +94,7 @@ async function onDelete() {
     confirmingDelete.value = true;
     return;
   }
-  try {
-    await api.deleteMemory(props.memory.id);
-    store.loadRecent();
-  } catch {
-    // Delete failed
-  }
+  await store.deleteMemory(props.memory.id);
   confirmingDelete.value = false;
 }
 
@@ -206,7 +195,7 @@ function formatTime(iso: string): string {
             v-for="n in 5"
             :key="n"
             class="imp-dot"
-            :class="[n <= memory.importance ? `imp-${memory.importance}` : 'imp-off']"
+            :class="n <= memory.importance ? 'imp-on' : 'imp-off'"
           />
         </span>
         <span class="meta-sep" v-if="memory.namespace !== 'global'">&middot;</span>
@@ -378,11 +367,9 @@ function formatTime(iso: string): string {
   background: var(--color-surface-hover);
 }
 
-.imp-5 { background: #f87171; }
-.imp-4 { background: #fb923c; }
-.imp-3 { background: #fbbf24; }
-.imp-2 { background: #a3e635; }
-.imp-1 { background: #facc15; }
+.imp-on {
+  background: var(--color-accent);
+}
 
 .meta-sep {
   color: var(--colour-text-disabled);

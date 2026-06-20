@@ -22,7 +22,38 @@ function openMemory(id: string) {
 
 <template>
   <Teleport to="body">
-    <TransitionGroup name="toast" tag="div" class="toast-container">
+    <div class="toast-container">
+    <TransitionGroup name="toast" tag="div" class="toast-group">
+      <div
+        v-for="t in store.toasts"
+        :key="t.id"
+        class="toast action-toast"
+        :class="`is-${t.variant}`"
+        :role="t.variant === 'error' ? 'alert' : 'status'"
+        :aria-live="t.variant === 'error' ? 'assertive' : 'polite'"
+      >
+        <div class="toast-body">
+          <span class="toast-title">{{ t.message }}</span>
+        </div>
+        <button
+          v-if="t.action"
+          class="toast-action"
+          @click="store.runToastAction(t.id)"
+        >
+          {{ t.action.label }}
+        </button>
+        <button
+          class="toast-dismiss"
+          @click="store.dismissToast(t.id)"
+          aria-label="Dismiss"
+        >
+          <svg width="12" height="12" viewBox="0 0 16 16" fill="none">
+            <path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+          </svg>
+        </button>
+      </div>
+    </TransitionGroup>
+    <TransitionGroup name="toast" tag="div" class="toast-group">
       <div
         v-for="notif in store.notifications"
         :key="notif.id"
@@ -53,6 +84,7 @@ function openMemory(id: string) {
         </button>
       </div>
     </TransitionGroup>
+    </div>
   </Teleport>
 </template>
 
@@ -66,6 +98,43 @@ function openMemory(id: string) {
   flex-direction: column;
   gap: var(--space-2);
   pointer-events: none;
+}
+
+/* Lets both transition groups share the container's column + gap. */
+.toast-group {
+  display: contents;
+}
+
+/* ── Action toasts (feedback / undo) ── */
+.action-toast {
+  cursor: default;
+  border-left: 3px solid var(--colour-text-disabled);
+}
+
+.action-toast.is-success {
+  border-left-color: var(--colour-accent);
+}
+
+.action-toast.is-error {
+  border-left-color: var(--colour-danger);
+}
+
+.toast-action {
+  flex-shrink: 0;
+  padding: var(--space-1) var(--space-3);
+  background: none;
+  border: 1px solid var(--colour-border);
+  border-radius: var(--radius-sm);
+  color: var(--colour-accent);
+  font-size: var(--text-xs);
+  font-weight: var(--font-medium);
+  cursor: pointer;
+  transition: background 150ms, border-color 150ms;
+}
+
+.toast-action:hover {
+  background: var(--colour-accent-muted);
+  border-color: var(--colour-accent);
 }
 
 .toast {

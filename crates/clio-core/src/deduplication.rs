@@ -9,7 +9,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use rusqlite::{params, Connection};
+use rusqlite::{Connection, params};
 
 use crate::error::Result;
 use crate::models::Memory;
@@ -76,10 +76,7 @@ pub fn find_duplicates(conn: &Connection) -> Result<DuplicateScanResult> {
     }
     clusters.extend(near);
 
-    let duplicates_found: u32 = clusters
-        .iter()
-        .map(|c| c.memories.len() as u32)
-        .sum();
+    let duplicates_found: u32 = clusters.iter().map(|c| c.memories.len() as u32).sum();
 
     let total_scanned: u32 = conn.query_row(
         "SELECT COUNT(*) FROM memories WHERE archived_at IS NULL",
@@ -154,11 +151,7 @@ pub fn preview_merge(
 /// - Highest confidence and importance values are preserved.
 /// - Incoming/outgoing links from merged memories are transferred to the kept memory.
 /// - Merged-away memories are archived (not deleted).
-pub fn merge_memories(
-    conn: &Connection,
-    keep_id: &str,
-    merge_ids: &[String],
-) -> Result<Memory> {
+pub fn merge_memories(conn: &Connection, keep_id: &str, merge_ids: &[String]) -> Result<Memory> {
     let keep = repository::get_raw(conn, keep_id)?;
     let mut all_tags: Vec<String> = keep.tags.clone();
     let mut best_confidence = keep.confidence;
@@ -199,7 +192,10 @@ pub fn merge_memories(
         )?;
 
         // Sync tags in the memory_tags table (created_at is NOT NULL).
-        conn.execute("DELETE FROM memory_tags WHERE memory_id = ?1", params![keep_id])?;
+        conn.execute(
+            "DELETE FROM memory_tags WHERE memory_id = ?1",
+            params![keep_id],
+        )?;
         for tag in &all_tags {
             conn.execute(
                 "INSERT OR IGNORE INTO memory_tags (memory_id, tag, created_at) VALUES (?1, ?2, ?3)",
@@ -403,10 +399,7 @@ fn find_near_duplicates(
 
     for id in &all_ids {
         let root = find_root(&parent, id);
-        cluster_members
-            .entry(root)
-            .or_default()
-            .push(id.clone());
+        cluster_members.entry(root).or_default().push(id.clone());
     }
 
     // Build DuplicateCluster results.
@@ -524,14 +517,57 @@ fn is_significant(word: &str) -> bool {
     // Skip common stop words.
     !matches!(
         word,
-        "the" | "and" | "for" | "are" | "but" | "not" | "you" | "all"
-            | "can" | "has" | "her" | "was" | "one" | "our" | "out"
-            | "with" | "that" | "this" | "have" | "from" | "they"
-            | "been" | "said" | "each" | "which" | "their" | "will"
-            | "other" | "about" | "many" | "then" | "them" | "these"
-            | "some" | "would" | "make" | "like" | "into" | "could"
-            | "time" | "very" | "when" | "come" | "just" | "know"
-            | "take" | "also" | "more" | "than" | "what" | "there"
+        "the"
+            | "and"
+            | "for"
+            | "are"
+            | "but"
+            | "not"
+            | "you"
+            | "all"
+            | "can"
+            | "has"
+            | "her"
+            | "was"
+            | "one"
+            | "our"
+            | "out"
+            | "with"
+            | "that"
+            | "this"
+            | "have"
+            | "from"
+            | "they"
+            | "been"
+            | "said"
+            | "each"
+            | "which"
+            | "their"
+            | "will"
+            | "other"
+            | "about"
+            | "many"
+            | "then"
+            | "them"
+            | "these"
+            | "some"
+            | "would"
+            | "make"
+            | "like"
+            | "into"
+            | "could"
+            | "time"
+            | "very"
+            | "when"
+            | "come"
+            | "just"
+            | "know"
+            | "take"
+            | "also"
+            | "more"
+            | "than"
+            | "what"
+            | "there"
     )
 }
 

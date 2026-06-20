@@ -4,7 +4,7 @@
 //! content hashes, and invalid metadata. Each issue includes a suggested fix
 //! and can optionally be auto-repaired.
 
-use rusqlite::{params, Connection};
+use rusqlite::{Connection, params};
 
 use crate::error::Result;
 
@@ -36,11 +36,8 @@ pub struct IntegrityReport {
 pub fn check(conn: &Connection) -> Result<IntegrityReport> {
     let mut issues = Vec::new();
 
-    let total_checked: u32 = conn.query_row(
-        "SELECT COUNT(*) FROM memories",
-        [],
-        |row| row.get(0),
-    )?;
+    let total_checked: u32 =
+        conn.query_row("SELECT COUNT(*) FROM memories", [], |row| row.get(0))?;
 
     // 1. Broken links: links pointing to non-existent memories
     let broken_links = find_broken_links(conn)?;
@@ -92,10 +89,7 @@ pub fn check(conn: &Connection) -> Result<IntegrityReport> {
     if !empty.is_empty() {
         issues.push(IntegrityIssue {
             kind: "empty_content".into(),
-            description: format!(
-                "{} memory/memories have empty content",
-                empty.len()
-            ),
+            description: format!("{} memory/memories have empty content", empty.len()),
             suggested_fix: "Archive or delete empty memories".into(),
             auto_fixable: false,
             affected_ids: empty,
@@ -223,9 +217,8 @@ fn find_duplicate_content(conn: &Connection) -> Result<Vec<String>> {
 }
 
 fn find_empty_content(conn: &Connection) -> Result<Vec<String>> {
-    let mut stmt = conn.prepare(
-        "SELECT id FROM memories WHERE TRIM(content) = '' OR content IS NULL",
-    )?;
+    let mut stmt =
+        conn.prepare("SELECT id FROM memories WHERE TRIM(content) = '' OR content IS NULL")?;
     let rows = stmt.query_map([], |row| row.get(0))?;
     Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
 }

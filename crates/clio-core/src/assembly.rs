@@ -145,12 +145,49 @@ pub fn build_context(conn: &Connection, request: &ContextRequest) -> Result<Cont
     let scoring = request.scoring.clone();
 
     let sections = match request.preset {
-        ContextPreset::ProjectBrief => build_project_brief(conn, &ns, request.max_items, request.include_links, &scoring)?,
-        ContextPreset::PersonBrief => build_person_brief(conn, &ns, request.max_items, request.include_links, &scoring)?,
-        ContextPreset::DecisionHistory => build_decision_history(conn, &ns, request.max_items, request.include_links, &scoring)?,
-        ContextPreset::ActiveConstraints => build_active_constraints(conn, &ns, request.max_items, request.include_links, &scoring)?,
-        ContextPreset::RecentActivity => build_recent_activity(conn, &ns, request.max_items, request.include_links, &scoring)?,
-        ContextPreset::Custom => build_custom(conn, &ns, request.query.as_deref(), request.max_items, request.include_links, &scoring)?,
+        ContextPreset::ProjectBrief => build_project_brief(
+            conn,
+            &ns,
+            request.max_items,
+            request.include_links,
+            &scoring,
+        )?,
+        ContextPreset::PersonBrief => build_person_brief(
+            conn,
+            &ns,
+            request.max_items,
+            request.include_links,
+            &scoring,
+        )?,
+        ContextPreset::DecisionHistory => build_decision_history(
+            conn,
+            &ns,
+            request.max_items,
+            request.include_links,
+            &scoring,
+        )?,
+        ContextPreset::ActiveConstraints => build_active_constraints(
+            conn,
+            &ns,
+            request.max_items,
+            request.include_links,
+            &scoring,
+        )?,
+        ContextPreset::RecentActivity => build_recent_activity(
+            conn,
+            &ns,
+            request.max_items,
+            request.include_links,
+            &scoring,
+        )?,
+        ContextPreset::Custom => build_custom(
+            conn,
+            &ns,
+            request.query.as_deref(),
+            request.max_items,
+            request.include_links,
+            &scoring,
+        )?,
     };
 
     let total_memories_used: u32 = sections.iter().map(|s| s.items.len() as u32).sum();
@@ -179,18 +216,47 @@ fn build_project_brief(
     let constraint_limit = 5.min(max_items.saturating_sub(decision_limit));
     let recent_limit = max_items.saturating_sub(decision_limit + constraint_limit);
 
-    let decisions = recall_section(conn, "Recent Decisions", ns, Some("decision"), None, decision_limit, include_links, scoring)?;
-    let constraints = recall_section(conn, "Active Constraints", ns, Some("constraint"), None, constraint_limit, include_links, scoring)?;
-    let recent = recall_section(conn, "Recent Activity", ns, None, None, recent_limit, include_links, scoring)?;
+    let decisions = recall_section(
+        conn,
+        "Recent Decisions",
+        ns,
+        Some("decision"),
+        None,
+        decision_limit,
+        include_links,
+        scoring,
+    )?;
+    let constraints = recall_section(
+        conn,
+        "Active Constraints",
+        ns,
+        Some("constraint"),
+        None,
+        constraint_limit,
+        include_links,
+        scoring,
+    )?;
+    let recent = recall_section(
+        conn,
+        "Recent Activity",
+        ns,
+        None,
+        None,
+        recent_limit,
+        include_links,
+        scoring,
+    )?;
 
     let mut sections = Vec::new();
 
     // Lead with the AI-curated consolidated memory for this namespace, if one
     // exists — it is the highest-signal summary of the whole project.
     if let Some(ns_str) = ns {
-        if let Ok(Some(consolidated)) =
-            crate::repository::get_by_source_ref(conn, crate::consolidate::CONSOLIDATED_SOURCE, ns_str)
-        {
+        if let Ok(Some(consolidated)) = crate::repository::get_by_source_ref(
+            conn,
+            crate::consolidate::CONSOLIDATED_SOURCE,
+            ns_str,
+        ) {
             sections.push(ContextSection {
                 heading: "Consolidated Memory".to_string(),
                 items: vec![consolidated],
@@ -214,8 +280,26 @@ fn build_person_brief(
     let fact_limit = 10.min(max_items);
     let recent_limit = max_items.saturating_sub(fact_limit);
 
-    let facts = recall_section(conn, "Key Facts", ns, Some("fact"), None, fact_limit, include_links, scoring)?;
-    let recent = recall_section(conn, "Recent Notes", ns, None, None, recent_limit, include_links, scoring)?;
+    let facts = recall_section(
+        conn,
+        "Key Facts",
+        ns,
+        Some("fact"),
+        None,
+        fact_limit,
+        include_links,
+        scoring,
+    )?;
+    let recent = recall_section(
+        conn,
+        "Recent Notes",
+        ns,
+        None,
+        None,
+        recent_limit,
+        include_links,
+        scoring,
+    )?;
 
     Ok(vec![facts, recent])
 }
@@ -227,7 +311,16 @@ fn build_decision_history(
     include_links: bool,
     scoring: &Option<ScoringConfig>,
 ) -> Result<Vec<ContextSection>> {
-    let decisions = recall_section(conn, "Decisions", ns, Some("decision"), None, max_items, include_links, scoring)?;
+    let decisions = recall_section(
+        conn,
+        "Decisions",
+        ns,
+        Some("decision"),
+        None,
+        max_items,
+        include_links,
+        scoring,
+    )?;
     Ok(vec![decisions])
 }
 
@@ -238,7 +331,16 @@ fn build_active_constraints(
     include_links: bool,
     scoring: &Option<ScoringConfig>,
 ) -> Result<Vec<ContextSection>> {
-    let constraints = recall_section(conn, "Constraints", ns, Some("constraint"), None, max_items, include_links, scoring)?;
+    let constraints = recall_section(
+        conn,
+        "Constraints",
+        ns,
+        Some("constraint"),
+        None,
+        max_items,
+        include_links,
+        scoring,
+    )?;
     Ok(vec![constraints])
 }
 
@@ -249,7 +351,16 @@ fn build_recent_activity(
     include_links: bool,
     scoring: &Option<ScoringConfig>,
 ) -> Result<Vec<ContextSection>> {
-    let recent = recall_section(conn, "Recent", ns, None, None, max_items, include_links, scoring)?;
+    let recent = recall_section(
+        conn,
+        "Recent",
+        ns,
+        None,
+        None,
+        max_items,
+        include_links,
+        scoring,
+    )?;
     Ok(vec![recent])
 }
 
@@ -261,7 +372,16 @@ fn build_custom(
     include_links: bool,
     scoring: &Option<ScoringConfig>,
 ) -> Result<Vec<ContextSection>> {
-    let results = recall_section(conn, "Search Results", ns, None, query, max_items, include_links, scoring)?;
+    let results = recall_section(
+        conn,
+        "Search Results",
+        ns,
+        None,
+        query,
+        max_items,
+        include_links,
+        scoring,
+    )?;
     Ok(vec![results])
 }
 
@@ -379,8 +499,18 @@ mod tests {
     fn project_brief_groups_by_kind() {
         let conn = test_db();
 
-        make_memory(&conn, "project:test", "decision", "Use Rust for the backend");
-        make_memory(&conn, "project:test", "constraint", "Must support offline use");
+        make_memory(
+            &conn,
+            "project:test",
+            "decision",
+            "Use Rust for the backend",
+        );
+        make_memory(
+            &conn,
+            "project:test",
+            "constraint",
+            "Must support offline use",
+        );
         make_memory(&conn, "project:test", "note", "General project note");
 
         let brief = build_context(
@@ -430,7 +560,12 @@ mod tests {
     fn custom_preset_uses_query() {
         let conn = test_db();
 
-        make_memory(&conn, "global", "note", "Rust is a systems programming language");
+        make_memory(
+            &conn,
+            "global",
+            "note",
+            "Rust is a systems programming language",
+        );
         make_memory(&conn, "global", "note", "Python is great for scripting");
 
         let brief = build_context(

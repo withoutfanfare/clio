@@ -1,6 +1,6 @@
 //! Statistics, analytics, and activity feed for the memory system.
 
-use rusqlite::{params, Connection};
+use rusqlite::{Connection, params};
 
 use crate::error::Result;
 use crate::models::{MemoryStats, RecentEntry, WeekSummary};
@@ -39,11 +39,9 @@ pub fn memory_stats(conn: &Connection, namespace: Option<&str>) -> Result<Memory
             |row| row.get(0),
         )?
     } else {
-        conn.query_row(
-            "SELECT COUNT(*) FROM memory_embeddings",
-            [],
-            |row| row.get(0),
-        )?
+        conn.query_row("SELECT COUNT(*) FROM memory_embeddings", [], |row| {
+            row.get(0)
+        })?
     };
 
     let embedding_coverage = if total_memories > 0 {
@@ -63,9 +61,8 @@ pub fn memory_stats(conn: &Connection, namespace: Option<&str>) -> Result<Memory
 
     // Counts by kind.
     let by_kind = {
-        let mut stmt = conn.prepare(
-            "SELECT kind, COUNT(*) FROM memories GROUP BY kind ORDER BY COUNT(*) DESC",
-        )?;
+        let mut stmt = conn
+            .prepare("SELECT kind, COUNT(*) FROM memories GROUP BY kind ORDER BY COUNT(*) DESC")?;
         let rows = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
         rows.collect::<std::result::Result<Vec<(String, u32)>, _>>()?
     };
@@ -212,9 +209,7 @@ pub fn recent_activity(
     }
 
     // Order by the most recent event timestamp.
-    sql.push_str(
-        " ORDER BY COALESCE(archived_at, updated_at) DESC",
-    );
+    sql.push_str(" ORDER BY COALESCE(archived_at, updated_at) DESC");
 
     let idx = param_values.len() + 1;
     sql.push_str(&format!(" LIMIT ?{idx}"));
@@ -266,7 +261,12 @@ mod tests {
         db::open_in_memory().expect("failed to open in-memory DB")
     }
 
-    fn make_memory(conn: &Connection, ns: &str, kind: &str, tags: &[&str]) -> crate::models::Memory {
+    fn make_memory(
+        conn: &Connection,
+        ns: &str,
+        kind: &str,
+        tags: &[&str],
+    ) -> crate::models::Memory {
         repository::remember(
             conn,
             &RememberInput {

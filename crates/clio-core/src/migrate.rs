@@ -73,7 +73,12 @@ fn hash_ref(source: &str, content: &str) -> String {
     const FNV_PRIME: u64 = 0x00000100000001B3;
 
     let mut hash = FNV_OFFSET;
-    for byte in source.as_bytes().iter().chain(b":").chain(content.as_bytes()) {
+    for byte in source
+        .as_bytes()
+        .iter()
+        .chain(b":")
+        .chain(content.as_bytes())
+    {
         hash ^= *byte as u64;
         hash = hash.wrapping_mul(FNV_PRIME);
     }
@@ -157,10 +162,7 @@ pub fn migrate_claude<R: Read>(
         .map_err(|e| ClioError::Import(format!("failed to read Claude export: {e}")))?;
 
     let entries = parse_claude_entries(&raw)?;
-    let namespace = options
-        .namespace
-        .as_deref()
-        .unwrap_or("tool:claude");
+    let namespace = options.namespace.as_deref().unwrap_or("tool:claude");
 
     let mut result = MigrationResult {
         imported: 0,
@@ -241,10 +243,7 @@ fn parse_claude_entries(raw: &str) -> Result<Vec<String>> {
     }
 
     // Fall back to line-delimited.
-    Ok(trimmed
-        .lines()
-        .map(|l| l.to_string())
-        .collect())
+    Ok(trimmed.lines().map(|l| l.to_string()).collect())
 }
 
 // ---------------------------------------------------------------------------
@@ -268,10 +267,7 @@ pub fn migrate_chatgpt<R: Read>(
         .map_err(|e| ClioError::Import(format!("failed to read ChatGPT export: {e}")))?;
 
     let entries = parse_chatgpt_entries(&raw)?;
-    let namespace = options
-        .namespace
-        .as_deref()
-        .unwrap_or("tool:chatgpt");
+    let namespace = options.namespace.as_deref().unwrap_or("tool:chatgpt");
 
     let mut result = MigrationResult {
         imported: 0,
@@ -382,10 +378,7 @@ fn parse_chatgpt_entries(raw: &str) -> Result<Vec<String>> {
     }
 
     // Fall back to line-delimited.
-    Ok(trimmed
-        .lines()
-        .map(|l| l.to_string())
-        .collect())
+    Ok(trimmed.lines().map(|l| l.to_string()).collect())
 }
 
 // ---------------------------------------------------------------------------
@@ -530,13 +523,11 @@ mod tests {
 
         // Import twice.
         let mut r1 = data.as_bytes();
-        let res1 =
-            migrate_claude(&conn, &mut r1, &default_options(), &default_settings()).unwrap();
+        let res1 = migrate_claude(&conn, &mut r1, &default_options(), &default_settings()).unwrap();
         assert_eq!(res1.imported, 1);
 
         let mut r2 = data.as_bytes();
-        let res2 =
-            migrate_claude(&conn, &mut r2, &default_options(), &default_settings()).unwrap();
+        let res2 = migrate_claude(&conn, &mut r2, &default_options(), &default_settings()).unwrap();
         // Second import should still succeed (upsert), not create a duplicate.
         assert_eq!(res2.imported, 1);
 

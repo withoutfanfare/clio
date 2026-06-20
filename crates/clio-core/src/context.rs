@@ -112,11 +112,7 @@ pub fn detect_namespace(cwd: &Path) -> Option<DetectedContext> {
 /// - If `auto_detect` is true and no explicit namespace was given, attempt
 ///   detection from `cwd`.
 /// - Falls back to `"global"`.
-pub fn resolve_namespace(
-    explicit: Option<&str>,
-    cwd: Option<&Path>,
-    auto_detect: bool,
-) -> String {
+pub fn resolve_namespace(explicit: Option<&str>, cwd: Option<&Path>, auto_detect: bool) -> String {
     if let Some(ns) = explicit {
         return ns.to_string();
     }

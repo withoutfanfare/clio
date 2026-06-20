@@ -7,7 +7,6 @@ import { useAutoSave } from "@/composables/useAutoSave";
 import TagInput from "./TagInput.vue";
 import KindSelector from "./KindSelector.vue";
 import LinkList from "./LinkList.vue";
-import * as api from "@/api/memory";
 import { copyToClipboard, downloadMarkdown } from "@/utils/memoryExport";
 
 const store = useMemoryStore();
@@ -132,16 +131,13 @@ function onTogglePin() {
 
 async function archiveMemory() {
   if (!store.drawerMemory) return;
-  try {
-    if (store.drawerMemory.archived_at) {
-      await api.unarchive(store.drawerMemory.id);
-    } else {
-      await api.archive(store.drawerMemory.id);
-    }
-    store.closeDrawer();
-    store.loadRecent();
-  } catch {
-    // Archive failed
+  const id = store.drawerMemory.id;
+  const wasArchived = !!store.drawerMemory.archived_at;
+  store.closeDrawer();
+  if (wasArchived) {
+    await store.unarchiveMemory(id);
+  } else {
+    await store.archiveMemory(id);
   }
 }
 
@@ -158,16 +154,10 @@ function cancelDelete() {
 async function confirmDelete() {
   if (!store.drawerMemory || deleting.value) return;
   deleting.value = true;
-  try {
-    await api.deleteMemory(store.drawerMemory.id);
-    store.closeDrawer();
-    store.loadRecent();
-  } catch (e) {
-    console.error("Delete failed:", e);
-  } finally {
-    deleting.value = false;
-    confirmingDelete.value = false;
-  }
+  const ok = await store.deleteMemory(store.drawerMemory.id);
+  deleting.value = false;
+  confirmingDelete.value = false;
+  if (ok) store.closeDrawer();
 }
 
 const menuItems = computed<SDropdownMenuItem[]>(() => {

@@ -9,7 +9,7 @@
 //! as BLOBs in the `memory_embeddings` table and compared using cosine
 //! similarity for semantic recall.
 
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::error::{ClioError, Result};
 use crate::models::{Memory, RecallItem};
@@ -113,8 +113,7 @@ impl LocalBackend {
             .and_then(|p| p.parent().map(|d| d.join("models")))
             .unwrap_or_else(|| std::path::PathBuf::from(".fastembed_cache"));
 
-        let init_opts = fastembed::InitOptions::new(fastembed_model)
-            .with_cache_dir(cache_dir);
+        let init_opts = fastembed::InitOptions::new(fastembed_model).with_cache_dir(cache_dir);
 
         let model = fastembed::TextEmbedding::try_new(init_opts)
             .map_err(|e| ClioError::Config(format!("failed to load embedding model: {e}")))?;
@@ -340,8 +339,7 @@ pub fn create_backend(config: &EmbeddingConfig) -> Result<Box<dyn EmbeddingBacke
             model,
             base_url,
         } => {
-            let backend =
-                OpenAiBackend::new(api_key.as_deref(), model, base_url.as_deref())?;
+            let backend = OpenAiBackend::new(api_key.as_deref(), model, base_url.as_deref())?;
             Ok(Box::new(backend))
         }
         #[cfg(not(feature = "openai-embeddings"))]
@@ -467,11 +465,7 @@ fn cosine_similarity(a: &[f32], b: &[f32]) -> f64 {
     }
 
     let denom = norm_a.sqrt() * norm_b.sqrt();
-    if denom == 0.0 {
-        0.0
-    } else {
-        dot / denom
-    }
+    if denom == 0.0 { 0.0 } else { dot / denom }
 }
 
 /// Wrapper for BinaryHeap that orders by similarity ascending (min-heap).
@@ -587,14 +581,21 @@ pub fn semantic_recall(
 ) -> Result<Vec<RecallItem>> {
     // Over-fetch semantically so the keyword boost can re-rank within a wider pool.
     let fetch_limit = limit.saturating_mul(2).max(20);
-    let results = semantic_search(conn, query_embedding, namespace, include_archived, fetch_limit)?;
+    let results = semantic_search(
+        conn,
+        query_embedding,
+        namespace,
+        include_archived,
+        fetch_limit,
+    )?;
 
     if results.is_empty() {
         return Ok(Vec::new());
     }
 
     // Build a similarity map from the search results.
-    let mut similarity_map: std::collections::HashMap<String, f64> = std::collections::HashMap::new();
+    let mut similarity_map: std::collections::HashMap<String, f64> =
+        std::collections::HashMap::new();
     let ids: Vec<String> = results
         .iter()
         .map(|r| {
@@ -619,7 +620,11 @@ pub fn semantic_recall(
         .into_iter()
         .map(|memory| {
             let semantic = similarity_map.get(&memory.id).copied().unwrap_or(0.0);
-            let boost = if fts_hits.contains(&memory.id) { KEYWORD_BOOST } else { 0.0 };
+            let boost = if fts_hits.contains(&memory.id) {
+                KEYWORD_BOOST
+            } else {
+                0.0
+            };
             RecallItem {
                 memory,
                 rank: Some(semantic + boost),
@@ -659,7 +664,7 @@ fn fts_matching_ids(conn: &Connection, query: &str) -> std::collections::HashSet
         let mut stmt = conn.prepare(
             "SELECT m.id FROM memory_fts
              JOIN memories m ON m.rowid = memory_fts.rowid
-             WHERE memory_fts MATCH ?1"
+             WHERE memory_fts MATCH ?1",
         )?;
         let rows = stmt.query_map([&safe], |row| row.get::<_, String>(0))?;
         rows.collect()
@@ -691,7 +696,13 @@ pub fn suggest_links(
             let memory = crate::repository::get(conn, memory_id)?;
             let passage = build_passage(&memory);
             let emb = backend.embed_one(&passage)?;
-            store_embedding(conn, memory_id, backend.model_name(), backend.dimensions(), &emb)?;
+            store_embedding(
+                conn,
+                memory_id,
+                backend.model_name(),
+                backend.dimensions(),
+                &emb,
+            )?;
             emb
         }
     };
@@ -727,10 +738,7 @@ pub fn suggest_links(
         }
     }
 
-    candidates.sort_by(|a, b| {
-        b.1.partial_cmp(&a.1)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
+    candidates.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
     candidates.truncate(limit as usize);
 
     if candidates.is_empty() {
@@ -738,10 +746,7 @@ pub fn suggest_links(
     }
 
     // Batch-fetch all candidate memories in one query.
-    let sim_map: std::collections::HashMap<String, f64> = candidates
-        .iter()
-        .cloned()
-        .collect();
+    let sim_map: std::collections::HashMap<String, f64> = candidates.iter().cloned().collect();
     let ids: Vec<String> = candidates.into_iter().map(|(id, _)| id).collect();
     let memories = crate::repository::get_many_pub(conn, &ids)?;
 
@@ -751,10 +756,7 @@ pub fn suggest_links(
         .collect();
 
     // Maintain similarity ordering.
-    results.sort_by(|a, b| {
-        b.1.partial_cmp(&a.1)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
+    results.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
     Ok(results)
 }
@@ -786,9 +788,7 @@ pub fn auto_link_batch(
     config: &crate::settings::AutoLinkConfig,
 ) -> Result<AutoLinkReport> {
     // Query memories updated since the watermark.
-    let mut sql = String::from(
-        "SELECT id, updated_at FROM memories WHERE archived_at IS NULL",
-    );
+    let mut sql = String::from("SELECT id, updated_at FROM memories WHERE archived_at IS NULL");
     let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
 
     if let Some(watermark) = since {
@@ -812,8 +812,7 @@ pub fn auto_link_batch(
         Ok((id, updated_at))
     })?;
 
-    let candidates: Vec<(String, String)> = rows
-        .collect::<std::result::Result<Vec<_>, _>>()?;
+    let candidates: Vec<(String, String)> = rows.collect::<std::result::Result<Vec<_>, _>>()?;
 
     // --- Batch embed unembedded candidates ---
     // Collect IDs that lack embeddings.
@@ -852,7 +851,9 @@ pub fn auto_link_batch(
                 }
             }
             Err(e) => {
-                tracing::warn!("auto-link: batch embedding failed, falling back to per-memory: {e}");
+                tracing::warn!(
+                    "auto-link: batch embedding failed, falling back to per-memory: {e}"
+                );
                 // Fall back to per-memory embedding so we still make progress.
                 for memory in &memories {
                     if let Err(e) = embed_and_store(conn, backend, memory) {
@@ -880,7 +881,13 @@ pub fn auto_link_batch(
         }
 
         // Find similar memories above threshold.
-        match suggest_links(conn, memory_id, backend, config.threshold, config.max_links_per_memory) {
+        match suggest_links(
+            conn,
+            memory_id,
+            backend,
+            config.threshold,
+            config.max_links_per_memory,
+        ) {
             Ok(suggestions) => {
                 for (target_memory, _similarity) in suggestions {
                     let link_input = crate::models::LinkInput {
@@ -895,7 +902,8 @@ pub fn auto_link_batch(
                             tracing::debug!(
                                 from = memory_id,
                                 to = target_memory.id,
-                                "auto-link: skipped ({})", e
+                                "auto-link: skipped ({})",
+                                e
                             );
                         }
                     }

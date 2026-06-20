@@ -234,20 +234,29 @@ impl ClioCache {
     // -----------------------------------------------------------------------
 
     /// Store a new memory (or upsert), invalidating affected caches.
-    pub fn remember(&self, conn: &Connection, input: &RememberInput, settings: &crate::settings::Settings) -> Result<Memory> {
+    pub fn remember(
+        &self,
+        conn: &Connection,
+        input: &RememberInput,
+        settings: &crate::settings::Settings,
+    ) -> Result<Memory> {
         let memory = repository::remember(conn, input, settings)?;
-        self.memory_by_id
-            .insert(memory.id.clone(), memory.clone());
+        self.memory_by_id.insert(memory.id.clone(), memory.clone());
         self.invalidate_recall();
         self.invalidate_namespaces();
         Ok(memory)
     }
 
     /// Update an existing memory by ID.
-    pub fn update(&self, conn: &Connection, id: &str, input: &RememberInput, settings: &crate::settings::Settings) -> Result<Memory> {
+    pub fn update(
+        &self,
+        conn: &Connection,
+        id: &str,
+        input: &RememberInput,
+        settings: &crate::settings::Settings,
+    ) -> Result<Memory> {
         let memory = repository::update(conn, id, input, settings)?;
-        self.memory_by_id
-            .insert(memory.id.clone(), memory.clone());
+        self.memory_by_id.insert(memory.id.clone(), memory.clone());
         self.invalidate_recall();
         self.invalidate_namespaces();
         Ok(memory)
@@ -282,12 +291,7 @@ impl ClioCache {
     }
 
     /// Move a single memory to a different namespace.
-    pub fn move_namespace(
-        &self,
-        conn: &Connection,
-        id: &str,
-        namespace: &str,
-    ) -> Result<Memory> {
+    pub fn move_namespace(&self, conn: &Connection, id: &str, namespace: &str) -> Result<Memory> {
         let memory = repository::move_namespace(conn, id, namespace)?;
         self.memory_by_id.insert(id.to_string(), memory.clone());
         self.invalidate_recall();
@@ -296,12 +300,7 @@ impl ClioCache {
     }
 
     /// Move all memories from one namespace to another.
-    pub fn move_namespace_bulk(
-        &self,
-        conn: &Connection,
-        from: &str,
-        to: &str,
-    ) -> Result<usize> {
+    pub fn move_namespace_bulk(&self, conn: &Connection, from: &str, to: &str) -> Result<usize> {
         let count = repository::move_namespace_bulk(conn, from, to)?;
         // Bulk move could affect many entries — flush everything.
         self.clear_all();
@@ -427,7 +426,9 @@ mod tests {
             access_count: 0,
         };
         cache.memory_by_id.insert("test-1".into(), mem);
-        cache.embedding_vectors.insert("test-1".into(), vec![1.0, 2.0]);
+        cache
+            .embedding_vectors
+            .insert("test-1".into(), vec![1.0, 2.0]);
 
         // Verify entries are accessible before clearing.
         assert!(cache.memory_by_id.get("test-1").is_some());

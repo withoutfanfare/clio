@@ -1,6 +1,7 @@
 import { defineStore } from "pinia";
 import { ref, computed } from "vue";
 import * as api from "@/api/memory";
+import { groupMemories, type GroupBy } from "@/composables/useGroupedMemories";
 import type {
   Memory,
   RecallItem,
@@ -143,6 +144,21 @@ export const useMemoryStore = defineStore("memories", () => {
 
   const pinnedCount = computed(() => pinnedIds.value.length);
 
+  // Whether the home view's Pinned section is collapsed. Held here (not in the
+  // view) so navigableItems can skip pinned cards that aren't rendered.
+  const pinnedCollapsed = ref(false);
+
+  // Flattened list in the exact order cards are rendered on the home view:
+  // pinned first (unless collapsed), then unpinned in their grouped/sorted
+  // render order. Keyboard navigation and the focus highlight both index into
+  // this single list.
+  const navigableItems = computed(() => [
+    ...(pinnedCollapsed.value ? [] : pinnedItems.value),
+    ...groupMemories(unpinnedItems.value, groupBy.value as GroupBy).flatMap(
+      (g) => g.items,
+    ),
+  ]);
+
   function isPinned(memoryId: string): boolean {
     return pinnedIds.value.includes(memoryId);
   }
@@ -245,6 +261,40 @@ export const useMemoryStore = defineStore("memories", () => {
 
   function dismissAllNotifications() {
     notifications.value = [];
+  }
+
+  // ── Action toasts (transient feedback, optional undo) ──
+  interface ActionToast {
+    id: string;
+    message: string;
+    variant: "success" | "error" | "info";
+    action?: { label: string; run: () => void };
+  }
+  const toasts = ref<ActionToast[]>([]);
+  let toastSeq = 0;
+
+  function dismissToast(id: string) {
+    toasts.value = toasts.value.filter((t) => t.id !== id);
+  }
+
+  function pushToast(
+    message: string,
+    variant: ActionToast["variant"] = "info",
+    action?: ActionToast["action"],
+  ) {
+    const id = `toast-${Date.now()}-${toastSeq++}`;
+    toasts.value.push({ id, message, variant, action });
+    // Keep the stack short so a burst can't grow off-screen.
+    if (toasts.value.length > 4) {
+      toasts.value = toasts.value.slice(-4);
+    }
+    setTimeout(() => dismissToast(id), action ? 6000 : 4000);
+  }
+
+  function runToastAction(id: string) {
+    const toast = toasts.value.find((t) => t.id === id);
+    toast?.action?.run();
+    dismissToast(id);
   }
 
   // Search result cache (session-scoped)
@@ -377,6 +427,11 @@ export const useMemoryStore = defineStore("memories", () => {
         // Check for new memories (notifications)
         checkForNewMemories(result.items);
         items.value = result.items;
+        // Keep keyboard focus within bounds after the list shrinks
+        // (e.g. archive/delete) so the highlight doesn't point past the end.
+        if (focusedIndex.value >= navigableItems.value.length) {
+          focusedIndex.value = navigableItems.value.length - 1;
+        }
         // Initialise notification tracking on first load
         if (!notificationsInitialised) {
           initNotificationTracking();
@@ -484,6 +539,44 @@ export const useMemoryStore = defineStore("memories", () => {
     invalidateSearchCache();
     await loadRecent();
     await fetchNamespaces();
+  }
+
+  // ── Archive / delete (centralised so feedback and undo are consistent) ──
+  async function archiveMemory(id: string) {
+    try {
+      await api.archive(id);
+      invalidateSearchCache();
+      await loadRecent();
+      pushToast("Memory archived", "success", {
+        label: "Undo",
+        run: () => unarchiveMemory(id),
+      });
+    } catch {
+      pushToast("Couldn't archive memory", "error");
+    }
+  }
+
+  async function unarchiveMemory(id: string) {
+    try {
+      await api.unarchive(id);
+      invalidateSearchCache();
+      await loadRecent();
+    } catch {
+      pushToast("Couldn't unarchive memory", "error");
+    }
+  }
+
+  async function deleteMemory(id: string): Promise<boolean> {
+    try {
+      await api.deleteMemory(id);
+      invalidateSearchCache();
+      await loadRecent();
+      pushToast("Memory deleted", "info");
+      return true;
+    } catch {
+      pushToast("Couldn't delete memory", "error");
+      return false;
+    }
   }
 
   // Palette search
@@ -615,7 +708,9 @@ export const useMemoryStore = defineStore("memories", () => {
     pinnedIds,
     pinnedItems,
     unpinnedItems,
+    navigableItems,
     pinnedCount,
+    pinnedCollapsed,
     isPinned,
     togglePin,
     focusedIndex,
@@ -633,6 +728,15 @@ export const useMemoryStore = defineStore("memories", () => {
     notificationsEnabled,
     dismissNotification,
     dismissAllNotifications,
+    // Action toasts
+    toasts,
+    pushToast,
+    dismissToast,
+    runToastAction,
+    // Archive / delete
+    archiveMemory,
+    unarchiveMemory,
+    deleteMemory,
     // Search cache
     invalidateSearchCache,
     // Quick create

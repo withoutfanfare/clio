@@ -5,11 +5,11 @@
 //! can then approve, reject, or edit them before promotion to the main
 //! memory store.
 
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{ClioError, Result};
-use crate::models::{new_id, now_utc, Memory};
+use crate::models::{Memory, new_id, now_utc};
 
 // ---------------------------------------------------------------------------
 // Models
@@ -169,7 +169,11 @@ pub fn get_review(conn: &Connection, id: &str) -> Result<ReviewItem> {
 
 /// Approve a review item: create a Memory from the suggested fields, then
 /// mark the review item as approved.
-pub fn approve_review(conn: &Connection, id: &str, settings: &crate::settings::Settings) -> Result<Memory> {
+pub fn approve_review(
+    conn: &Connection,
+    id: &str,
+    settings: &crate::settings::Settings,
+) -> Result<Memory> {
     let item = get_review(conn, id)?;
 
     if item.status != "pending" && item.status != "edited" {
@@ -306,9 +310,7 @@ pub fn edit_review(conn: &Connection, id: &str, edits: &ReviewEdits) -> Result<R
 
 /// Count review items by status.
 pub fn review_stats(conn: &Connection) -> Result<ReviewStats> {
-    let mut stmt = conn.prepare(
-        "SELECT status, COUNT(*) FROM review_queue GROUP BY status",
-    )?;
+    let mut stmt = conn.prepare("SELECT status, COUNT(*) FROM review_queue GROUP BY status")?;
     let rows = stmt.query_map([], |row| {
         Ok((row.get::<_, String>(0)?, row.get::<_, u32>(1)?))
     })?;
