@@ -29,6 +29,8 @@ function openMemory(id: string) {
         :key="t.id"
         class="toast action-toast"
         :class="`is-${t.variant}`"
+        :role="t.variant === 'error' ? 'alert' : 'status'"
+        :aria-live="t.variant === 'error' ? 'assertive' : 'polite'"
       >
         <div class="toast-body">
           <span class="toast-title">{{ t.message }}</span>

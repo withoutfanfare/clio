@@ -16,8 +16,6 @@ const { getColour } = useNamespaceColours();
 const groupByRef = toRef(store, "groupBy") as Ref<GroupBy>;
 const groups = useGroupedMemories(toRef(store, "unpinnedItems"), groupByRef);
 
-const pinnedCollapsed = ref(false);
-
 const filtersOpen = ref(false);
 const tagInput = ref("");
 const tagDropdownOpen = ref(false);
@@ -335,11 +333,11 @@ watch(
     <template v-else>
       <!-- Pinned section -->
       <div v-if="store.pinnedItems.length" class="pinned-section">
-        <button class="pinned-header" @click="pinnedCollapsed = !pinnedCollapsed">
+        <button class="pinned-header" @click="store.pinnedCollapsed = !store.pinnedCollapsed">
           <svg
             width="10" height="10" viewBox="0 0 12 12" fill="none"
             class="pinned-chevron"
-            :class="{ open: !pinnedCollapsed }"
+            :class="{ open: !store.pinnedCollapsed }"
           >
             <path d="M4 2l4 4-4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
           </svg>
@@ -350,7 +348,7 @@ watch(
           <span class="pinned-count">{{ store.pinnedItems.length }}</span>
         </button>
         <Transition name="slide-down">
-          <div v-if="!pinnedCollapsed" class="pinned-list" :class="store.viewMode === 'grid' ? 'pinned-grid' : ''">
+          <div v-if="!store.pinnedCollapsed" class="pinned-list" :class="store.viewMode === 'grid' ? 'pinned-grid' : ''">
             <MemoryPage
               v-for="item in store.pinnedItems"
               :key="item.id"
