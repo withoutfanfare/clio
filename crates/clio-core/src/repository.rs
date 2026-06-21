@@ -250,6 +250,28 @@ pub fn update(
 // ---------------------------------------------------------------------------
 
 /// Fetch a single memory by id.
+/// Return the id of a non-archived memory in `namespace` with byte-identical
+/// content, if one exists. Used to suppress duplicate writes on the capture
+/// and review-approval paths. Archived memories are excluded — archive means
+/// hidden, so a re-capture should create a fresh live memory rather than match
+/// a hidden one.
+pub fn find_content_duplicate(
+    conn: &Connection,
+    namespace: &str,
+    content: &str,
+) -> Result<Option<String>> {
+    let id = conn
+        .query_row(
+            "SELECT id FROM memories
+             WHERE namespace = ?1 AND content = ?2 AND archived_at IS NULL
+             ORDER BY created_at ASC LIMIT 1",
+            params![namespace, content],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?;
+    Ok(id)
+}
+
 pub fn get(conn: &Connection, id: &str) -> Result<Memory> {
     let memory = get_raw(conn, id)?;
 

@@ -183,6 +183,21 @@ pub fn approve_review(
         )));
     }
 
+    // Suppress duplicate writes: if an identical, non-archived memory already
+    // exists in the suggested namespace, resolve the review against it instead
+    // of inserting a second copy.
+    if let Some(existing_id) =
+        crate::repository::find_content_duplicate(conn, &item.suggested_namespace, &item.content)?
+    {
+        let memory = crate::repository::get(conn, &existing_id)?;
+        let now = now_utc();
+        conn.execute(
+            "UPDATE review_queue SET status = 'approved', reviewed_at = ?1 WHERE id = ?2",
+            params![now, id],
+        )?;
+        return Ok(memory);
+    }
+
     let input = crate::models::RememberInput {
         namespace: item.suggested_namespace,
         kind: item.suggested_kind,

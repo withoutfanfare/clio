@@ -1755,3 +1755,122 @@ fn exclude_expired_filters_only_past_valid_until() {
             .all(|i| !i.memory.content.contains("stale"))
     );
 }
+
+// ---------------------------------------------------------------------------
+// Write-path deduplication
+// ---------------------------------------------------------------------------
+
+#[test]
+fn find_content_duplicate_matches_same_namespace_non_archived() {
+    let conn = test_db();
+    let m = remember_in(&conn, "proj:a", "the sky is blue");
+
+    // Same namespace + identical content → the existing id.
+    assert_eq!(
+        repository::find_content_duplicate(&conn, "proj:a", "the sky is blue").unwrap(),
+        Some(m.id.clone())
+    );
+    // Different namespace → no match.
+    assert_eq!(
+        repository::find_content_duplicate(&conn, "proj:b", "the sky is blue").unwrap(),
+        None
+    );
+    // Different content → no match.
+    assert_eq!(
+        repository::find_content_duplicate(&conn, "proj:a", "the grass is green").unwrap(),
+        None
+    );
+
+    // Archived memories are not matched — archive means hidden, so a re-capture
+    // should create a fresh live memory rather than resurrect a hidden one.
+    repository::archive(&conn, &m.id).unwrap();
+    assert_eq!(
+        repository::find_content_duplicate(&conn, "proj:a", "the sky is blue").unwrap(),
+        None
+    );
+}
+
+#[test]
+fn capture_of_identical_content_does_not_duplicate() {
+    use clio_core::capture::{CaptureResult, ClassificationResult, capture_with_classification};
+
+    let conn = test_db();
+    let classification = ClassificationResult {
+        kind: "fact".into(),
+        title: "Env config".into(),
+        summary: "X is configured via env".into(),
+        tags: vec![],
+        namespace: "proj:a".into(),
+        importance: 3,
+        confidence: 0.9,
+    };
+    let body = "X is configured via env";
+
+    let stored_id = |r: CaptureResult| match r {
+        CaptureResult::Stored(m) => m.id,
+        CaptureResult::Queued(_) => panic!("expected Stored, got Queued"),
+    };
+
+    let first = stored_id(
+        capture_with_classification(&conn, body, &classification, None, &Settings::default())
+            .unwrap(),
+    );
+    let second = stored_id(
+        capture_with_classification(&conn, body, &classification, None, &Settings::default())
+            .unwrap(),
+    );
+
+    assert_eq!(
+        first, second,
+        "re-capture should return the existing memory"
+    );
+
+    let res = repository::recall(
+        &conn,
+        &RecallQuery {
+            namespace: Some("proj:a".into()),
+            ..RecallQuery::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(res.total, 1, "no duplicate row should be created");
+}
+
+#[test]
+fn approve_review_of_duplicate_content_does_not_create_second_memory() {
+    use clio_core::review::{ReviewInput, approve_review, queue_for_review};
+
+    let conn = test_db();
+    let mk = || ReviewInput {
+        content: "shared review content".into(),
+        suggested_namespace: "proj:a".into(),
+        suggested_kind: "note".into(),
+        suggested_title: Some("t".into()),
+        suggested_summary: None,
+        suggested_tags: vec![],
+        suggested_importance: 3,
+        suggested_confidence: Some(0.4),
+        source_route: Some("capture".into()),
+        metadata: serde_json::json!({}),
+    };
+    let r1 = queue_for_review(&conn, &mk()).unwrap();
+    let r2 = queue_for_review(&conn, &mk()).unwrap();
+
+    let m1 = approve_review(&conn, &r1.id, &Settings::default()).unwrap();
+    let m2 = approve_review(&conn, &r2.id, &Settings::default()).unwrap();
+
+    assert_eq!(
+        m1.id, m2.id,
+        "approving duplicate content should return the existing memory"
+    );
+
+    let res = repository::recall(
+        &conn,
+        &RecallQuery {
+            namespace: Some("proj:a".into()),
+            ..RecallQuery::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(res.total, 1, "no duplicate row should be created");
+}
