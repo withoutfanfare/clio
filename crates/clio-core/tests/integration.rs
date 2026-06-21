@@ -1874,3 +1874,89 @@ fn approve_review_of_duplicate_content_does_not_create_second_memory() {
     .unwrap();
     assert_eq!(res.total, 1, "no duplicate row should be created");
 }
+
+// ---------------------------------------------------------------------------
+// Semantic recall: composite scoring fusion + expiry
+// ---------------------------------------------------------------------------
+
+#[test]
+fn semantic_recall_importance_lifts_weaker_match_when_scoring_enabled() {
+    use clio_core::embeddings::{semantic_recall, store_embedding};
+    use clio_core::settings::ScoringConfig;
+
+    let conn = test_db();
+
+    // A: perfect cosine match but lowest importance.
+    let a = RememberInput {
+        importance: 1,
+        ..base_input("alpha content")
+    };
+    let a = repository::remember(&conn, &a, &Settings::default()).unwrap();
+    store_embedding(&conn, &a.id, "test", 2, &[1.0, 0.0]).unwrap();
+
+    // B: weaker cosine match but highest importance.
+    let b = RememberInput {
+        importance: 5,
+        ..base_input("beta content")
+    };
+    let b = repository::remember(&conn, &b, &Settings::default()).unwrap();
+    store_embedding(&conn, &b.id, "test", 2, &[0.9, 0.436]).unwrap();
+
+    let query = [1.0_f32, 0.0];
+
+    // Without scoring: pure cosine — the perfect match A ranks first.
+    let plain = semantic_recall(&conn, "zzqq", &query, None, false, false, None, 10).unwrap();
+    assert_eq!(plain[0].memory.id, a.id, "pure cosine should rank A first");
+
+    // With scoring: importance lifts B above A.
+    let scoring = ScoringConfig {
+        decay_lambda: 0.01,
+        access_boost_weight: 0.1,
+    };
+    let scored = semantic_recall(
+        &conn,
+        "zzqq",
+        &query,
+        None,
+        false,
+        false,
+        Some(&scoring),
+        10,
+    )
+    .unwrap();
+    assert_eq!(
+        scored[0].memory.id, b.id,
+        "composite scoring should lift high-importance B above A"
+    );
+}
+
+#[test]
+fn semantic_recall_excludes_expired_when_requested() {
+    use clio_core::embeddings::{semantic_recall, store_embedding};
+
+    let conn = test_db();
+
+    let stale = RememberInput {
+        valid_until: Some("2000-01-01T00:00:00Z".into()),
+        ..base_input("stale embedded fact")
+    };
+    let stale = repository::remember(&conn, &stale, &Settings::default()).unwrap();
+    store_embedding(&conn, &stale.id, "test", 2, &[1.0, 0.0]).unwrap();
+
+    let live = RememberInput {
+        ..base_input("live embedded fact")
+    };
+    let live = repository::remember(&conn, &live, &Settings::default()).unwrap();
+    store_embedding(&conn, &live.id, "test", 2, &[1.0, 0.0]).unwrap();
+
+    let query = [1.0_f32, 0.0];
+
+    // Default: both returned.
+    let all = semantic_recall(&conn, "zzqq", &query, None, false, false, None, 10).unwrap();
+    assert_eq!(all.len(), 2);
+
+    // exclude_expired: the past-expired memory is dropped.
+    let live_only = semantic_recall(&conn, "zzqq", &query, None, false, true, None, 10).unwrap();
+    assert_eq!(live_only.len(), 1);
+    assert_eq!(live_only[0].memory.id, live.id);
+}

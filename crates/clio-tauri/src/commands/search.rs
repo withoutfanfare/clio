@@ -40,6 +40,8 @@ pub fn cmd_search(
         &query_embedding,
         namespace.as_deref(),
         include_archived.unwrap_or(false),
+        false,
+        Some(&app.settings.scoring),
         limit.unwrap_or(10),
     )?;
 

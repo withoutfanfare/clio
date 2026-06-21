@@ -1445,6 +1445,8 @@ impl ClioServer {
                 &query_embedding,
                 ns_filter.as_deref(),
                 params.include_archived,
+                false,
+                Some(&settings.scoring),
                 limit,
             )
             .map_err(|e| format_clio_error(&e))?;

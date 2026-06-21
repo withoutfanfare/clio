@@ -18,6 +18,7 @@ pub mod migrations;
 pub mod models;
 pub mod repository;
 pub mod review;
+pub mod scoring;
 pub mod settings;
 pub mod stats;
 pub mod title;

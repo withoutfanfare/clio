@@ -1584,6 +1584,8 @@ fn cmd_search(
         &query_embedding,
         args.namespace.as_deref(),
         args.include_archived,
+        false,
+        Some(&s.scoring),
         args.limit,
     )?;
 

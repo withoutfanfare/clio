@@ -206,8 +206,14 @@ impl ClioCache {
         // Delegate to the standard semantic search (it needs to scan all
         // embeddings anyway for cosine similarity). We use this as an
         // opportunity to warm the embedding vector cache.
-        let results =
-            embeddings::semantic_search(conn, query_embedding, namespace, include_archived, limit)?;
+        let results = embeddings::semantic_search(
+            conn,
+            query_embedding,
+            namespace,
+            include_archived,
+            false,
+            limit,
+        )?;
 
         // Warm the embedding cache for returned IDs so that follow-up
         // get_embedding calls hit memory.
