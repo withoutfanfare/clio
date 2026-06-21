@@ -382,19 +382,22 @@ struct InboxListParams {
 #[derive(Debug, Deserialize, JsonSchema)]
 struct InboxApproveParams {
     /// Review item ID.
-    id: String,
+    #[serde(alias = "id")]
+    review_id: String,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
 struct InboxRejectParams {
     /// Review item ID.
-    id: String,
+    #[serde(alias = "id")]
+    review_id: String,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
 struct InboxEditParams {
     /// Review item ID.
-    id: String,
+    #[serde(alias = "id")]
+    review_id: String,
 
     /// Override suggested namespace.
     #[serde(default)]
@@ -1640,12 +1643,12 @@ impl ClioServer {
         &self,
         Parameters(params): Parameters<InboxApproveParams>,
     ) -> Result<String, String> {
-        validate_memory_id(&params.id, "id")?;
+        validate_memory_id(&params.review_id, "review_id")?;
         let conn = self.conn.clone();
         let settings = self.settings()?;
         tokio::task::spawn_blocking(move || {
             let conn = conn.lock().map_err(|e| format!("lock error: {e}"))?;
-            let memory = clio_core::review::approve_review(&conn, &params.id, &settings)
+            let memory = clio_core::review::approve_review(&conn, &params.review_id, &settings)
                 .map_err(|e| format_clio_error(&e))?;
             serde_json::to_string_pretty(&memory).map_err(|e| format!("Serialisation error: {e}"))
         })
@@ -1659,11 +1662,11 @@ impl ClioServer {
         &self,
         Parameters(params): Parameters<InboxRejectParams>,
     ) -> Result<String, String> {
-        validate_memory_id(&params.id, "id")?;
+        validate_memory_id(&params.review_id, "review_id")?;
         let conn = self.conn.clone();
         tokio::task::spawn_blocking(move || {
             let conn = conn.lock().map_err(|e| format!("lock error: {e}"))?;
-            let item = clio_core::review::reject_review(&conn, &params.id)
+            let item = clio_core::review::reject_review(&conn, &params.review_id)
                 .map_err(|e| format_clio_error(&e))?;
             serde_json::to_string_pretty(&item).map_err(|e| format!("Serialisation error: {e}"))
         })
@@ -1677,7 +1680,7 @@ impl ClioServer {
         &self,
         Parameters(params): Parameters<InboxEditParams>,
     ) -> Result<String, String> {
-        validate_memory_id(&params.id, "id")?;
+        validate_memory_id(&params.review_id, "review_id")?;
         if let Some(importance) = params.importance {
             validate_importance(importance)?;
         }
@@ -1696,7 +1699,7 @@ impl ClioServer {
                 importance: params.importance,
                 confidence: params.confidence.map(Some),
             };
-            let item = clio_core::review::edit_review(&conn, &params.id, &edits)
+            let item = clio_core::review::edit_review(&conn, &params.review_id, &edits)
                 .map_err(|e| format_clio_error(&e))?;
             serde_json::to_string_pretty(&item).map_err(|e| format!("Serialisation error: {e}"))
         })
