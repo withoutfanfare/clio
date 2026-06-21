@@ -1482,6 +1482,7 @@ fn bulk_link_expansion_returns_linked_memories() {
             match_all_tags: true,
             include_archived: false,
             include_links: true,
+            exclude_expired: false,
             importance_min: None,
             importance_max: None,
             sort_by: None,
@@ -1708,5 +1709,49 @@ fn recall_scoped_total_counts_each_namespace_once() {
     assert_eq!(
         res.total, 3,
         "disjoint namespaces — each counted once, no double count"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Expiry filtering (valid_until)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn exclude_expired_filters_only_past_valid_until() {
+    let conn = test_db();
+
+    let stale = RememberInput {
+        valid_until: Some("2000-01-01T00:00:00Z".into()),
+        ..base_input("stale fact")
+    };
+    repository::remember(&conn, &stale, &Settings::default()).unwrap();
+
+    let future = RememberInput {
+        valid_until: Some("2999-01-01T00:00:00Z".into()),
+        ..base_input("future fact")
+    };
+    repository::remember(&conn, &future, &Settings::default()).unwrap();
+
+    remember_simple(&conn, "live fact"); // valid_until = None
+
+    // Default recall: all three visible (backwards-compatible).
+    assert_eq!(
+        repository::recall(&conn, &RecallQuery::default())
+            .unwrap()
+            .total,
+        3
+    );
+
+    // Opt-in expiry filter: drops only the past-expired memory.
+    let q = RecallQuery {
+        exclude_expired: true,
+        ..RecallQuery::default()
+    };
+    let res = repository::recall(&conn, &q).unwrap();
+    assert_eq!(res.total, 2);
+    assert!(
+        res.items
+            .iter()
+            .all(|i| !i.memory.content.contains("stale"))
     );
 }

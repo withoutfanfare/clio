@@ -761,6 +761,10 @@ fn append_filters(
         sql.push_str(" AND m.archived_at IS NULL");
     }
 
+    if q.exclude_expired {
+        sql.push_str(" AND (m.valid_until IS NULL OR datetime(m.valid_until) > datetime('now'))");
+    }
+
     if let Some(ref ns) = q.namespace {
         let idx = params.len() + 1;
         sql.push_str(&format!(" AND m.namespace = ?{idx}"));

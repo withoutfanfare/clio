@@ -1110,6 +1110,7 @@ impl ClioServer {
                 match_all_tags: params.match_all_tags,
                 include_archived: params.include_archived,
                 include_links: false,
+                exclude_expired: false,
                 importance_min: params.importance_min,
                 importance_max: params.importance_max,
                 sort_by,
