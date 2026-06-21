@@ -375,7 +375,7 @@ onMounted(() => {
             ref="searchInputRef"
             type="text"
             class="search-input"
-            placeholder="Search memories to add\u2026"
+            placeholder="Search memories to add…"
             :value="searchQuery"
             @input="onSearchInput(($event.target as HTMLInputElement).value)"
             @keydown.escape="closeSearch"
@@ -383,7 +383,7 @@ onMounted(() => {
           <button class="tool-btn-sm" @click="closeSearch">Close</button>
         </div>
 
-        <div v-if="searchLoading" class="search-status">Searching\u2026</div>
+        <div v-if="searchLoading" class="search-status">Searching…</div>
         <div v-else-if="searchQuery && !searchResults.length" class="search-status">
           No results found
         </div>
@@ -513,7 +513,7 @@ onMounted(() => {
             v-model="block.text"
             type="text"
             class="heading-input"
-            placeholder="Section heading\u2026"
+            placeholder="Section heading…"
           />
         </div>
 
@@ -522,7 +522,7 @@ onMounted(() => {
           <textarea
             v-model="block.text"
             class="narrative-input"
-            placeholder="Bridging narrative or notes\u2026"
+            placeholder="Bridging narrative or notes…"
             rows="3"
           />
         </div>

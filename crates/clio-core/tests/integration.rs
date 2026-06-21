@@ -1482,6 +1482,7 @@ fn bulk_link_expansion_returns_linked_memories() {
             match_all_tags: true,
             include_archived: false,
             include_links: true,
+            exclude_expired: false,
             importance_min: None,
             importance_max: None,
             sort_by: None,
@@ -1709,4 +1710,253 @@ fn recall_scoped_total_counts_each_namespace_once() {
         res.total, 3,
         "disjoint namespaces — each counted once, no double count"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Expiry filtering (valid_until)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn exclude_expired_filters_only_past_valid_until() {
+    let conn = test_db();
+
+    let stale = RememberInput {
+        valid_until: Some("2000-01-01T00:00:00Z".into()),
+        ..base_input("stale fact")
+    };
+    repository::remember(&conn, &stale, &Settings::default()).unwrap();
+
+    let future = RememberInput {
+        valid_until: Some("2999-01-01T00:00:00Z".into()),
+        ..base_input("future fact")
+    };
+    repository::remember(&conn, &future, &Settings::default()).unwrap();
+
+    remember_simple(&conn, "live fact"); // valid_until = None
+
+    // Default recall: all three visible (backwards-compatible).
+    assert_eq!(
+        repository::recall(&conn, &RecallQuery::default())
+            .unwrap()
+            .total,
+        3
+    );
+
+    // Opt-in expiry filter: drops only the past-expired memory.
+    let q = RecallQuery {
+        exclude_expired: true,
+        ..RecallQuery::default()
+    };
+    let res = repository::recall(&conn, &q).unwrap();
+    assert_eq!(res.total, 2);
+    assert!(
+        res.items
+            .iter()
+            .all(|i| !i.memory.content.contains("stale"))
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Write-path deduplication
+// ---------------------------------------------------------------------------
+
+#[test]
+fn find_content_duplicate_matches_same_namespace_non_archived() {
+    let conn = test_db();
+    let m = remember_in(&conn, "proj:a", "the sky is blue");
+
+    // Same namespace + identical content → the existing id.
+    assert_eq!(
+        repository::find_content_duplicate(&conn, "proj:a", "the sky is blue").unwrap(),
+        Some(m.id.clone())
+    );
+    // Different namespace → no match.
+    assert_eq!(
+        repository::find_content_duplicate(&conn, "proj:b", "the sky is blue").unwrap(),
+        None
+    );
+    // Different content → no match.
+    assert_eq!(
+        repository::find_content_duplicate(&conn, "proj:a", "the grass is green").unwrap(),
+        None
+    );
+
+    // Archived memories are not matched — archive means hidden, so a re-capture
+    // should create a fresh live memory rather than resurrect a hidden one.
+    repository::archive(&conn, &m.id).unwrap();
+    assert_eq!(
+        repository::find_content_duplicate(&conn, "proj:a", "the sky is blue").unwrap(),
+        None
+    );
+}
+
+#[test]
+fn capture_of_identical_content_does_not_duplicate() {
+    use clio_core::capture::{CaptureResult, ClassificationResult, capture_with_classification};
+
+    let conn = test_db();
+    let classification = ClassificationResult {
+        kind: "fact".into(),
+        title: "Env config".into(),
+        summary: "X is configured via env".into(),
+        tags: vec![],
+        namespace: "proj:a".into(),
+        importance: 3,
+        confidence: 0.9,
+    };
+    let body = "X is configured via env";
+
+    let stored_id = |r: CaptureResult| match r {
+        CaptureResult::Stored(m) => m.id,
+        CaptureResult::Queued(_) => panic!("expected Stored, got Queued"),
+    };
+
+    let first = stored_id(
+        capture_with_classification(&conn, body, &classification, None, &Settings::default())
+            .unwrap(),
+    );
+    let second = stored_id(
+        capture_with_classification(&conn, body, &classification, None, &Settings::default())
+            .unwrap(),
+    );
+
+    assert_eq!(
+        first, second,
+        "re-capture should return the existing memory"
+    );
+
+    let res = repository::recall(
+        &conn,
+        &RecallQuery {
+            namespace: Some("proj:a".into()),
+            ..RecallQuery::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(res.total, 1, "no duplicate row should be created");
+}
+
+#[test]
+fn approve_review_of_duplicate_content_does_not_create_second_memory() {
+    use clio_core::review::{ReviewInput, approve_review, queue_for_review};
+
+    let conn = test_db();
+    let mk = || ReviewInput {
+        content: "shared review content".into(),
+        suggested_namespace: "proj:a".into(),
+        suggested_kind: "note".into(),
+        suggested_title: Some("t".into()),
+        suggested_summary: None,
+        suggested_tags: vec![],
+        suggested_importance: 3,
+        suggested_confidence: Some(0.4),
+        source_route: Some("capture".into()),
+        metadata: serde_json::json!({}),
+    };
+    let r1 = queue_for_review(&conn, &mk()).unwrap();
+    let r2 = queue_for_review(&conn, &mk()).unwrap();
+
+    let m1 = approve_review(&conn, &r1.id, &Settings::default()).unwrap();
+    let m2 = approve_review(&conn, &r2.id, &Settings::default()).unwrap();
+
+    assert_eq!(
+        m1.id, m2.id,
+        "approving duplicate content should return the existing memory"
+    );
+
+    let res = repository::recall(
+        &conn,
+        &RecallQuery {
+            namespace: Some("proj:a".into()),
+            ..RecallQuery::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(res.total, 1, "no duplicate row should be created");
+}
+
+// ---------------------------------------------------------------------------
+// Semantic recall: composite scoring fusion + expiry
+// ---------------------------------------------------------------------------
+
+#[test]
+fn semantic_recall_importance_lifts_weaker_match_when_scoring_enabled() {
+    use clio_core::embeddings::{semantic_recall, store_embedding};
+    use clio_core::settings::ScoringConfig;
+
+    let conn = test_db();
+
+    // A: perfect cosine match but lowest importance.
+    let a = RememberInput {
+        importance: 1,
+        ..base_input("alpha content")
+    };
+    let a = repository::remember(&conn, &a, &Settings::default()).unwrap();
+    store_embedding(&conn, &a.id, "test", 2, &[1.0, 0.0]).unwrap();
+
+    // B: weaker cosine match but highest importance.
+    let b = RememberInput {
+        importance: 5,
+        ..base_input("beta content")
+    };
+    let b = repository::remember(&conn, &b, &Settings::default()).unwrap();
+    store_embedding(&conn, &b.id, "test", 2, &[0.9, 0.436]).unwrap();
+
+    let query = [1.0_f32, 0.0];
+
+    // Without scoring: pure cosine — the perfect match A ranks first.
+    let plain = semantic_recall(&conn, "zzqq", &query, None, false, false, None, 10).unwrap();
+    assert_eq!(plain[0].memory.id, a.id, "pure cosine should rank A first");
+
+    // With scoring: importance lifts B above A.
+    let scoring = ScoringConfig {
+        decay_lambda: 0.01,
+        access_boost_weight: 0.1,
+    };
+    let scored = semantic_recall(
+        &conn,
+        "zzqq",
+        &query,
+        None,
+        false,
+        false,
+        Some(&scoring),
+        10,
+    )
+    .unwrap();
+    assert_eq!(
+        scored[0].memory.id, b.id,
+        "composite scoring should lift high-importance B above A"
+    );
+}
+
+#[test]
+fn semantic_recall_excludes_expired_when_requested() {
+    use clio_core::embeddings::{semantic_recall, store_embedding};
+
+    let conn = test_db();
+
+    let stale = RememberInput {
+        valid_until: Some("2000-01-01T00:00:00Z".into()),
+        ..base_input("stale embedded fact")
+    };
+    let stale = repository::remember(&conn, &stale, &Settings::default()).unwrap();
+    store_embedding(&conn, &stale.id, "test", 2, &[1.0, 0.0]).unwrap();
+
+    let live = RememberInput {
+        ..base_input("live embedded fact")
+    };
+    let live = repository::remember(&conn, &live, &Settings::default()).unwrap();
+    store_embedding(&conn, &live.id, "test", 2, &[1.0, 0.0]).unwrap();
+
+    let query = [1.0_f32, 0.0];
+
+    // Default: both returned.
+    let all = semantic_recall(&conn, "zzqq", &query, None, false, false, None, 10).unwrap();
+    assert_eq!(all.len(), 2);
+
+    // exclude_expired: the past-expired memory is dropped.
+    let live_only = semantic_recall(&conn, "zzqq", &query, None, false, true, None, 10).unwrap();
+    assert_eq!(live_only.len(), 1);
+    assert_eq!(live_only[0].memory.id, live.id);
 }

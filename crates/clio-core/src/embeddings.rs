@@ -502,6 +502,7 @@ pub fn semantic_search(
     query_embedding: &[f32],
     namespace: Option<&str>,
     include_archived: bool,
+    exclude_expired: bool,
     limit: u32,
 ) -> Result<Vec<SemanticResult>> {
     let mut sql = String::from(
@@ -515,6 +516,10 @@ pub fn semantic_search(
 
     if !include_archived {
         sql.push_str(" AND m.archived_at IS NULL");
+    }
+
+    if exclude_expired {
+        sql.push_str(" AND (m.valid_until IS NULL OR datetime(m.valid_until) > datetime('now'))");
     }
 
     if let Some(ns) = namespace {
@@ -571,12 +576,15 @@ pub fn semantic_search(
 /// Uses batch fetching to avoid N+1 queries. Applies a hybrid keyword boost:
 /// memories that also match the query via FTS get a score uplift so that
 /// direct keyword hits are not buried by purely semantic neighbours.
+#[allow(clippy::too_many_arguments)]
 pub fn semantic_recall(
     conn: &Connection,
     query_text: &str,
     query_embedding: &[f32],
     namespace: Option<&str>,
     include_archived: bool,
+    exclude_expired: bool,
+    scoring: Option<&crate::settings::ScoringConfig>,
     limit: u32,
 ) -> Result<Vec<RecallItem>> {
     // Over-fetch semantically so the keyword boost can re-rank within a wider pool.
@@ -586,6 +594,7 @@ pub fn semantic_recall(
         query_embedding,
         namespace,
         include_archived,
+        exclude_expired,
         fetch_limit,
     )?;
 
@@ -616,6 +625,12 @@ pub fn semantic_recall(
     // strong semantic hit still outranks a weak keyword match.
     const KEYWORD_BOOST: f64 = 0.3;
 
+    // When scoring is enabled, fold the same composite multiplier the FTS recall
+    // path applies (time decay x access boost x importance) onto the hybrid
+    // semantic+keyword base, so both retrieval paths rank consistently. Neutral
+    // when decay_lambda = 0.0 (preserves the backwards-compatibility invariant).
+    let now = time::OffsetDateTime::now_utc();
+
     let mut items: Vec<RecallItem> = memories
         .into_iter()
         .map(|memory| {
@@ -625,9 +640,14 @@ pub fn semantic_recall(
             } else {
                 0.0
             };
+            let base = semantic + boost;
+            let rank = match scoring {
+                Some(s) => base * crate::scoring::composite_multiplier(&memory, s, now),
+                None => base,
+            };
             RecallItem {
                 memory,
-                rank: Some(semantic + boost),
+                rank: Some(rank),
                 linked_from: None,
             }
         })

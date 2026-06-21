@@ -1068,6 +1068,7 @@ fn cmd_recall(
             match_all_tags: !args.match_any,
             include_archived: args.include_archived,
             include_links: false,
+            exclude_expired: false,
             importance_min: args.importance_min,
             importance_max: args.importance_max,
             sort_by: sort_by.clone(),
@@ -1085,6 +1086,7 @@ fn cmd_recall(
             match_all_tags: !args.match_any,
             include_archived: args.include_archived,
             include_links: false,
+            exclude_expired: false,
             importance_min: args.importance_min,
             importance_max: args.importance_max,
             sort_by: sort_by.clone(),
@@ -1102,6 +1104,7 @@ fn cmd_recall(
             match_all_tags: !args.match_any,
             include_archived: args.include_archived,
             include_links: false,
+            exclude_expired: false,
             importance_min: args.importance_min,
             importance_max: args.importance_max,
             sort_by,
@@ -1581,6 +1584,8 @@ fn cmd_search(
         &query_embedding,
         args.namespace.as_deref(),
         args.include_archived,
+        false,
+        Some(&s.scoring),
         args.limit,
     )?;
 

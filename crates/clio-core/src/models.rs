@@ -127,6 +127,10 @@ pub struct RecallQuery {
     /// When true, append linked memories to results.
     #[serde(default)]
     pub include_links: bool,
+    /// When true, exclude memories whose `valid_until` is in the past.
+    /// Defaults to false for backwards-compatible recall.
+    #[serde(default)]
+    pub exclude_expired: bool,
     /// Minimum importance (1–5 inclusive). None means no lower bound.
     #[serde(default)]
     pub importance_min: Option<i32>,
@@ -164,6 +168,7 @@ impl Default for RecallQuery {
             match_all_tags: true,
             include_archived: false,
             include_links: false,
+            exclude_expired: false,
             importance_min: None,
             importance_max: None,
             sort_by: None,

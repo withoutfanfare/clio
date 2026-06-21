@@ -42,9 +42,9 @@ function open(e: MouseEvent) {
   // Shift+click extends selection range
   if (e.shiftKey && store.selectionMode) {
     e.preventDefault();
-    const myIndex = store.items.findIndex((i) => i.id === props.memory.id);
+    const myIndex = store.navigableItems.findIndex((i) => i.id === props.memory.id);
     if (myIndex >= 0) {
-      const lastSelected = store.items.findIndex(
+      const lastSelected = store.navigableItems.findIndex(
         (i) => store.isSelected(i.id) && i.id !== props.memory.id,
       );
       if (lastSelected >= 0) {

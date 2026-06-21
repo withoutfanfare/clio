@@ -575,6 +575,21 @@ fn store_or_queue(
     metadata: &serde_json::Value,
     settings: &crate::settings::Settings,
 ) -> Result<CaptureResult> {
+    // Suppress duplicate writes: if an identical, non-archived memory already
+    // exists in the target namespace, return it instead of storing or queuing
+    // a second copy. Runs before review-routing so a known fact never clogs the
+    // inbox either.
+    if let Some(existing_id) = crate::repository::find_content_duplicate(conn, namespace, content)?
+    {
+        let memory = crate::repository::get(conn, &existing_id)?;
+        tracing::debug!(
+            "capture deduplicated against existing memory {} in {}",
+            existing_id,
+            namespace
+        );
+        return Ok(CaptureResult::Stored(memory));
+    }
+
     // Check whether this capture should be routed to the review queue.
     if let Some(threshold) = settings.capture.review_threshold {
         if classification.confidence < threshold {

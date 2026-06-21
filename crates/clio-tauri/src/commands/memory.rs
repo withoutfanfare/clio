@@ -152,6 +152,7 @@ pub fn cmd_recall(
         limit: limit.unwrap_or(10),
         offset: offset.unwrap_or(0),
         include_links: false,
+        exclude_expired: false,
         scoring: Some(app.settings.scoring.clone()),
     };
 
@@ -202,6 +203,7 @@ pub fn cmd_recent(
         limit: limit.unwrap_or(10),
         offset: 0,
         include_links: false,
+        exclude_expired: false,
         scoring: Some(app.settings.scoring.clone()),
     };
 

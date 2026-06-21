@@ -202,10 +202,11 @@ export const useMemoryStore = defineStore("memories", () => {
   function selectRange(fromIndex: number, toIndex: number) {
     const start = Math.min(fromIndex, toIndex);
     const end = Math.max(fromIndex, toIndex);
+    const ordered = navigableItems.value;
     const newSet = new Set(selectedIds.value);
     for (let i = start; i <= end; i++) {
-      if (items.value[i]) {
-        newSet.add(items.value[i].id);
+      if (ordered[i]) {
+        newSet.add(ordered[i].id);
       }
     }
     selectedIds.value = newSet;
