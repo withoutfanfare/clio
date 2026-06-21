@@ -36,7 +36,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `ConsolidateConfig` setting `auto_threshold` (default 10).
 - Desktop app: a per-namespace "Consolidate" button in the Namespaces view (`cmd_consolidate_namespace`).
 
+**Retrieval & deduplication**
+- `RecallQuery.exclude_expired` (default false): an opt-in filter that drops memories whose `valid_until` is in the past, applied across keyword, recent, and semantic recall. Previously `valid_until` was stored but never consulted, so known-stale facts ranked as current.
+- Write-path deduplication: capturing or approving content identical to an existing non-archived memory in the same namespace now returns that memory instead of creating a duplicate row (`repository::find_content_duplicate`), so a known fact never duplicates or clogs the review inbox.
+
 ### Changed
+
+**Retrieval**
+- Semantic search now applies the same composite relevance scoring as keyword recall — time decay × access frequency × importance — on top of the hybrid semantic+keyword score, so the two retrieval paths rank consistently. Extracted into `clio-core::scoring::composite_multiplier`; neutral when `decay_lambda = 0.0` (preserves the backwards-compatibility invariant).
 
 **Desktop app**
 - Memory cards now show importance with the same accent-fill dots used in the compose and drawer editors, replacing an inconsistent multi-colour scale.
