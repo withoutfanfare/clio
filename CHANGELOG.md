@@ -47,6 +47,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 **Desktop app**
 - Compose "Add details" now persists the title and tags entered — previously only the body text and namespace were saved, so those fields were silently discarded.
 - Keyboard navigation (`j`/`k`) now highlights the correct card when memories are pinned or grouped; focus order follows the rendered order rather than the raw recall order.
+- Shift-click range selection now selects the correct cards when memories are pinned or grouped — like keyboard nav, it follows the rendered order rather than the raw recall order (previously bulk actions could act on the wrong memories whenever a group-by or pinning was active).
+- Context Builder placeholders now show an ellipsis (…) instead of a literal `\u2026` escape sequence.
+
+**MCP**
+- Inbox tools (`memory_inbox_approve`, `memory_inbox_reject`, `memory_inbox_edit`) now accept the `review_id` parameter documented in the MCP contract; the previous `id` name is still accepted as an alias, so existing callers keep working.
 
 ## [0.3.0] - 2026-03-03
 
