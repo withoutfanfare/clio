@@ -40,10 +40,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `RecallQuery.exclude_expired` (default false): an opt-in filter that drops memories whose `valid_until` is in the past, applied across keyword, recent, and semantic recall. Previously `valid_until` was stored but never consulted, so known-stale facts ranked as current.
 - Write-path deduplication: capturing or approving content identical to an existing non-archived memory in the same namespace now returns that memory instead of creating a duplicate row (`repository::find_content_duplicate`), so a known fact never duplicates or clogs the review inbox.
 
+**Context assembly**
+- `ContextRequest.char_budget` (CLI `clio brief --char-budget`, MCP `memory_context` `char_budget`): greedily truncates a context brief once the summed content length is reached, so briefs never balloon.
+
+**Daemon maintenance**
+- `daemon.maintenance` settings (`backup_interval_secs`, `backup_max_backups`, `integrity_interval_secs`; all off by default) and a scheduler task that runs local database backups and log-only integrity checks on their configured intervals. Both are pure-local (no LLM); consolidation stays on the session-stop hook.
+
+**Deduplication**
+- Migration `007_content_dedup_index`: a `(namespace, length(content))` index that prunes the exact-content duplicate probe cheaply at scale.
+- `repository::find_archived_duplicate`: the capture path now revives an archived duplicate instead of creating a fresh live row.
+
 ### Changed
+
+**MCP surface**
+- Rewrote the server instructions (~55 → ~180 words): namespace resolution order, tool-choice guidance (`recall` vs `search` vs `recent` vs `remember` vs `capture`), `memory_context` presets, archive-is-soft-delete, and the JSON response hint.
+- Merged `memory_inbox_list`/`memory_inbox_approve`/`memory_inbox_reject`/`memory_inbox_edit` into a single `memory_inbox(action, …)` tool. Deprecated `memory_recent` in favour of `memory_recall` with no `query` (retained as an alias for one release).
+- Fail-fast tool descriptions: `memory_search`/`memory_suggest_links` state they need a configured embedding backend; `memory_remember` states upsert needs both `source` and `source_ref`; `memory_suggest_links.threshold` explains cosine direction.
+- Slimmed the markdown recall card (one-line metadata; dropped `rank` and full timestamps) for ~30% fewer tokens; the full fields remain available via `response_format:"json"`.
 
 **Retrieval**
 - Semantic search now applies the same composite relevance scoring as keyword recall — time decay × access frequency × importance — on top of the hybrid semantic+keyword score, so the two retrieval paths rank consistently. Extracted into `clio-core::scoring::composite_multiplier`; neutral when `decay_lambda = 0.0` (preserves the backwards-compatibility invariant).
+- The semantic keyword boost is now proportional to normalised BM25 match strength instead of a flat `0.3`, so a weak FTS hit no longer earns the same lift as a strong one. Pure-semantic ordering is preserved when there are no FTS hits.
+- Context briefs de-duplicate memories across preset sections (a decision tagged as a constraint no longer appears twice).
 
 **Desktop app**
 - Memory cards now show importance with the same accent-fill dots used in the compose and drawer editors, replacing an inconsistent multi-colour scale.
@@ -51,14 +69,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+**Core**
+- `recall_scoped` now pages correctly across the detected and `global` namespaces — the global fill no longer hard-codes `offset: 0`, so `offset > 0` pages across the merged result — and reports an honest `total`.
+- `PRAGMA wal_autocheckpoint = 1000` plus a daemon WAL checkpoint (`PASSIVE`) on shutdown keep the `-wal` file bounded on long-lived processes.
+
 **Desktop app**
+- Semantic search and link suggestions now run on a blocking thread pool (`spawn_blocking`), so a large embedding scan no longer freezes the UI main thread.
 - Compose "Add details" now persists the title and tags entered — previously only the body text and namespace were saved, so those fields were silently discarded.
 - Keyboard navigation (`j`/`k`) now highlights the correct card when memories are pinned or grouped; focus order follows the rendered order rather than the raw recall order.
 - Shift-click range selection now selects the correct cards when memories are pinned or grouped — like keyboard nav, it follows the rendered order rather than the raw recall order (previously bulk actions could act on the wrong memories whenever a group-by or pinning was active).
 - Context Builder placeholders now show an ellipsis (…) instead of a literal `\u2026` escape sequence.
 
 **MCP**
-- Inbox tools (`memory_inbox_approve`, `memory_inbox_reject`, `memory_inbox_edit`) now accept the `review_id` parameter documented in the MCP contract; the previous `id` name is still accepted as an alias, so existing callers keep working.
+- The `memory_inbox` tool accepts the `review_id` parameter documented in the MCP contract; the previous `id` name is still accepted as an alias, so existing callers keep working.
 
 ## [0.3.0] - 2026-03-03
 
