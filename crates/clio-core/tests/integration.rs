@@ -1960,3 +1960,50 @@ fn semantic_recall_excludes_expired_when_requested() {
     assert_eq!(live_only.len(), 1);
     assert_eq!(live_only[0].memory.id, live.id);
 }
+
+// ---------------------------------------------------------------------------
+// Scoped recall paging (detected namespace first, global fill)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn recall_scoped_pages_across_namespaces() {
+    let conn = test_db();
+
+    // Three memories in the detected namespace, three in global (disjoint).
+    for i in 0..3 {
+        remember_in(&conn, "projectx", &format!("scoped fact {i}"));
+    }
+    for i in 0..3 {
+        remember_in(&conn, "global", &format!("global fact {i}"));
+    }
+
+    let page = |offset: u32, limit: u32| {
+        repository::recall_scoped(
+            &conn,
+            &RecallQuery {
+                limit,
+                offset,
+                ..RecallQuery::default()
+            },
+            "projectx",
+        )
+        .unwrap()
+    };
+
+    // Page 1: scoped namespace takes priority; total counts both namespaces once.
+    let p1 = page(0, 2);
+    assert_eq!(p1.total, 6);
+    assert_eq!(p1.count, 2);
+    assert!(p1.items.iter().all(|it| it.memory.namespace == "projectx"));
+
+    // Page 2 (offset 2): pages across the boundary — last scoped + first global.
+    let p2 = page(2, 2);
+    assert_eq!(p2.total, 6);
+    assert_eq!(p2.count, 2);
+    assert_eq!(p2.items[0].memory.namespace, "projectx");
+    assert_eq!(p2.items[1].memory.namespace, "global");
+
+    // No id appears on both pages.
+    let ids1: std::collections::HashSet<_> = p1.items.iter().map(|i| &i.memory.id).collect();
+    assert!(p2.items.iter().all(|i| !ids1.contains(&i.memory.id)));
+}

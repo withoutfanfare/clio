@@ -184,6 +184,19 @@ async fn run(
         let _ = h.await;
     }
 
+    // Checkpoint the WAL so the -wal file doesn't outlive this long-lived
+    // process unbounded. Best-effort — never block a clean shutdown.
+    match clio_core::db::open(&db_path) {
+        Ok(conn) => {
+            if let Err(e) = conn.execute_batch("PRAGMA wal_checkpoint(PASSIVE);") {
+                tracing::warn!("WAL checkpoint on shutdown failed: {e}");
+            } else {
+                tracing::info!("WAL checkpointed on shutdown");
+            }
+        }
+        Err(e) => tracing::warn!("could not open DB for shutdown checkpoint: {e}"),
+    }
+
     // Clean up PID file and socket.
     if let Err(e) = pid_file.remove() {
         tracing::warn!("failed to remove PID file: {e}");

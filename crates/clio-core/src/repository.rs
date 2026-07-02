@@ -852,10 +852,11 @@ fn append_filters(
 
 /// Recall within the detected namespace, then fill any remaining slots from `global`.
 ///
-/// The two passes query disjoint namespaces, so `total` is the sum of both passes
-/// (each memory counted once). Note: the global fill always starts at `offset: 0`,
-/// so this convenience path is intended for first-page recall — paging with
-/// `offset > 0` does not page meaningfully across the combined result set.
+/// The detected namespace takes priority; any remaining slots are filled from
+/// `global`. The two passes query disjoint namespaces (a memory has exactly one
+/// namespace), so `total` is the sum of both passes with each memory counted
+/// once. Paging is applied in-process across the merged set, so `offset > 0`
+/// pages meaningfully across the combined result.
 pub fn recall_scoped(
     conn: &Connection,
     query: &RecallQuery,
@@ -866,52 +867,55 @@ pub fn recall_scoped(
         return recall(conn, query);
     }
 
-    // First: search within the detected namespace.
-    let scoped_query = RecallQuery {
-        namespace: Some(detected_namespace.to_string()),
-        ..query.clone()
-    };
-    let scoped = recall(conn, &scoped_query)?;
+    // Fetch a full window (offset + limit) from each namespace at offset 0, then
+    // merge and page in-process — a single namespace's offset can't be trusted
+    // to line up with the merged ordering.
+    let window = query.offset.saturating_add(query.limit);
 
-    // If we already have enough results, return them.
-    if scoped.count >= query.limit {
-        return Ok(scoped);
-    }
+    let scoped = recall(
+        conn,
+        &RecallQuery {
+            namespace: Some(detected_namespace.to_string()),
+            limit: window,
+            offset: 0,
+            ..query.clone()
+        },
+    )?;
+    let global = recall(
+        conn,
+        &RecallQuery {
+            namespace: Some("global".to_string()),
+            limit: window,
+            offset: 0,
+            ..query.clone()
+        },
+    )?;
 
-    // Second: search global namespace for additional results.
-    let remaining = query.limit.saturating_sub(scoped.count);
-    let global_query = RecallQuery {
-        namespace: Some("global".to_string()),
-        limit: remaining,
-        offset: 0,
-        ..query.clone()
-    };
-    let global = recall(conn, &global_query)?;
-
-    // Merge results, deduplicating by id (scoped results take priority).
+    // Merge scoped-first, deduplicating by id (scoped results take priority).
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut merged_items = Vec::new();
-
-    for item in scoped.items {
-        seen.insert(item.memory.id.clone());
-        merged_items.push(item);
-    }
-
-    for item in global.items {
+    for item in scoped.items.into_iter().chain(global.items) {
         if seen.insert(item.memory.id.clone()) {
             merged_items.push(item);
         }
     }
 
-    let count = merged_items.len() as u32;
+    // Disjoint namespaces, so total matches = sum of both, each counted once.
     let total = scoped.total + global.total;
+
+    // Apply the caller's offset/limit across the merged set.
+    let paged: Vec<_> = merged_items
+        .into_iter()
+        .skip(query.offset as usize)
+        .take(query.limit as usize)
+        .collect();
 
     Ok(RecallResult {
         total,
-        count,
+        count: paged.len() as u32,
         offset: query.offset,
         limit: query.limit,
-        items: merged_items,
+        items: paged,
     })
 }
 

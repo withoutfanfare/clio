@@ -1,97 +1,110 @@
 use std::sync::Mutex;
 
-use tauri::State;
+use tauri::{AppHandle, Manager, State};
 
 use clio_core::models::{Memory, RecallResult};
 
 use crate::{AppState, BackendState, CommandError};
 
+/// The O(N) embedding scan runs on a blocking thread pool so it never freezes
+/// the Tauri main thread. `AppHandle` is `Send + 'static`, so we resolve the
+/// managed state inside the closure rather than borrowing it across the await.
 #[tauri::command]
-pub fn cmd_search(
-    state: State<'_, Mutex<AppState>>,
+pub async fn cmd_search(
+    app: AppHandle,
     query: String,
     namespace: Option<String>,
     include_archived: Option<bool>,
     limit: Option<u32>,
 ) -> Result<RecallResult, CommandError> {
-    let app = state
-        .lock()
-        .map_err(|e| CommandError::Core(format!("Lock poisoned: {e}")))?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<Mutex<AppState>>();
+        let app = state
+            .lock()
+            .map_err(|e| CommandError::Core(format!("Lock poisoned: {e}")))?;
 
-    let backend = match &app.backend {
-        BackendState::Ready(b) => b,
-        BackendState::Loading => {
-            return Err(CommandError::Config(
-                "Embedding backend is still loading. Please try again shortly.".into(),
-            ));
-        }
-        BackendState::Unavailable(reason) => {
-            return Err(CommandError::Config(format!(
-                "Embedding backend unavailable: {reason}"
-            )));
-        }
-    };
+        let backend = match &app.backend {
+            BackendState::Ready(b) => b,
+            BackendState::Loading => {
+                return Err(CommandError::Config(
+                    "Embedding backend is still loading. Please try again shortly.".into(),
+                ));
+            }
+            BackendState::Unavailable(reason) => {
+                return Err(CommandError::Config(format!(
+                    "Embedding backend unavailable: {reason}"
+                )));
+            }
+        };
 
-    let query_embedding = backend.embed_one(&query)?;
+        let query_embedding = backend.embed_one(&query)?;
 
-    let items = clio_core::embeddings::semantic_recall(
-        &app.conn,
-        &query,
-        &query_embedding,
-        namespace.as_deref(),
-        include_archived.unwrap_or(false),
-        false,
-        Some(&app.settings.scoring),
-        limit.unwrap_or(10),
-    )?;
+        let items = clio_core::embeddings::semantic_recall(
+            &app.conn,
+            &query,
+            &query_embedding,
+            namespace.as_deref(),
+            include_archived.unwrap_or(false),
+            false,
+            Some(&app.settings.scoring),
+            limit.unwrap_or(10),
+        )?;
 
-    let count = items.len() as u32;
-    Ok(RecallResult {
-        total: count,
-        count,
-        offset: 0,
-        limit: limit.unwrap_or(10),
-        items,
+        let count = items.len() as u32;
+        Ok(RecallResult {
+            total: count,
+            count,
+            offset: 0,
+            limit: limit.unwrap_or(10),
+            items,
+        })
     })
+    .await
+    .map_err(|e| CommandError::Core(format!("Search task failed: {e}")))?
 }
 
 #[tauri::command]
-pub fn cmd_suggest_links(
-    state: State<'_, Mutex<AppState>>,
+pub async fn cmd_suggest_links(
+    app: AppHandle,
     memory_id: String,
     threshold: Option<f64>,
     limit: Option<u32>,
 ) -> Result<Vec<SuggestionResult>, CommandError> {
-    let app = state
-        .lock()
-        .map_err(|e| CommandError::Core(format!("Lock poisoned: {e}")))?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<Mutex<AppState>>();
+        let app = state
+            .lock()
+            .map_err(|e| CommandError::Core(format!("Lock poisoned: {e}")))?;
 
-    let backend = match &app.backend {
-        BackendState::Ready(b) => b,
-        BackendState::Loading => {
-            return Err(CommandError::Config(
-                "Embedding backend is still loading. Please try again shortly.".into(),
-            ));
-        }
-        BackendState::Unavailable(reason) => {
-            return Err(CommandError::Config(format!(
-                "Embedding backend unavailable: {reason}"
-            )));
-        }
-    };
+        let backend = match &app.backend {
+            BackendState::Ready(b) => b,
+            BackendState::Loading => {
+                return Err(CommandError::Config(
+                    "Embedding backend is still loading. Please try again shortly.".into(),
+                ));
+            }
+            BackendState::Unavailable(reason) => {
+                return Err(CommandError::Config(format!(
+                    "Embedding backend unavailable: {reason}"
+                )));
+            }
+        };
 
-    let suggestions = clio_core::embeddings::suggest_links(
-        &app.conn,
-        &memory_id,
-        backend.as_ref(),
-        threshold.unwrap_or(0.7),
-        limit.unwrap_or(5),
-    )?;
+        let suggestions = clio_core::embeddings::suggest_links(
+            &app.conn,
+            &memory_id,
+            backend.as_ref(),
+            threshold.unwrap_or(0.7),
+            limit.unwrap_or(5),
+        )?;
 
-    Ok(suggestions
-        .into_iter()
-        .map(|(memory, similarity)| SuggestionResult { memory, similarity })
-        .collect())
+        Ok(suggestions
+            .into_iter()
+            .map(|(memory, similarity)| SuggestionResult { memory, similarity })
+            .collect())
+    })
+    .await
+    .map_err(|e| CommandError::Core(format!("Suggest-links task failed: {e}")))?
 }
 
 #[derive(serde::Serialize)]
