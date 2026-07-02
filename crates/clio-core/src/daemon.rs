@@ -41,6 +41,41 @@ pub struct DaemonConfig {
     /// Automatic link inference configuration.
     #[serde(default)]
     pub auto_link: AutoLinkConfig,
+
+    /// Periodic maintenance jobs (backup, integrity check).
+    #[serde(default)]
+    pub maintenance: MaintenanceConfig,
+}
+
+/// Configuration for periodic daemon maintenance jobs. All intervals default to
+/// `0`, meaning the job is disabled — nothing runs on a timer unless opted in.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MaintenanceConfig {
+    /// Seconds between database backups. `0` disables (default).
+    #[serde(default)]
+    pub backup_interval_secs: u64,
+
+    /// How many timestamped backups to retain.
+    #[serde(default = "default_max_backups")]
+    pub backup_max_backups: u32,
+
+    /// Seconds between integrity checks (log-only). `0` disables (default).
+    #[serde(default)]
+    pub integrity_interval_secs: u64,
+}
+
+fn default_max_backups() -> u32 {
+    7
+}
+
+impl Default for MaintenanceConfig {
+    fn default() -> Self {
+        Self {
+            backup_interval_secs: 0,
+            backup_max_backups: default_max_backups(),
+            integrity_interval_secs: 0,
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

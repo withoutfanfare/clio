@@ -168,6 +168,16 @@ const MIGRATIONS: &[Migration] = &[
                 ON review_queue(created_at DESC);
         "#,
     },
+    Migration {
+        version: "007_content_dedup_index",
+        sql: r#"
+            -- Speeds up the exact-content duplicate probe (capture / review) by
+            -- narrowing candidates on (namespace, content length) before the full
+            -- content comparison — cheaper than indexing full content.
+            CREATE INDEX IF NOT EXISTS idx_memories_content_dedup
+                ON memories(namespace, length(content));
+        "#,
+    },
 ];
 
 /// Run all pending migrations inside a transaction.

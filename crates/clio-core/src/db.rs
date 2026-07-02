@@ -46,7 +46,8 @@ fn apply_pragmas(conn: &Connection) -> Result<()> {
          PRAGMA foreign_keys = ON;
          PRAGMA busy_timeout = 5000;
          PRAGMA synchronous = NORMAL;
-         PRAGMA temp_store = MEMORY;",
+         PRAGMA temp_store = MEMORY;
+         PRAGMA wal_autocheckpoint = 1000;",
     )?;
     Ok(())
 }

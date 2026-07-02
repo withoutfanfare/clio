@@ -5,6 +5,7 @@
 
 mod auto_linker;
 mod control;
+mod maintenance;
 mod watcher;
 
 use std::path::PathBuf;
@@ -148,6 +149,13 @@ async fn run(
         None
     };
 
+    // Start the maintenance scheduler (idles unless backup/integrity intervals set).
+    let maintenance_handle = tokio::spawn(maintenance::run(
+        db_path.clone(),
+        settings.clone(),
+        shutdown_tx.subscribe(),
+    ));
+
     // Start auto-linker if enabled.
     let auto_linker_handle = if settings.daemon.auto_link.enabled {
         match shared_backend.clone() {
@@ -182,6 +190,20 @@ async fn run(
     }
     if let Some(h) = auto_linker_handle {
         let _ = h.await;
+    }
+    let _ = maintenance_handle.await;
+
+    // Checkpoint the WAL so the -wal file doesn't outlive this long-lived
+    // process unbounded. Best-effort — never block a clean shutdown.
+    match clio_core::db::open(&db_path) {
+        Ok(conn) => {
+            if let Err(e) = conn.execute_batch("PRAGMA wal_checkpoint(PASSIVE);") {
+                tracing::warn!("WAL checkpoint on shutdown failed: {e}");
+            } else {
+                tracing::info!("WAL checkpointed on shutdown");
+            }
+        }
+        Err(e) => tracing::warn!("could not open DB for shutdown checkpoint: {e}"),
     }
 
     // Clean up PID file and socket.

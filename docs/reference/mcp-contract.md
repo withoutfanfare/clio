@@ -364,6 +364,9 @@ Fetch one memory by id.
 
 ## `memory_recent`
 
+**Deprecated** — use `memory_recall` with no `query` (it falls through to a
+recent-style listing). Retained as an alias for one release, then removed.
+
 Return recent memories with optional filtering and sorting.
 
 ### Input
@@ -1123,76 +1126,32 @@ Agents often need to load relevant context before starting work. Instead of issu
 - invalid preset name → validation error
 - storage failure
 
-## `memory_inbox_list`
+## `memory_inbox`
 
-List pending review queue items.
+Review the capture inbox (low-confidence memories awaiting review). A single
+tool dispatched by `action`. Replaces the former `memory_inbox_list`,
+`memory_inbox_approve`, `memory_inbox_reject`, and `memory_inbox_edit` tools.
 
 ### Input
 
+`action` is required. `review_id` is required for `approve`/`reject`/`edit`,
+ignored for `list`.
+
 ```json
-{
-  "limit": 20,
-  "response_format": "markdown"
-}
+{ "action": "list", "limit": 20, "response_format": "markdown" }
 ```
 
-### Defaults
-
-- `limit`: `20`
-- `response_format`: `markdown`
-
-### Behaviour
-
-- returns items with `status = 'pending'`, ordered by `created_at ASC`
-
-## `memory_inbox_approve`
-
-Approve a review queue item, converting it to a stored memory.
-
-### Input
-
 ```json
-{
-  "review_id": "01954d70-cf20-7d42-bb3b-ff2f0f0de123"
-}
+{ "action": "approve", "review_id": "01954d70-cf20-7d42-bb3b-ff2f0f0de123" }
 ```
 
-### Behaviour
-
-- creates a memory from the suggested fields via `repository::remember()`
-- sets review item status to `approved` and `reviewed_at` to now
-- returns the created memory record
-
-### Failure cases
-
-- review item not found
-- review item already approved/rejected
-
-## `memory_inbox_reject`
-
-Reject a review queue item.
-
-### Input
-
 ```json
-{
-  "review_id": "01954d70-cf20-7d42-bb3b-ff2f0f0de123"
-}
+{ "action": "reject", "review_id": "01954d70-cf20-7d42-bb3b-ff2f0f0de123" }
 ```
 
-### Behaviour
-
-- sets status to `rejected` and `reviewed_at` to now
-- returns the updated review item
-
-## `memory_inbox_edit`
-
-Edit suggested fields on a review queue item before approval.
-
-### Input
-
 ```json
 {
+  "action": "edit",
   "review_id": "01954d70-cf20-7d42-bb3b-ff2f0f0de123",
   "namespace": "project:ai",
   "kind": "decision",
@@ -1202,11 +1161,27 @@ Edit suggested fields on a review queue item before approval.
 }
 ```
 
+### Defaults
+
+- `action`: required (`list` | `approve` | `reject` | `edit`)
+- `limit`: `20` (list only)
+- `response_format`: `markdown` (list only)
+
 ### Behaviour
 
-- updates only the fields provided (all optional)
-- sets status to `edited`
-- item still requires approval via `memory_inbox_approve`
+- `list`: returns items with `status = 'pending'`, ordered by `created_at ASC`
+- `approve`: creates a memory from the suggested fields via
+  `repository::remember()`, sets status to `approved` and `reviewed_at` to now,
+  returns the created memory
+- `reject`: sets status to `rejected` and `reviewed_at` to now, returns the item
+- `edit`: updates only the provided fields, sets status to `edited`; the item
+  still requires `action: "approve"` afterwards
+
+### Failure cases
+
+- unknown `action`
+- `approve`/`reject`/`edit` without `review_id`
+- review item not found, or already approved/rejected
 
 ## Tool Annotation Guidance
 
@@ -1231,10 +1206,7 @@ Recommended annotation intent:
 | `memory_activity` | true | false | true |
 | `memory_suggest_links` | true | false | false |
 | `memory_context` | true | false | true |
-| `memory_inbox_list` | true | false | true |
-| `memory_inbox_approve` | false | false | false |
-| `memory_inbox_reject` | false | false | true |
-| `memory_inbox_edit` | false | false | false |
+| `memory_inbox` | false | false | false |
 
 ## Output Discipline
 
