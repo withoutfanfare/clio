@@ -251,11 +251,34 @@ pub fn update(
 
 /// Fetch a single memory by id.
 /// Return the id of a non-archived memory in `namespace` with byte-identical
-/// content, if one exists. Used to suppress duplicate writes on the capture
-/// and review-approval paths. Archived memories are excluded — archive means
-/// hidden, so a re-capture should create a fresh live memory rather than match
-/// a hidden one.
+/// content, if one exists. Used to suppress duplicate writes on the capture and
+/// review-approval paths. Archived memories are excluded here; the capture path
+/// handles an archived twin separately via [`find_archived_duplicate`], reviving
+/// it rather than creating a fresh live row.
 pub fn find_content_duplicate(
+    conn: &Connection,
+    namespace: &str,
+    content: &str,
+) -> Result<Option<String>> {
+    // `length(content) = length(?2)` lets the (namespace, length(content)) index
+    // prune candidates before the full content comparison.
+    let id = conn
+        .query_row(
+            "SELECT id FROM memories
+             WHERE namespace = ?1 AND length(content) = length(?2) AND content = ?2
+               AND archived_at IS NULL
+             ORDER BY created_at ASC LIMIT 1",
+            params![namespace, content],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?;
+    Ok(id)
+}
+
+/// Return the id of an **archived** memory in `namespace` with byte-identical
+/// content, if one exists (and no live twin does). The capture path uses this to
+/// revive an archived duplicate rather than creating a fresh live row.
+pub fn find_archived_duplicate(
     conn: &Connection,
     namespace: &str,
     content: &str,
@@ -263,7 +286,8 @@ pub fn find_content_duplicate(
     let id = conn
         .query_row(
             "SELECT id FROM memories
-             WHERE namespace = ?1 AND content = ?2 AND archived_at IS NULL
+             WHERE namespace = ?1 AND length(content) = length(?2) AND content = ?2
+               AND archived_at IS NOT NULL
              ORDER BY created_at ASC LIMIT 1",
             params![namespace, content],
             |row| row.get::<_, String>(0),

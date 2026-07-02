@@ -1931,6 +1931,52 @@ fn semantic_recall_importance_lifts_weaker_match_when_scoring_enabled() {
 }
 
 #[test]
+fn semantic_recall_keyword_boost_is_proportional() {
+    use clio_core::embeddings::{semantic_recall, store_embedding};
+
+    let conn = test_db();
+
+    // STRONG_KW: short doc containing the phrase — high BM25.
+    let strong = remember_simple(&conn, "borrow checker");
+    store_embedding(&conn, &strong.id, "test", 2, &[0.8, 0.6]).unwrap();
+
+    // WEAK_KW: same phrase but buried in a long doc — lower BM25. Same cosine.
+    let padding = "padding filler text ".repeat(40);
+    let weak = remember_simple(&conn, &format!("borrow checker {padding}"));
+    store_embedding(&conn, &weak.id, "test", 2, &[0.8, 0.6]).unwrap();
+
+    // SEM: perfect cosine but no keyword match at all.
+    let sem = remember_simple(&conn, "quantum entanglement");
+    store_embedding(&conn, &sem.id, "test", 2, &[1.0, 0.0]).unwrap();
+
+    let query = [1.0_f32, 0.0];
+    let items = semantic_recall(
+        &conn,
+        "borrow checker",
+        &query,
+        None,
+        false,
+        false,
+        None,
+        10,
+    )
+    .unwrap();
+
+    let pos = |id: &str| items.iter().position(|it| it.memory.id == id).unwrap();
+
+    // Stronger keyword match earns more boost → outranks the weaker one at equal cosine.
+    assert!(
+        pos(&strong.id) < pos(&weak.id),
+        "stronger BM25 match should rank above the weaker one"
+    );
+    // A pure strong-semantic hit still beats a weak keyword match (boost doesn't over-lift).
+    assert!(
+        pos(&sem.id) < pos(&weak.id),
+        "strong semantic should outrank a weak keyword match"
+    );
+}
+
+#[test]
 fn semantic_recall_excludes_expired_when_requested() {
     use clio_core::embeddings::{semantic_recall, store_embedding};
 
@@ -1959,6 +2005,43 @@ fn semantic_recall_excludes_expired_when_requested() {
     let live_only = semantic_recall(&conn, "zzqq", &query, None, false, true, None, 10).unwrap();
     assert_eq!(live_only.len(), 1);
     assert_eq!(live_only[0].memory.id, live.id);
+}
+
+// ---------------------------------------------------------------------------
+// Content-duplicate probes (capture dedup + archived-twin revival)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn content_duplicate_probes_split_live_and_archived() {
+    let conn = test_db();
+    let m = remember_in(&conn, "project:x", "a durable fact worth keeping");
+
+    // Live: found by find_content_duplicate, not by the archived probe.
+    assert_eq!(
+        repository::find_content_duplicate(&conn, "project:x", "a durable fact worth keeping")
+            .unwrap()
+            .as_deref(),
+        Some(m.id.as_str())
+    );
+    assert!(
+        repository::find_archived_duplicate(&conn, "project:x", "a durable fact worth keeping")
+            .unwrap()
+            .is_none()
+    );
+
+    // Once archived, the roles swap: live probe misses it, archived probe finds it.
+    repository::archive(&conn, &m.id).unwrap();
+    assert!(
+        repository::find_content_duplicate(&conn, "project:x", "a durable fact worth keeping")
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        repository::find_archived_duplicate(&conn, "project:x", "a durable fact worth keeping")
+            .unwrap()
+            .as_deref(),
+        Some(m.id.as_str())
+    );
 }
 
 // ---------------------------------------------------------------------------

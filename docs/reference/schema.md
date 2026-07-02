@@ -343,6 +343,10 @@ CREATE INDEX idx_memories_last_accessed_at
 CREATE INDEX idx_memory_tags_tag ON memory_tags(tag);
 CREATE INDEX idx_memory_links_from ON memory_links(from_memory_id);
 CREATE INDEX idx_memory_links_to ON memory_links(to_memory_id);
+
+-- Migration 007: narrows the exact-content duplicate probe on the capture and
+-- review paths by (namespace, content length) before the full comparison.
+CREATE INDEX idx_memories_content_dedup ON memories(namespace, length(content));
 ```
 
 ### Index rationale
@@ -351,6 +355,8 @@ CREATE INDEX idx_memory_links_to ON memory_links(to_memory_id);
 - `archived_at` supports the default active-only behaviour
 - `source + source_ref` supports safe idempotent writes
 - tag and link indexes support relationship and tag traversal later
+- `(namespace, length(content))` prunes the content-dedup probe cheaply at scale
+  without indexing full content
 
 ## Full-Text Search
 
@@ -374,6 +380,14 @@ CREATE VIRTUAL TABLE memory_fts USING fts5(
 - `summary` improves short-result quality
 - `content` is the main payload
 - `tags_text` lets tags influence recall without complex joins
+
+### Tokeniser behaviour
+
+`tokenize='porter unicode61'` applies Porter stemming over Unicode-folded terms,
+so queries match across inflections: `test` matches `tests`/`tested`/`testing`,
+`run` matches `running`. The recall sanitiser quotes each term individually
+(neutralising FTS operators), so multi-term queries are an implicit AND over
+stemmed tokens. Boolean operators (`OR`, `NOT`) are not exposed to callers.
 
 ### Triggers
 

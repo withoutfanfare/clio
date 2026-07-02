@@ -590,6 +590,19 @@ fn store_or_queue(
         return Ok(CaptureResult::Stored(memory));
     }
 
+    // If the only twin is archived, revive it rather than creating a duplicate
+    // live row — a re-capture of a hidden fact should bring it back.
+    if let Some(archived_id) = crate::repository::find_archived_duplicate(conn, namespace, content)?
+    {
+        let memory = crate::repository::unarchive(conn, &archived_id)?;
+        tracing::debug!(
+            "capture revived archived duplicate {} in {}",
+            archived_id,
+            namespace
+        );
+        return Ok(CaptureResult::Stored(memory));
+    }
+
     // Check whether this capture should be routed to the review queue.
     if let Some(threshold) = settings.capture.review_threshold {
         if classification.confidence < threshold {

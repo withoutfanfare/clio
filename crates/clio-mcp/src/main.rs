@@ -360,6 +360,10 @@ struct ContextParams {
     #[serde(default = "default_max_items")]
     max_items: u32,
 
+    /// Character budget for the whole brief (sections truncated greedily once reached).
+    #[serde(default)]
+    char_budget: Option<u32>,
+
     /// Include linked memories.
     #[serde(default)]
     include_links: bool,
@@ -1589,6 +1593,7 @@ impl ClioServer {
                 preset,
                 query: params.query,
                 max_items,
+                char_budget: params.char_budget,
                 include_links: params.include_links,
                 scoring: Some(settings.scoring.clone()),
             };
