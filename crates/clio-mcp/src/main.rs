@@ -324,7 +324,8 @@ struct SuggestLinksParams {
     /// Memory ID.
     memory_id: String,
 
-    /// Min similarity 0.0–1.0.
+    /// Minimum cosine similarity (0.0–1.0). Only suggestions at or above this are
+    /// returned: lower = more permissive (more, looser links); 0.9+ = near-identical.
     #[serde(default = "default_threshold")]
     threshold: f64,
 
@@ -369,61 +370,47 @@ struct ContextParams {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
-struct InboxListParams {
-    /// Max pending items to return.
+struct InboxParams {
+    /// Action: list | approve | reject | edit.
+    action: String,
+
+    /// Review item ID. Required for approve/reject/edit; ignored for list.
+    #[serde(default, alias = "id")]
+    review_id: Option<String>,
+
+    /// Max pending items to return (list only).
     #[serde(default = "default_inbox_limit")]
     limit: u32,
 
-    /// Format: markdown|json.
+    /// Format: markdown|json (list only).
     #[serde(default = "default_response_format")]
     response_format: String,
-}
 
-#[derive(Debug, Deserialize, JsonSchema)]
-struct InboxApproveParams {
-    /// Review item ID.
-    #[serde(alias = "id")]
-    review_id: String,
-}
-
-#[derive(Debug, Deserialize, JsonSchema)]
-struct InboxRejectParams {
-    /// Review item ID.
-    #[serde(alias = "id")]
-    review_id: String,
-}
-
-#[derive(Debug, Deserialize, JsonSchema)]
-struct InboxEditParams {
-    /// Review item ID.
-    #[serde(alias = "id")]
-    review_id: String,
-
-    /// Override suggested namespace.
+    /// Edit override: suggested namespace.
     #[serde(default)]
     namespace: Option<String>,
 
-    /// Override suggested kind.
+    /// Edit override: suggested kind.
     #[serde(default)]
     kind: Option<String>,
 
-    /// Override suggested title.
+    /// Edit override: suggested title.
     #[serde(default)]
     title: Option<String>,
 
-    /// Override suggested summary.
+    /// Edit override: suggested summary.
     #[serde(default)]
     summary: Option<String>,
 
-    /// Override suggested tags.
+    /// Edit override: suggested tags.
     #[serde(default)]
     tags: Option<Vec<String>>,
 
-    /// Override suggested importance (1-5).
+    /// Edit override: suggested importance (1-5).
     #[serde(default)]
     importance: Option<i32>,
 
-    /// Override suggested confidence (0.0-1.0).
+    /// Edit override: suggested confidence (0.0-1.0).
     #[serde(default)]
     confidence: Option<f64>,
 }
@@ -614,24 +601,14 @@ fn format_clio_error(err: &ClioError) -> String {
 fn memory_card_md(item: &RecallItem) -> String {
     let m = &item.memory;
     let heading = m.title.as_deref().unwrap_or(&m.id);
-    let tags_str = if m.tags.is_empty() {
-        "none".to_string()
-    } else {
-        m.tags.join(", ")
-    };
 
-    let mut md = format!("### {heading}\n");
-    md.push_str(&format!("- **ID:** {}\n", m.id));
-    md.push_str(&format!("- **Namespace:** {}\n", m.namespace));
-    md.push_str(&format!("- **Kind:** {}\n", m.kind));
-    md.push_str(&format!("- **Tags:** {tags_str}\n"));
-    md.push_str(&format!("- **Updated:** {}\n", m.updated_at));
-
-    if let Some(rank) = item.rank {
-        md.push_str(&format!("- **Rank:** {rank:.3}\n"));
+    // Compact one-line metadata: `id` · namespace/kind · tags. Rank and full
+    // timestamps are dropped from the card to save tokens — they remain in the
+    // `response_format:"json"` payload for callers that need them.
+    let mut meta = format!("`{}` · {}/{}", m.id, m.namespace, m.kind);
+    if !m.tags.is_empty() {
+        meta.push_str(&format!(" · {}", m.tags.join(", ")));
     }
-
-    md.push('\n');
 
     let preview = m.summary.as_deref().unwrap_or(&m.content);
     let truncated = if preview.len() > 200 {
@@ -639,9 +616,11 @@ fn memory_card_md(item: &RecallItem) -> String {
     } else {
         preview.to_string()
     };
-    md.push_str(&format!("> {}\n", truncated.replace('\n', "\n> ")));
 
-    md
+    format!(
+        "### {heading}\n{meta}\n> {}\n",
+        truncated.replace('\n', "\n> ")
+    )
 }
 
 /// Render a recall result as Markdown.
@@ -1011,7 +990,10 @@ impl ClioServer {
     }
 
     /// Store a memory record.
-    #[tool(description = "Store a memory. Upserts if upsert=true with source+source_ref.")]
+    #[tool(
+        description = "Store a memory. Upsert (replace-in-place) requires BOTH `source` and \
+                       `source_ref`; without both, a new record is always inserted."
+    )]
     async fn memory_remember(
         &self,
         Parameters(params): Parameters<RememberParams>,
@@ -1081,7 +1063,10 @@ impl ClioServer {
     }
 
     /// Full-text search and filter memories.
-    #[tool(description = "Full-text search and filter memories.")]
+    #[tool(
+        description = "Keyword/full-text (FTS) search and filter memories. Omit `query` for a \
+                       recent-style listing. Pass `cwd` for namespace auto-detection."
+    )]
     async fn memory_recall(
         &self,
         Parameters(params): Parameters<RecallParams>,
@@ -1168,7 +1153,9 @@ impl ClioServer {
     }
 
     /// List recent memories.
-    #[tool(description = "List recent memories.")]
+    #[tool(
+        description = "Deprecated: use memory_recall with no `query` instead. Lists recent memories."
+    )]
     async fn memory_recent(
         &self,
         Parameters(params): Parameters<RecentParams>,
@@ -1398,7 +1385,11 @@ impl ClioServer {
     }
 
     /// Semantic vector search.
-    #[tool(description = "Semantic vector search for similar memories.")]
+    #[tool(
+        description = "Semantic (vector) search for similar memories. Requires a configured \
+                       embedding backend; returns a configuration error otherwise (use \
+                       memory_recall for keyword search when embeddings are unavailable)."
+    )]
     async fn memory_search(
         &self,
         Parameters(params): Parameters<SearchParams>,
@@ -1517,7 +1508,10 @@ impl ClioServer {
     }
 
     /// Suggest links by similarity.
-    #[tool(description = "Suggest links based on embedding similarity.")]
+    #[tool(
+        description = "Suggest links based on embedding similarity. Requires a configured \
+                       embedding backend; returns a configuration error otherwise."
+    )]
     async fn memory_suggest_links(
         &self,
         Parameters(params): Parameters<SuggestLinksParams>,
@@ -1613,98 +1607,92 @@ impl ClioServer {
         .map_err(|e| format!("Internal error: task failed: {e}"))?
     }
 
-    /// List pending review items.
+    /// Review the capture inbox: list / approve / reject / edit.
     #[tool(
-        description = "List pending review queue items (low-confidence captures awaiting review)."
+        description = "Review the capture inbox (low-confidence memories awaiting review). \
+                       action=\"list\" returns pending items; \"approve\" stores an item; \
+                       \"reject\" discards it; \"edit\" adjusts suggested fields before approval. \
+                       approve/reject/edit require review_id."
     )]
-    async fn memory_inbox_list(
+    async fn memory_inbox(
         &self,
-        Parameters(params): Parameters<InboxListParams>,
+        Parameters(params): Parameters<InboxParams>,
     ) -> Result<String, String> {
-        validate_response_format(&params.response_format)?;
-        let limit = cap_limit(params.limit);
-        let conn = self.conn.clone();
-        tokio::task::spawn_blocking(move || {
-            let conn = conn.lock().map_err(|e| format!("lock error: {e}"))?;
-            let items =
-                clio_core::review::list_pending(&conn, limit).map_err(|e| format_clio_error(&e))?;
+        let action = params.action.to_lowercase();
 
-            if params.response_format == "json" {
-                serde_json::to_string_pretty(&items)
-                    .map_err(|e| format!("Serialisation error: {e}"))
-            } else {
-                Ok(review_list_md(&items))
+        // Validate up front (before offloading to the blocking pool).
+        match action.as_str() {
+            "list" => validate_response_format(&params.response_format)?,
+            "approve" | "reject" | "edit" => {
+                let id = params
+                    .review_id
+                    .as_deref()
+                    .ok_or_else(|| format!("inbox action '{action}' requires review_id"))?;
+                validate_memory_id(id, "review_id")?;
+                if action == "edit" {
+                    if let Some(importance) = params.importance {
+                        validate_importance(importance)?;
+                    }
+                    if let Some(confidence) = params.confidence {
+                        validate_threshold(confidence, "confidence")?;
+                    }
+                }
             }
-        })
-        .await
-        .map_err(|e| format!("Internal error: task failed: {e}"))?
-    }
+            other => {
+                return Err(format!(
+                    "unknown inbox action '{other}'. Expected list, approve, reject, or edit."
+                ));
+            }
+        }
 
-    /// Approve a review item (converts to a memory).
-    #[tool(description = "Approve a review queue item by ID, converting it to a stored memory.")]
-    async fn memory_inbox_approve(
-        &self,
-        Parameters(params): Parameters<InboxApproveParams>,
-    ) -> Result<String, String> {
-        validate_memory_id(&params.review_id, "review_id")?;
+        let limit = cap_limit(params.limit);
         let conn = self.conn.clone();
         let settings = self.settings()?;
         tokio::task::spawn_blocking(move || {
             let conn = conn.lock().map_err(|e| format!("lock error: {e}"))?;
-            let memory = clio_core::review::approve_review(&conn, &params.review_id, &settings)
-                .map_err(|e| format_clio_error(&e))?;
-            serde_json::to_string_pretty(&memory).map_err(|e| format!("Serialisation error: {e}"))
-        })
-        .await
-        .map_err(|e| format!("Internal error: task failed: {e}"))?
-    }
-
-    /// Reject a review item.
-    #[tool(description = "Reject a review queue item by ID.")]
-    async fn memory_inbox_reject(
-        &self,
-        Parameters(params): Parameters<InboxRejectParams>,
-    ) -> Result<String, String> {
-        validate_memory_id(&params.review_id, "review_id")?;
-        let conn = self.conn.clone();
-        tokio::task::spawn_blocking(move || {
-            let conn = conn.lock().map_err(|e| format!("lock error: {e}"))?;
-            let item = clio_core::review::reject_review(&conn, &params.review_id)
-                .map_err(|e| format_clio_error(&e))?;
-            serde_json::to_string_pretty(&item).map_err(|e| format!("Serialisation error: {e}"))
-        })
-        .await
-        .map_err(|e| format!("Internal error: task failed: {e}"))?
-    }
-
-    /// Edit a review item's suggested fields.
-    #[tool(description = "Edit a review queue item's suggested fields before approval.")]
-    async fn memory_inbox_edit(
-        &self,
-        Parameters(params): Parameters<InboxEditParams>,
-    ) -> Result<String, String> {
-        validate_memory_id(&params.review_id, "review_id")?;
-        if let Some(importance) = params.importance {
-            validate_importance(importance)?;
-        }
-        if let Some(confidence) = params.confidence {
-            validate_threshold(confidence, "confidence")?;
-        }
-        let conn = self.conn.clone();
-        tokio::task::spawn_blocking(move || {
-            let conn = conn.lock().map_err(|e| format!("lock error: {e}"))?;
-            let edits = clio_core::review::ReviewEdits {
-                namespace: params.namespace,
-                kind: params.kind,
-                title: params.title.map(Some),
-                summary: params.summary.map(Some),
-                tags: params.tags,
-                importance: params.importance,
-                confidence: params.confidence.map(Some),
-            };
-            let item = clio_core::review::edit_review(&conn, &params.review_id, &edits)
-                .map_err(|e| format_clio_error(&e))?;
-            serde_json::to_string_pretty(&item).map_err(|e| format!("Serialisation error: {e}"))
+            match action.as_str() {
+                "list" => {
+                    let items = clio_core::review::list_pending(&conn, limit)
+                        .map_err(|e| format_clio_error(&e))?;
+                    if params.response_format == "json" {
+                        serde_json::to_string_pretty(&items)
+                            .map_err(|e| format!("Serialisation error: {e}"))
+                    } else {
+                        Ok(review_list_md(&items))
+                    }
+                }
+                "approve" => {
+                    let id = params.review_id.as_deref().expect("validated present");
+                    let memory = clio_core::review::approve_review(&conn, id, &settings)
+                        .map_err(|e| format_clio_error(&e))?;
+                    serde_json::to_string_pretty(&memory)
+                        .map_err(|e| format!("Serialisation error: {e}"))
+                }
+                "reject" => {
+                    let id = params.review_id.as_deref().expect("validated present");
+                    let item = clio_core::review::reject_review(&conn, id)
+                        .map_err(|e| format_clio_error(&e))?;
+                    serde_json::to_string_pretty(&item)
+                        .map_err(|e| format!("Serialisation error: {e}"))
+                }
+                "edit" => {
+                    let id = params.review_id.clone().expect("validated present");
+                    let edits = clio_core::review::ReviewEdits {
+                        namespace: params.namespace,
+                        kind: params.kind,
+                        title: params.title.map(Some),
+                        summary: params.summary.map(Some),
+                        tags: params.tags,
+                        importance: params.importance,
+                        confidence: params.confidence.map(Some),
+                    };
+                    let item = clio_core::review::edit_review(&conn, &id, &edits)
+                        .map_err(|e| format_clio_error(&e))?;
+                    serde_json::to_string_pretty(&item)
+                        .map_err(|e| format!("Serialisation error: {e}"))
+                }
+                _ => unreachable!("action validated above"),
+            }
         })
         .await
         .map_err(|e| format!("Internal error: task failed: {e}"))?
@@ -1743,9 +1731,24 @@ impl ServerHandler for ClioServer {
                 ..Default::default()
             },
             instructions: Some(
-                "Clio: local memory system. remember=store, recall=keyword search, \
-                 search=semantic search, capture=LLM classify, link=relate memories, \
-                 context=build scoped context briefs, inbox=review low-confidence captures."
+                "Clio: local shared-memory store for AI tools (SQLite-backed).\n\n\
+                 NAMESPACE: memories are scoped per project. Resolution order is \
+                 explicit `namespace` -> auto-detect from `cwd` -> `global`. Always pass \
+                 `cwd` so recall and storage land in the right project.\n\n\
+                 CHOOSING A TOOL:\n\
+                 - memory_recall: keyword/FTS search. Omit `query` for a recent-style listing.\n\
+                 - memory_search: semantic (vector) search; requires a configured embedding \
+                 backend and returns a configuration error if none is set.\n\
+                 - memory_remember: deliberate store. Upsert needs BOTH `source` and \
+                 `source_ref`, else a new record is inserted.\n\
+                 - memory_capture: LLM-classified store; low-confidence items queue to the \
+                 inbox for review instead of storing immediately.\n\
+                 - memory_context: assemble a scoped brief. Presets: project-brief, \
+                 person-brief, decision-history, active-constraints, recent-activity, custom.\n\
+                 - memory_inbox: review queued captures (list/approve/reject/edit via `action`).\n\n\
+                 Archive is a soft-delete: archived records are hidden and excluded from recall \
+                 by default. Pass `response_format:\"json\"` for structured processing (cheaper \
+                 tokens); markdown is for human display."
                     .into(),
             ),
         }
