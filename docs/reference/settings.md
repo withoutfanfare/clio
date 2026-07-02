@@ -72,6 +72,7 @@ Three variants (tagged by `provider`):
 | `log_dir` | string? | platform default | Rolling log file directory |
 | `http_port` | int? | `null` | Optional HTTP loopback API port |
 | `auto_link` | object | see below | Auto-link inference settings |
+| `maintenance` | object | see below | Periodic backup / integrity jobs |
 
 ### daemon.auto_link
 
@@ -82,6 +83,18 @@ Three variants (tagged by `provider`):
 | `interval_secs` | int | `3600` | Seconds between inference passes |
 | `max_links_per_memory` | int | `3` | Max links created per memory per pass |
 | `batch_size` | int | `50` | Memories processed per pass |
+
+### daemon.maintenance
+
+Periodic local jobs run by the daemon. Intervals default to `0` (disabled); set
+one to opt in. Both jobs are pure-local — no network, no LLM. (Consolidation is
+not run here; it is triggered per session by the session-stop hook.)
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `backup_interval_secs` | int | `0` | Seconds between database backups (`0` = off). E.g. `604800` for weekly |
+| `backup_max_backups` | int | `7` | Timestamped backups to retain |
+| `integrity_interval_secs` | int | `0` | Seconds between integrity checks, log-only (`0` = off) |
 
 ## cleanup
 
