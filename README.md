@@ -31,7 +31,7 @@
 
 AI coding assistants forget everything between sessions. You re-explain your project, preferences, and decisions every time. Clio fixes this by giving every agent you use access to the same persistent memory:
 
-- **One memory, every agent** — Claude Code, Codex, Cursor, Windsurf, Gemini, Copilot, OpenCode, Kilo, Kimi all share the same knowledge
+- **One memory, every agent** — Claude Code, Codex, Cursor, Windsurf, Gemini, Copilot, OpenCode, Kilo, Kimi all share the same knowledge over MCP. Automatic lifecycle capture (session-start context briefs + session-end distillation) is currently Claude Code-only; other tools read and write via MCP.
 - **Zero cloud dependency** — SQLite on your machine, embeddings run locally by default
 - **Automatic scoping** — memories are scoped to projects via directory detection, no manual namespace management
 - **Semantic search** — find conceptually related context even when keywords don't match

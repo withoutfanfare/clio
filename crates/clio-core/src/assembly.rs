@@ -85,6 +85,12 @@ pub struct ContextRequest {
     #[serde(default = "default_max_items")]
     pub max_items: u32,
 
+    /// Optional character budget for the whole brief. When set, sections are
+    /// truncated greedily (in order) once the summed content length is reached,
+    /// so briefs never balloon. Always keeps at least the first memory.
+    #[serde(default)]
+    pub char_budget: Option<u32>,
+
     /// Whether to include linked memories in results.
     #[serde(default)]
     pub include_links: bool,
@@ -111,6 +117,7 @@ impl Default for ContextRequest {
             preset: default_preset(),
             query: None,
             max_items: default_max_items(),
+            char_budget: None,
             include_links: false,
             scoring: None,
         }
@@ -190,6 +197,10 @@ pub fn build_context(conn: &Connection, request: &ContextRequest) -> Result<Cont
         )?,
     };
 
+    // De-duplicate across sections (a decision tagged as a constraint can appear
+    // in two presets' sections) and apply the optional character budget.
+    let sections = dedup_and_budget(sections, request.char_budget);
+
     let total_memories_used: u32 = sections.iter().map(|s| s.items.len() as u32).sum();
 
     Ok(ContextBrief {
@@ -199,6 +210,50 @@ pub fn build_context(conn: &Connection, request: &ContextRequest) -> Result<Cont
         total_memories_used,
         generated_at: now_utc(),
     })
+}
+
+/// Approximate rendered length of a memory in a brief: title + preview.
+fn brief_char_len(m: &Memory) -> usize {
+    m.title.as_deref().map(str::len).unwrap_or(0) + m.summary.as_deref().unwrap_or(&m.content).len()
+}
+
+/// Drop cross-section duplicate memories (first occurrence wins) and, when a
+/// `char_budget` is set, greedily drop items once the summed content length is
+/// reached. At least the first memory is always kept. Section headings are
+/// preserved (items may become empty) so the brief shape stays stable.
+fn dedup_and_budget(
+    sections: Vec<ContextSection>,
+    char_budget: Option<u32>,
+) -> Vec<ContextSection> {
+    let budget = char_budget.map(|b| b as usize);
+    let mut seen = std::collections::HashSet::new();
+    let mut used = 0usize;
+    let mut full = false;
+
+    sections
+        .into_iter()
+        .map(|section| {
+            let mut kept = Vec::new();
+            for m in section.items {
+                if full || !seen.insert(m.id.clone()) {
+                    continue; // budget exhausted, or cross-section duplicate
+                }
+                if let Some(b) = budget {
+                    let len = brief_char_len(&m);
+                    if used > 0 && used + len > b {
+                        full = true;
+                        continue;
+                    }
+                    used += len;
+                }
+                kept.push(m);
+            }
+            ContextSection {
+                heading: section.heading,
+                items: kept,
+            }
+        })
+        .collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -604,5 +659,60 @@ mod tests {
         .unwrap();
 
         assert!(brief.total_memories_used <= 3);
+    }
+
+    #[test]
+    fn char_budget_truncates_brief() {
+        let conn = test_db();
+        // Each memory's content is ~40 chars; a 60-char budget fits one comfortably
+        // and forces truncation before the rest.
+        for i in 0..8 {
+            make_memory(
+                &conn,
+                "global",
+                "note",
+                &format!("Memory content padding number {i:02} here"),
+            );
+        }
+
+        let brief = build_context(
+            &conn,
+            &ContextRequest {
+                preset: ContextPreset::RecentActivity,
+                max_items: 20,
+                char_budget: Some(60),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        // At least one kept, but far fewer than the 8 available.
+        assert!(brief.total_memories_used >= 1);
+        assert!(brief.total_memories_used < 8);
+    }
+
+    #[test]
+    fn dedup_removes_cross_section_duplicates() {
+        let conn = test_db();
+        let m = make_memory(&conn, "global", "decision", "Shared across two sections");
+
+        // Same memory appears in two sections (e.g. a decision tagged constraint).
+        let sections = vec![
+            ContextSection {
+                heading: "Decisions".into(),
+                items: vec![m.clone()],
+            },
+            ContextSection {
+                heading: "Constraints".into(),
+                items: vec![m.clone()],
+            },
+        ];
+
+        let out = dedup_and_budget(sections, None);
+        let total: usize = out.iter().map(|s| s.items.len()).sum();
+        assert_eq!(
+            total, 1,
+            "duplicate memory should appear once across sections"
+        );
     }
 }

@@ -501,6 +501,10 @@ struct BriefArgs {
     #[arg(long, default_value_t = 20)]
     max_items: u32,
 
+    /// Character budget for the whole brief (sections truncated greedily once reached).
+    #[arg(long)]
+    char_budget: Option<u32>,
+
     /// Include linked memories.
     #[arg(long)]
     include_links: bool,
@@ -2148,6 +2152,7 @@ fn cmd_brief(
         preset,
         query: args.query,
         max_items: args.max_items,
+        char_budget: args.char_budget,
         include_links: args.include_links,
         scoring: Some(stgs.scoring),
     };

@@ -613,16 +613,18 @@ pub fn semantic_recall(
         })
         .collect();
 
-    // Collect IDs of memories that also match the query via FTS.
-    let fts_hits = fts_matching_ids(conn, query_text);
+    // Map memories that also match via FTS to a normalised match strength.
+    let fts_strengths = fts_match_strengths(conn, query_text);
 
     // Batch-fetch all memories in one query.
     let memories = crate::repository::get_many_pub(conn, &ids)?;
 
-    // Keyword boost: if a memory matches FTS, add a fixed boost to its
-    // semantic score. The boost (0.3) is large enough to lift a direct keyword
-    // match above unrelated semantic neighbours, but small enough that a
-    // strong semantic hit still outranks a weak keyword match.
+    // Keyword boost: a memory that matches FTS gets a boost proportional to its
+    // BM25 match strength — a strong keyword hit earns the full boost, a weak
+    // one earns proportionally less, so the signal is not flattened. The cap is
+    // large enough to lift a direct keyword match above unrelated semantic
+    // neighbours, small enough that a strong semantic hit still outranks a weak
+    // keyword match.
     const KEYWORD_BOOST: f64 = 0.3;
 
     // When scoring is enabled, fold the same composite multiplier the FTS recall
@@ -635,11 +637,7 @@ pub fn semantic_recall(
         .into_iter()
         .map(|memory| {
             let semantic = similarity_map.get(&memory.id).copied().unwrap_or(0.0);
-            let boost = if fts_hits.contains(&memory.id) {
-                KEYWORD_BOOST
-            } else {
-                0.0
-            };
+            let boost = KEYWORD_BOOST * fts_strengths.get(&memory.id).copied().unwrap_or(0.0);
             let base = semantic + boost;
             let rank = match scoring {
                 Some(s) => base * crate::scoring::composite_multiplier(&memory, s, now),
@@ -670,26 +668,60 @@ pub fn semantic_recall(
     Ok(items)
 }
 
-/// Return the set of memory IDs that match a query via FTS.
-/// Used for hybrid keyword boosting in semantic search.
-/// Silently returns an empty set on any FTS error (e.g. empty query).
-fn fts_matching_ids(conn: &Connection, query: &str) -> std::collections::HashSet<String> {
+/// Return FTS-matching memory IDs mapped to a normalised match strength in
+/// `(0.0, 1.0]`, where the strongest BM25 hit is `1.0`. Used to make the hybrid
+/// keyword boost proportional to match quality rather than flat.
+///
+/// SQLite FTS5 `bm25()` returns a score where *smaller* (more negative) is a
+/// better match. We min-max normalise so the best hit scores 1.0; when there is
+/// a single hit (or all scores tie) every hit scores 1.0.
+///
+/// Silently returns an empty map on any FTS error (e.g. empty query).
+fn fts_match_strengths(conn: &Connection, query: &str) -> std::collections::HashMap<String, f64> {
     let trimmed = query.trim();
     if trimmed.is_empty() {
-        return std::collections::HashSet::new();
+        return std::collections::HashMap::new();
     }
     // Wrap in quotes for literal matching, escaping any internal quotes.
     let safe = format!("\"{}\"", trimmed.replace('"', " "));
-    let result: std::result::Result<Vec<String>, _> = (|| {
+    let result: std::result::Result<Vec<(String, f64)>, _> = (|| {
         let mut stmt = conn.prepare(
-            "SELECT m.id FROM memory_fts
+            "SELECT m.id, bm25(memory_fts) AS score FROM memory_fts
              JOIN memories m ON m.rowid = memory_fts.rowid
              WHERE memory_fts MATCH ?1",
         )?;
-        let rows = stmt.query_map([&safe], |row| row.get::<_, String>(0))?;
+        let rows = stmt.query_map([&safe], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, f64>(1)?))
+        })?;
         rows.collect()
     })();
-    result.unwrap_or_default().into_iter().collect()
+
+    let hits = result.unwrap_or_default();
+    if hits.is_empty() {
+        return std::collections::HashMap::new();
+    }
+
+    // Best = smallest bm25, worst = largest bm25.
+    let best = hits.iter().map(|(_, s)| *s).fold(f64::INFINITY, f64::min);
+    let worst = hits
+        .iter()
+        .map(|(_, s)| *s)
+        .fold(f64::NEG_INFINITY, f64::max);
+    let span = worst - best;
+
+    hits.into_iter()
+        .map(|(id, score)| {
+            // span == 0 → single hit or all tied → full strength.
+            let strength = if span > 0.0 {
+                (worst - score) / span
+            } else {
+                1.0
+            };
+            // Keep any genuine keyword hit meaningful: floor at 0.2 so the
+            // weakest match still earns a fifth of the boost, not zero.
+            (id, 0.2 + 0.8 * strength)
+        })
+        .collect()
 }
 
 // ---------------------------------------------------------------------------
