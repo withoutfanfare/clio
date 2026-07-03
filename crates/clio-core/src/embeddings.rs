@@ -496,11 +496,36 @@ impl Ord for ScoredEntry {
     }
 }
 
+enum NamespaceFilter<'a> {
+    All,
+    Exact(&'a str),
+    Scoped(&'a str),
+}
+
 /// Search for semantically similar memories using the query embedding.
 pub fn semantic_search(
     conn: &Connection,
     query_embedding: &[f32],
     namespace: Option<&str>,
+    include_archived: bool,
+    exclude_expired: bool,
+    limit: u32,
+) -> Result<Vec<SemanticResult>> {
+    let filter = namespace.map_or(NamespaceFilter::All, NamespaceFilter::Exact);
+    semantic_search_filtered(
+        conn,
+        query_embedding,
+        filter,
+        include_archived,
+        exclude_expired,
+        limit,
+    )
+}
+
+fn semantic_search_filtered(
+    conn: &Connection,
+    query_embedding: &[f32],
+    namespace: NamespaceFilter<'_>,
     include_archived: bool,
     exclude_expired: bool,
     limit: u32,
@@ -522,10 +547,21 @@ pub fn semantic_search(
         sql.push_str(" AND (m.valid_until IS NULL OR datetime(m.valid_until) > datetime('now'))");
     }
 
-    if let Some(ns) = namespace {
-        let idx = param_values.len() + 1;
-        sql.push_str(&format!(" AND m.namespace = ?{idx}"));
-        param_values.push(Box::new(ns.to_string()));
+    match namespace {
+        NamespaceFilter::All => {}
+        NamespaceFilter::Exact(ns) => {
+            let idx = param_values.len() + 1;
+            sql.push_str(&format!(" AND m.namespace = ?{idx}"));
+            param_values.push(Box::new(ns.to_string()));
+        }
+        NamespaceFilter::Scoped("global") => {}
+        NamespaceFilter::Scoped(ns) => {
+            let idx = param_values.len() + 1;
+            sql.push_str(&format!(
+                " AND (m.namespace = ?{idx} OR m.namespace = 'global')"
+            ));
+            param_values.push(Box::new(ns.to_string()));
+        }
     }
 
     let param_refs: Vec<&dyn rusqlite::types::ToSql> =
@@ -597,6 +633,41 @@ pub fn semantic_recall(
         fetch_limit,
     )?;
 
+    semantic_recall_from_results(conn, query_text, results, scoring, limit)
+}
+
+/// Perform semantic recall over an auto-detected namespace plus global memories.
+#[allow(clippy::too_many_arguments)]
+pub fn semantic_recall_scoped(
+    conn: &Connection,
+    query_text: &str,
+    query_embedding: &[f32],
+    detected_namespace: &str,
+    include_archived: bool,
+    exclude_expired: bool,
+    scoring: Option<&crate::settings::ScoringConfig>,
+    limit: u32,
+) -> Result<Vec<RecallItem>> {
+    let fetch_limit = limit.saturating_mul(2).max(20);
+    let results = semantic_search_filtered(
+        conn,
+        query_embedding,
+        NamespaceFilter::Scoped(detected_namespace),
+        include_archived,
+        exclude_expired,
+        fetch_limit,
+    )?;
+
+    semantic_recall_from_results(conn, query_text, results, scoring, limit)
+}
+
+fn semantic_recall_from_results(
+    conn: &Connection,
+    query_text: &str,
+    results: Vec<SemanticResult>,
+    scoring: Option<&crate::settings::ScoringConfig>,
+    limit: u32,
+) -> Result<Vec<RecallItem>> {
     if results.is_empty() {
         return Ok(Vec::new());
     }

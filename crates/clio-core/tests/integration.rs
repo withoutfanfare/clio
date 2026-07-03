@@ -2000,6 +2000,44 @@ fn semantic_recall_keyword_boost_is_proportional() {
 }
 
 #[test]
+fn semantic_recall_scoped_includes_global_memories() {
+    use clio_core::embeddings::{semantic_recall, semantic_recall_scoped, store_embedding};
+
+    let conn = test_db();
+    let project = remember_in(&conn, "project:x", "project semantic fact");
+    let global = remember_in(&conn, "global", "global semantic fact");
+    let other = remember_in(&conn, "project:y", "other semantic fact");
+
+    store_embedding(&conn, &project.id, "test", 2, &[1.0, 0.0]).unwrap();
+    store_embedding(&conn, &global.id, "test", 2, &[1.0, 0.0]).unwrap();
+    store_embedding(&conn, &other.id, "test", 2, &[1.0, 0.0]).unwrap();
+
+    let query = [1.0_f32, 0.0];
+    let scoped =
+        semantic_recall_scoped(&conn, "zzqq", &query, "project:x", false, false, None, 10).unwrap();
+    let scoped_ids: std::collections::HashSet<_> =
+        scoped.iter().map(|item| item.memory.id.as_str()).collect();
+
+    assert!(scoped_ids.contains(project.id.as_str()));
+    assert!(scoped_ids.contains(global.id.as_str()));
+    assert!(!scoped_ids.contains(other.id.as_str()));
+
+    let exact = semantic_recall(
+        &conn,
+        "zzqq",
+        &query,
+        Some("project:x"),
+        false,
+        false,
+        None,
+        10,
+    )
+    .unwrap();
+    assert_eq!(exact.len(), 1);
+    assert_eq!(exact[0].memory.id, project.id);
+}
+
+#[test]
 fn semantic_recall_excludes_expired_when_requested() {
     use clio_core::embeddings::{semantic_recall, store_embedding};
 
