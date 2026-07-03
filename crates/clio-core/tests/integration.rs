@@ -48,6 +48,13 @@ fn remember_in(conn: &rusqlite::Connection, namespace: &str, content: &str) -> M
     repository::remember(conn, &input, &Settings::default()).unwrap()
 }
 
+fn has_issue(report: &clio_core::integrity::IntegrityReport, kind: &str, id: &str) -> bool {
+    report
+        .issues
+        .iter()
+        .any(|issue| issue.kind == kind && issue.affected_ids.iter().any(|affected| affected == id))
+}
+
 // ---------------------------------------------------------------------------
 // Migration bootstrap
 // ---------------------------------------------------------------------------
@@ -93,6 +100,32 @@ fn insert_basic_memory() {
     assert_eq!(mem.importance, 3);
     assert!(mem.archived_at.is_none());
     assert!(!mem.id.is_empty());
+}
+
+#[test]
+fn remember_sorts_tags_text_for_integrity_check() {
+    let conn = test_db();
+    let memory = remember_with_tags(&conn, "tag order regression", &["rust", "async"]);
+
+    let tags_text: String = conn
+        .query_row(
+            "SELECT tags_text FROM memories WHERE id = ?1",
+            [&memory.id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(tags_text, "async rust");
+
+    let clean = clio_core::integrity::check(&conn).unwrap();
+    assert!(!has_issue(&clean, "tag_mismatch", &memory.id));
+
+    conn.execute(
+        "UPDATE memories SET tags_text = ?1 WHERE id = ?2",
+        rusqlite::params!["rust", &memory.id],
+    )
+    .unwrap();
+    let corrupt = clio_core::integrity::check(&conn).unwrap();
+    assert!(has_issue(&corrupt, "tag_mismatch", &memory.id));
 }
 
 #[test]
