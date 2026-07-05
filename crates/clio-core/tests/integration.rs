@@ -48,6 +48,13 @@ fn remember_in(conn: &rusqlite::Connection, namespace: &str, content: &str) -> M
     repository::remember(conn, &input, &Settings::default()).unwrap()
 }
 
+fn has_issue(report: &clio_core::integrity::IntegrityReport, kind: &str, id: &str) -> bool {
+    report
+        .issues
+        .iter()
+        .any(|issue| issue.kind == kind && issue.affected_ids.iter().any(|affected| affected == id))
+}
+
 // ---------------------------------------------------------------------------
 // Migration bootstrap
 // ---------------------------------------------------------------------------
@@ -93,6 +100,32 @@ fn insert_basic_memory() {
     assert_eq!(mem.importance, 3);
     assert!(mem.archived_at.is_none());
     assert!(!mem.id.is_empty());
+}
+
+#[test]
+fn remember_sorts_tags_text_for_integrity_check() {
+    let conn = test_db();
+    let memory = remember_with_tags(&conn, "tag order regression", &["rust", "async"]);
+
+    let tags_text: String = conn
+        .query_row(
+            "SELECT tags_text FROM memories WHERE id = ?1",
+            [&memory.id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(tags_text, "async rust");
+
+    let clean = clio_core::integrity::check(&conn).unwrap();
+    assert!(!has_issue(&clean, "tag_mismatch", &memory.id));
+
+    conn.execute(
+        "UPDATE memories SET tags_text = ?1 WHERE id = ?2",
+        rusqlite::params!["rust", &memory.id],
+    )
+    .unwrap();
+    let corrupt = clio_core::integrity::check(&conn).unwrap();
+    assert!(has_issue(&corrupt, "tag_mismatch", &memory.id));
 }
 
 #[test]
@@ -1997,6 +2030,44 @@ fn semantic_recall_keyword_boost_is_proportional() {
         pos(&sem.id) < pos(&weak.id),
         "strong semantic should outrank a weak keyword match"
     );
+}
+
+#[test]
+fn semantic_recall_scoped_includes_global_memories() {
+    use clio_core::embeddings::{semantic_recall, semantic_recall_scoped, store_embedding};
+
+    let conn = test_db();
+    let project = remember_in(&conn, "project:x", "project semantic fact");
+    let global = remember_in(&conn, "global", "global semantic fact");
+    let other = remember_in(&conn, "project:y", "other semantic fact");
+
+    store_embedding(&conn, &project.id, "test", 2, &[1.0, 0.0]).unwrap();
+    store_embedding(&conn, &global.id, "test", 2, &[1.0, 0.0]).unwrap();
+    store_embedding(&conn, &other.id, "test", 2, &[1.0, 0.0]).unwrap();
+
+    let query = [1.0_f32, 0.0];
+    let scoped =
+        semantic_recall_scoped(&conn, "zzqq", &query, "project:x", false, false, None, 10).unwrap();
+    let scoped_ids: std::collections::HashSet<_> =
+        scoped.iter().map(|item| item.memory.id.as_str()).collect();
+
+    assert!(scoped_ids.contains(project.id.as_str()));
+    assert!(scoped_ids.contains(global.id.as_str()));
+    assert!(!scoped_ids.contains(other.id.as_str()));
+
+    let exact = semantic_recall(
+        &conn,
+        "zzqq",
+        &query,
+        Some("project:x"),
+        false,
+        false,
+        None,
+        10,
+    )
+    .unwrap();
+    assert_eq!(exact.len(), 1);
+    assert_eq!(exact[0].memory.id, project.id);
 }
 
 #[test]
