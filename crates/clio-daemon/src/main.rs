@@ -108,6 +108,7 @@ async fn run(
 
     // Shutdown broadcast channel.
     let (shutdown_tx, _) = tokio::sync::broadcast::channel::<()>(1);
+    let mut shutdown_rx = shutdown_tx.subscribe();
 
     // Start the control socket server.
     let control_handle = tokio::spawn(control::serve(
@@ -178,9 +179,11 @@ async fn run(
         None
     };
 
-    // Wait for shutdown signal (SIGTERM or SIGINT).
-    shutdown_signal().await;
-    tracing::info!("shutdown signal received");
+    // Wait for shutdown: OS signal (SIGTERM/SIGINT) or control-socket `stop`.
+    tokio::select! {
+        _ = shutdown_signal() => tracing::info!("shutdown signal received"),
+        _ = shutdown_rx.recv() => tracing::info!("shutdown requested via control socket"),
+    }
     let _ = shutdown_tx.send(());
 
     // Wait for subsystems to finish.

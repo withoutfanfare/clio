@@ -561,7 +561,6 @@ pub fn semantic_search(
     let results: Vec<SemanticResult> = heap
         .into_sorted_vec()
         .into_iter()
-        .rev()
         .map(|e| SemanticResult {
             memory_id: e.memory_id,
             similarity: e.similarity,
@@ -663,6 +662,61 @@ pub fn semantic_recall(
     let id_refs: Vec<&str> = items.iter().map(|i| i.memory.id.as_str()).collect();
     if let Err(e) = crate::repository::touch_accessed(conn, &id_refs) {
         tracing::warn!("access tracking failed in semantic_recall: {e}");
+    }
+
+    Ok(items)
+}
+
+/// Semantic recall within the detected namespace, then fill remaining slots
+/// from `global`. Explicit all-namespace search should call `semantic_recall`
+/// with `namespace = None` instead.
+#[allow(clippy::too_many_arguments)]
+pub fn semantic_recall_scoped(
+    conn: &Connection,
+    query_text: &str,
+    query_embedding: &[f32],
+    detected_namespace: &str,
+    include_archived: bool,
+    exclude_expired: bool,
+    scoring: Option<&crate::settings::ScoringConfig>,
+    limit: u32,
+) -> Result<Vec<RecallItem>> {
+    if detected_namespace == "global" {
+        return semantic_recall(
+            conn,
+            query_text,
+            query_embedding,
+            Some("global"),
+            include_archived,
+            exclude_expired,
+            scoring,
+            limit,
+        );
+    }
+
+    let mut items = semantic_recall(
+        conn,
+        query_text,
+        query_embedding,
+        Some(detected_namespace),
+        include_archived,
+        exclude_expired,
+        scoring,
+        limit,
+    )?;
+
+    let remaining = limit.saturating_sub(items.len() as u32);
+    if remaining > 0 {
+        items.extend(semantic_recall(
+            conn,
+            query_text,
+            query_embedding,
+            Some("global"),
+            include_archived,
+            exclude_expired,
+            scoring,
+            remaining,
+        )?);
     }
 
     Ok(items)

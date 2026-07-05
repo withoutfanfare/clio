@@ -1409,22 +1409,6 @@ impl ClioServer {
         tokio::task::spawn_blocking(move || {
             let conn = conn.lock().map_err(|e| format!("lock error: {e}"))?;
 
-            let ns_filter = if params.global {
-                None
-            } else {
-                let cwd_path = params.cwd.as_deref().map(std::path::Path::new);
-                let resolved_ns = clio_core::context::resolve_namespace(
-                    params.namespace.as_deref(),
-                    cwd_path,
-                    settings.context.auto_detect,
-                );
-                if params.namespace.is_some() || resolved_ns != "global" {
-                    Some(resolved_ns)
-                } else {
-                    None
-                }
-            };
-
             let be = backend.as_ref().as_ref().ok_or_else(|| {
                 "Embedding backend not available. Ensure embeddings are configured in settings."
                     .to_string()
@@ -1434,16 +1418,47 @@ impl ClioServer {
                 .embed_one(&params.query)
                 .map_err(|e| format_clio_error(&e))?;
 
-            let items = clio_core::embeddings::semantic_recall(
-                &conn,
-                &params.query,
-                &query_embedding,
-                ns_filter.as_deref(),
-                params.include_archived,
-                false,
-                Some(&settings.scoring),
-                limit,
-            )
+            let cwd_path = params.cwd.as_deref().map(std::path::Path::new);
+            let detected_ns = clio_core::context::resolve_namespace(
+                params.namespace.as_deref(),
+                cwd_path,
+                settings.context.auto_detect,
+            );
+
+            let items = if params.global {
+                clio_core::embeddings::semantic_recall(
+                    &conn,
+                    &params.query,
+                    &query_embedding,
+                    None,
+                    params.include_archived,
+                    false,
+                    Some(&settings.scoring),
+                    limit,
+                )
+            } else if params.namespace.is_some() {
+                clio_core::embeddings::semantic_recall(
+                    &conn,
+                    &params.query,
+                    &query_embedding,
+                    Some(&detected_ns),
+                    params.include_archived,
+                    false,
+                    Some(&settings.scoring),
+                    limit,
+                )
+            } else {
+                clio_core::embeddings::semantic_recall_scoped(
+                    &conn,
+                    &params.query,
+                    &query_embedding,
+                    &detected_ns,
+                    params.include_archived,
+                    false,
+                    Some(&settings.scoring),
+                    limit,
+                )
+            }
             .map_err(|e| format_clio_error(&e))?;
 
             let len = items.len() as u32;

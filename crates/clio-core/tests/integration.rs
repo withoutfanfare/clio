@@ -1880,6 +1880,29 @@ fn approve_review_of_duplicate_content_does_not_create_second_memory() {
 // ---------------------------------------------------------------------------
 
 #[test]
+fn semantic_search_returns_best_match_first() {
+    use clio_core::embeddings::{semantic_search, store_embedding};
+
+    let conn = test_db();
+    let best = remember_simple(&conn, "best semantic match");
+    let middle = remember_simple(&conn, "middle semantic match");
+    let worst = remember_simple(&conn, "worst semantic match");
+
+    store_embedding(&conn, &best.id, "test", 2, &[1.0, 0.0]).unwrap();
+    store_embedding(&conn, &middle.id, "test", 2, &[0.8, 0.6]).unwrap();
+    store_embedding(&conn, &worst.id, "test", 2, &[0.0, 1.0]).unwrap();
+
+    let query = [1.0_f32, 0.0];
+    let results = semantic_search(&conn, &query, None, false, false, 10).unwrap();
+
+    assert_eq!(results[0].memory_id, best.id);
+    assert_eq!(results[1].memory_id, middle.id);
+    assert_eq!(results[2].memory_id, worst.id);
+    assert!(results[0].similarity >= results[1].similarity);
+    assert!(results[1].similarity >= results[2].similarity);
+}
+
+#[test]
 fn semantic_recall_importance_lifts_weaker_match_when_scoring_enabled() {
     use clio_core::embeddings::{semantic_recall, store_embedding};
     use clio_core::settings::ScoringConfig;
@@ -2007,6 +2030,49 @@ fn semantic_recall_excludes_expired_when_requested() {
     assert_eq!(live_only[0].memory.id, live.id);
 }
 
+#[test]
+fn semantic_recall_scoped_prefers_project_then_global() {
+    use clio_core::embeddings::{semantic_recall, semantic_recall_scoped, store_embedding};
+
+    let conn = test_db();
+
+    let project = remember_in(&conn, "project:x", "project memory");
+    store_embedding(&conn, &project.id, "test", 2, &[0.7, 0.7]).unwrap();
+
+    let global = remember_in(&conn, "global", "global memory");
+    store_embedding(&conn, &global.id, "test", 2, &[1.0, 0.0]).unwrap();
+
+    let other = remember_in(&conn, "project:y", "other project memory");
+    store_embedding(&conn, &other.id, "test", 2, &[1.0, 0.0]).unwrap();
+
+    let query = [1.0_f32, 0.0];
+
+    let scoped =
+        semantic_recall_scoped(&conn, "zzqq", &query, "project:x", false, false, None, 2).unwrap();
+    assert_eq!(scoped.len(), 2);
+    assert_eq!(scoped[0].memory.id, project.id);
+    assert_eq!(scoped[1].memory.id, global.id);
+
+    let explicit = semantic_recall(
+        &conn,
+        "zzqq",
+        &query,
+        Some("project:x"),
+        false,
+        false,
+        None,
+        2,
+    )
+    .unwrap();
+    assert_eq!(explicit.len(), 1);
+    assert_eq!(explicit[0].memory.id, project.id);
+
+    let global_only =
+        semantic_recall_scoped(&conn, "zzqq", &query, "global", false, false, None, 10).unwrap();
+    assert_eq!(global_only.len(), 1);
+    assert_eq!(global_only[0].memory.id, global.id);
+}
+
 // ---------------------------------------------------------------------------
 // Content-duplicate probes (capture dedup + archived-twin revival)
 // ---------------------------------------------------------------------------
@@ -2089,4 +2155,18 @@ fn recall_scoped_pages_across_namespaces() {
     // No id appears on both pages.
     let ids1: std::collections::HashSet<_> = p1.items.iter().map(|i| &i.memory.id).collect();
     assert!(p2.items.iter().all(|i| !ids1.contains(&i.memory.id)));
+}
+
+#[test]
+fn recall_scoped_global_fallback_is_global_only() {
+    let conn = test_db();
+
+    remember_in(&conn, "global", "shared fact");
+    remember_in(&conn, "project:x", "project fact");
+
+    let res = repository::recall_scoped(&conn, &RecallQuery::default(), "global").unwrap();
+
+    assert_eq!(res.total, 1);
+    assert_eq!(res.count, 1);
+    assert_eq!(res.items[0].memory.namespace, "global");
 }

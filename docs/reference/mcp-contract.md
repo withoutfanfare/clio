@@ -282,6 +282,7 @@ This is the primary retrieval tool for AI clients. It must handle both semantic-
 - support pagination
 - when `namespace` is explicitly provided, filter to that namespace only
 - when `cwd` is provided and `namespace` is omitted, use scoped recall: search detected namespace first, then fill remaining slots from `global`; project-scoped results appear before global results
+- when detection falls back to `global`, search only `global` unless `global: true` requests all namespaces
 
 ### Structured response
 
@@ -907,7 +908,7 @@ Find memories by semantic meaning using vector embeddings.
 
 ### Input defaults
 
-- `namespace`: null (auto-detected from `cwd` when provided; otherwise no namespace filter)
+- `namespace`: null (auto-detected from `cwd` when provided; otherwise `global`)
 - `cwd`: null (no auto-detection)
 - `include_archived`: `false`
 - `limit`: `10`
@@ -924,7 +925,8 @@ Find memories by semantic meaning using vector embeddings.
 - embed the query text using the active embedding backend
 - compute cosine similarity between the query embedding and all stored embeddings
 - when `namespace` is explicitly provided, filter to that namespace
-- when `cwd` is provided and `namespace` is omitted, auto-detect namespace from `cwd` and use it as a filter
+- when `cwd` is provided and `namespace` is omitted, use scoped recall: search detected namespace first, then fill remaining slots from `global`; project-scoped results appear before global results
+- when detection falls back to `global`, search only `global` unless `global: true` requests all namespaces
 - exclude archived memories by default
 - return results sorted by similarity descending
 - similarity score is returned in the `rank` field (range 0.0–1.0; higher is more similar)

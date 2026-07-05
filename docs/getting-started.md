@@ -106,6 +106,7 @@ When you run `clio recall` inside a project directory, Clio applies a two-pass s
 2. Fill any remaining result slots from `global`
 
 Project-scoped results appear before global ones. Pass an explicit `--namespace` flag to disable this fallback and search a single namespace only.
+If no project namespace is detected, the default scope is `global` only; use the explicit global/all-namespaces option when you want every namespace.
 
 ---
 

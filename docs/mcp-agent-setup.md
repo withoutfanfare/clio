@@ -770,6 +770,7 @@ When `cwd` is provided and `namespace` is omitted, `memory_recall` uses a two-pa
 2. Fill remaining result slots from `global`
 
 Project-scoped results appear before global ones. This means an agent working in a project directory automatically gets project-relevant context first, with broader knowledge as a fallback.
+If auto-detection falls back to `global`, default recall is global-only; use `global: true` for an all-namespace search.
 
 ---
 
