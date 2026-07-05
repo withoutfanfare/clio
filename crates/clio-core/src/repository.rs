@@ -211,7 +211,7 @@ fn normalise_tags(tags: &[String]) -> Vec<String> {
         .map(|t| t.trim().to_lowercase())
         .filter(|t| !t.is_empty() && seen.insert(t.clone()))
         .collect();
-    out.sort();
+    out.sort_unstable();
     out
 }
 
