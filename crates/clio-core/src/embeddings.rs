@@ -499,7 +499,6 @@ impl Ord for ScoredEntry {
 enum NamespaceFilter<'a> {
     All,
     Exact(&'a str),
-    Scoped(&'a str),
 }
 
 /// Search for semantically similar memories using the query embedding.
@@ -552,14 +551,6 @@ fn semantic_search_filtered(
         NamespaceFilter::Exact(ns) => {
             let idx = param_values.len() + 1;
             sql.push_str(&format!(" AND m.namespace = ?{idx}"));
-            param_values.push(Box::new(ns.to_string()));
-        }
-        NamespaceFilter::Scoped("global") => {}
-        NamespaceFilter::Scoped(ns) => {
-            let idx = param_values.len() + 1;
-            sql.push_str(&format!(
-                " AND (m.namespace = ?{idx} OR m.namespace = 'global')"
-            ));
             param_values.push(Box::new(ns.to_string()));
         }
     }
@@ -628,31 +619,6 @@ pub fn semantic_recall(
         conn,
         query_embedding,
         namespace,
-        include_archived,
-        exclude_expired,
-        fetch_limit,
-    )?;
-
-    semantic_recall_from_results(conn, query_text, results, scoring, limit)
-}
-
-/// Perform semantic recall over an auto-detected namespace plus global memories.
-#[allow(clippy::too_many_arguments)]
-pub fn semantic_recall_scoped(
-    conn: &Connection,
-    query_text: &str,
-    query_embedding: &[f32],
-    detected_namespace: &str,
-    include_archived: bool,
-    exclude_expired: bool,
-    scoring: Option<&crate::settings::ScoringConfig>,
-    limit: u32,
-) -> Result<Vec<RecallItem>> {
-    let fetch_limit = limit.saturating_mul(2).max(20);
-    let results = semantic_search_filtered(
-        conn,
-        query_embedding,
-        NamespaceFilter::Scoped(detected_namespace),
         include_archived,
         exclude_expired,
         fetch_limit,
@@ -740,7 +706,8 @@ fn semantic_recall_from_results(
 
 /// Semantic recall within the detected namespace, then fill remaining slots
 /// from `global`. Explicit all-namespace search should call `semantic_recall`
-/// with `namespace = None` instead.
+/// with `namespace = None` instead. A detected `global` namespace stays
+/// global-only, matching keyword recall.
 #[allow(clippy::too_many_arguments)]
 pub fn semantic_recall_scoped(
     conn: &Connection,
