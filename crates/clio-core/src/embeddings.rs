@@ -496,11 +496,35 @@ impl Ord for ScoredEntry {
     }
 }
 
+enum NamespaceFilter<'a> {
+    All,
+    Exact(&'a str),
+}
+
 /// Search for semantically similar memories using the query embedding.
 pub fn semantic_search(
     conn: &Connection,
     query_embedding: &[f32],
     namespace: Option<&str>,
+    include_archived: bool,
+    exclude_expired: bool,
+    limit: u32,
+) -> Result<Vec<SemanticResult>> {
+    let filter = namespace.map_or(NamespaceFilter::All, NamespaceFilter::Exact);
+    semantic_search_filtered(
+        conn,
+        query_embedding,
+        filter,
+        include_archived,
+        exclude_expired,
+        limit,
+    )
+}
+
+fn semantic_search_filtered(
+    conn: &Connection,
+    query_embedding: &[f32],
+    namespace: NamespaceFilter<'_>,
     include_archived: bool,
     exclude_expired: bool,
     limit: u32,
@@ -522,10 +546,13 @@ pub fn semantic_search(
         sql.push_str(" AND (m.valid_until IS NULL OR datetime(m.valid_until) > datetime('now'))");
     }
 
-    if let Some(ns) = namespace {
-        let idx = param_values.len() + 1;
-        sql.push_str(&format!(" AND m.namespace = ?{idx}"));
-        param_values.push(Box::new(ns.to_string()));
+    match namespace {
+        NamespaceFilter::All => {}
+        NamespaceFilter::Exact(ns) => {
+            let idx = param_values.len() + 1;
+            sql.push_str(&format!(" AND m.namespace = ?{idx}"));
+            param_values.push(Box::new(ns.to_string()));
+        }
     }
 
     let param_refs: Vec<&dyn rusqlite::types::ToSql> =
@@ -597,6 +624,16 @@ pub fn semantic_recall(
         fetch_limit,
     )?;
 
+    semantic_recall_from_results(conn, query_text, results, scoring, limit)
+}
+
+fn semantic_recall_from_results(
+    conn: &Connection,
+    query_text: &str,
+    results: Vec<SemanticResult>,
+    scoring: Option<&crate::settings::ScoringConfig>,
+    limit: u32,
+) -> Result<Vec<RecallItem>> {
     if results.is_empty() {
         return Ok(Vec::new());
     }
@@ -669,7 +706,8 @@ pub fn semantic_recall(
 
 /// Semantic recall within the detected namespace, then fill remaining slots
 /// from `global`. Explicit all-namespace search should call `semantic_recall`
-/// with `namespace = None` instead.
+/// with `namespace = None` instead. A detected `global` namespace stays
+/// global-only, matching keyword recall.
 #[allow(clippy::too_many_arguments)]
 pub fn semantic_recall_scoped(
     conn: &Connection,
