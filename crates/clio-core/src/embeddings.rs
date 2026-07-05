@@ -668,6 +668,61 @@ pub fn semantic_recall(
     Ok(items)
 }
 
+/// Semantic recall within the detected namespace, then fill remaining slots
+/// from `global`. Explicit all-namespace search should call `semantic_recall`
+/// with `namespace = None` instead.
+#[allow(clippy::too_many_arguments)]
+pub fn semantic_recall_scoped(
+    conn: &Connection,
+    query_text: &str,
+    query_embedding: &[f32],
+    detected_namespace: &str,
+    include_archived: bool,
+    exclude_expired: bool,
+    scoring: Option<&crate::settings::ScoringConfig>,
+    limit: u32,
+) -> Result<Vec<RecallItem>> {
+    if detected_namespace == "global" {
+        return semantic_recall(
+            conn,
+            query_text,
+            query_embedding,
+            Some("global"),
+            include_archived,
+            exclude_expired,
+            scoring,
+            limit,
+        );
+    }
+
+    let mut items = semantic_recall(
+        conn,
+        query_text,
+        query_embedding,
+        Some(detected_namespace),
+        include_archived,
+        exclude_expired,
+        scoring,
+        limit,
+    )?;
+
+    let remaining = limit.saturating_sub(items.len() as u32);
+    if remaining > 0 {
+        items.extend(semantic_recall(
+            conn,
+            query_text,
+            query_embedding,
+            Some("global"),
+            include_archived,
+            exclude_expired,
+            scoring,
+            remaining,
+        )?);
+    }
+
+    Ok(items)
+}
+
 /// Return FTS-matching memory IDs mapped to a normalised match strength in
 /// `(0.0, 1.0]`, where the strongest BM25 hit is `1.0`. Used to make the hybrid
 /// keyword boost proportional to match quality rather than flat.

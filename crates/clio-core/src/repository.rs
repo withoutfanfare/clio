@@ -886,9 +886,16 @@ pub fn recall_scoped(
     query: &RecallQuery,
     detected_namespace: &str,
 ) -> Result<RecallResult> {
-    // If the detected namespace is already "global", just do a normal recall.
+    // If detection falls back to "global", keep default recall global-only.
+    // Callers use the explicit global flag for an all-namespace search.
     if detected_namespace == "global" {
-        return recall(conn, query);
+        return recall(
+            conn,
+            &RecallQuery {
+                namespace: Some("global".to_string()),
+                ..query.clone()
+            },
+        );
     }
 
     // Fetch a full window (offset + limit) from each namespace at offset 0, then

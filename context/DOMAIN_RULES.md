@@ -102,6 +102,7 @@ When recall uses an auto-detected (non-global) namespace and no explicit `namesp
 4. Return a single `RecallResult` with merged `items` and combined `total`
 
 When the caller provides an explicit `namespace`, normal single-namespace recall is used — no fallback to `global`.
+When auto-detection falls back to `global`, default recall is global-only; callers must use the explicit global/all-namespaces flag for an unscoped search.
 
 ### Namespace Init
 

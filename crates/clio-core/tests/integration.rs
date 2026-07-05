@@ -2007,6 +2007,49 @@ fn semantic_recall_excludes_expired_when_requested() {
     assert_eq!(live_only[0].memory.id, live.id);
 }
 
+#[test]
+fn semantic_recall_scoped_prefers_project_then_global() {
+    use clio_core::embeddings::{semantic_recall, semantic_recall_scoped, store_embedding};
+
+    let conn = test_db();
+
+    let project = remember_in(&conn, "project:x", "project memory");
+    store_embedding(&conn, &project.id, "test", 2, &[0.7, 0.7]).unwrap();
+
+    let global = remember_in(&conn, "global", "global memory");
+    store_embedding(&conn, &global.id, "test", 2, &[1.0, 0.0]).unwrap();
+
+    let other = remember_in(&conn, "project:y", "other project memory");
+    store_embedding(&conn, &other.id, "test", 2, &[1.0, 0.0]).unwrap();
+
+    let query = [1.0_f32, 0.0];
+
+    let scoped =
+        semantic_recall_scoped(&conn, "zzqq", &query, "project:x", false, false, None, 2).unwrap();
+    assert_eq!(scoped.len(), 2);
+    assert_eq!(scoped[0].memory.id, project.id);
+    assert_eq!(scoped[1].memory.id, global.id);
+
+    let explicit = semantic_recall(
+        &conn,
+        "zzqq",
+        &query,
+        Some("project:x"),
+        false,
+        false,
+        None,
+        2,
+    )
+    .unwrap();
+    assert_eq!(explicit.len(), 1);
+    assert_eq!(explicit[0].memory.id, project.id);
+
+    let global_only =
+        semantic_recall_scoped(&conn, "zzqq", &query, "global", false, false, None, 10).unwrap();
+    assert_eq!(global_only.len(), 1);
+    assert_eq!(global_only[0].memory.id, global.id);
+}
+
 // ---------------------------------------------------------------------------
 // Content-duplicate probes (capture dedup + archived-twin revival)
 // ---------------------------------------------------------------------------
@@ -2089,4 +2132,18 @@ fn recall_scoped_pages_across_namespaces() {
     // No id appears on both pages.
     let ids1: std::collections::HashSet<_> = p1.items.iter().map(|i| &i.memory.id).collect();
     assert!(p2.items.iter().all(|i| !ids1.contains(&i.memory.id)));
+}
+
+#[test]
+fn recall_scoped_global_fallback_is_global_only() {
+    let conn = test_db();
+
+    remember_in(&conn, "global", "shared fact");
+    remember_in(&conn, "project:x", "project fact");
+
+    let res = repository::recall_scoped(&conn, &RecallQuery::default(), "global").unwrap();
+
+    assert_eq!(res.total, 1);
+    assert_eq!(res.count, 1);
+    assert_eq!(res.items[0].memory.namespace, "global");
 }
