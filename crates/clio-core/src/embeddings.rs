@@ -561,7 +561,6 @@ pub fn semantic_search(
     let results: Vec<SemanticResult> = heap
         .into_sorted_vec()
         .into_iter()
-        .rev()
         .map(|e| SemanticResult {
             memory_id: e.memory_id,
             similarity: e.similarity,

@@ -1880,6 +1880,29 @@ fn approve_review_of_duplicate_content_does_not_create_second_memory() {
 // ---------------------------------------------------------------------------
 
 #[test]
+fn semantic_search_returns_best_match_first() {
+    use clio_core::embeddings::{semantic_search, store_embedding};
+
+    let conn = test_db();
+    let best = remember_simple(&conn, "best semantic match");
+    let middle = remember_simple(&conn, "middle semantic match");
+    let worst = remember_simple(&conn, "worst semantic match");
+
+    store_embedding(&conn, &best.id, "test", 2, &[1.0, 0.0]).unwrap();
+    store_embedding(&conn, &middle.id, "test", 2, &[0.8, 0.6]).unwrap();
+    store_embedding(&conn, &worst.id, "test", 2, &[0.0, 1.0]).unwrap();
+
+    let query = [1.0_f32, 0.0];
+    let results = semantic_search(&conn, &query, None, false, false, 10).unwrap();
+
+    assert_eq!(results[0].memory_id, best.id);
+    assert_eq!(results[1].memory_id, middle.id);
+    assert_eq!(results[2].memory_id, worst.id);
+    assert!(results[0].similarity >= results[1].similarity);
+    assert!(results[1].similarity >= results[2].similarity);
+}
+
+#[test]
 fn semantic_recall_importance_lifts_weaker_match_when_scoring_enabled() {
     use clio_core::embeddings::{semantic_recall, store_embedding};
     use clio_core::settings::ScoringConfig;
