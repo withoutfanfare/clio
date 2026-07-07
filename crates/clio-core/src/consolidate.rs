@@ -145,7 +145,7 @@ pub fn consolidate(
     }
 
     let digest = build_digest(&sources);
-    let markdown = crate::capture::chat(CONSOLIDATION_SYSTEM_PROMPT, &digest, config)?;
+    let markdown = crate::capture::chat(CONSOLIDATION_SYSTEM_PROMPT, &digest, config, false)?;
     let markdown = markdown.trim().to_string();
     if markdown.is_empty() {
         return Err(ClioError::Storage(
