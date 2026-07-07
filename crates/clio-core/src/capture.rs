@@ -29,7 +29,7 @@ pub enum CaptureResult {
 /// The structured output returned by the LLM classification step.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ClassificationResult {
-    /// Memory kind — one of note, fact, decision, summary, task, observation, constraint.
+    /// Memory kind — one of note, fact, decision, summary, task, observation, constraint, receipt.
     pub kind: String,
     /// Concise label (max 240 chars).
     pub title: String,
@@ -53,7 +53,7 @@ pub struct ClassificationResult {
 pub struct DistilledMemory {
     /// The self-contained durable fact to store as the memory body.
     pub content: String,
-    /// Memory kind — one of note, fact, decision, summary, task, observation, constraint.
+    /// Memory kind — one of note, fact, decision, summary, task, observation, constraint, receipt.
     pub kind: String,
     /// Concise label (max 240 chars).
     pub title: String,
@@ -106,16 +106,18 @@ Capture things like:
 - A durable user preference expressed during the session ("kind": "fact")
 
 Do NOT capture:
-- Routine activity, step-by-step narration, or "what was done" ("I edited file X, ran the tests")
+- Routine activity, step-by-step narration, or "what was done" ("I edited file X, ran the tests") — EXCEPT the single session receipt described below
 - Lists of changed files, diff stats, or commit mechanics
 - Anything trivially re-derivable by reading the current code or git history
 - Transient state, in-progress work, speculation, or things specific to this one session
 
 Each captured memory must be SELF-CONTAINED: a reader with no access to this session must understand it. Prefer fewer, higher-value memories. If the session produced nothing durable, return an empty array — this is the correct and expected outcome for most routine sessions.
 
+Additionally, if (and only if) the session performed substantive work — commits made, files changed, a bug diagnosed, a document produced — emit EXACTLY ONE extra memory with "kind": "receipt": a 2–4 sentence record of what was done, what was deliberately left undone, and why the session stopped where it did. Write it so someone picking the work up cold understands the state of play. Use "importance": 2 and include the tag "receipt". Sessions with no substantive work get no receipt.
+
 Respond ONLY with a JSON array (possibly empty). Each element is an object with:
 - "content": the self-contained durable fact, decision, or insight (the memory body)
-- "kind": one of "note", "fact", "decision", "summary", "task", "observation", "constraint"
+- "kind": one of "note", "fact", "decision", "summary", "task", "observation", "constraint", "receipt"
 - "title": a concise label (max 240 characters)
 - "summary": a one-sentence summary (max 1000 characters)
 - "tags": an array of 1 to 5 lowercase tags (no spaces, use hyphens)
@@ -273,6 +275,7 @@ fn classification_from_value(v: &serde_json::Value) -> ClassificationResult {
         "task",
         "observation",
         "constraint",
+        "receipt",
     ];
     let kind = if valid_kinds.contains(&kind.as_str()) {
         kind
@@ -826,6 +829,15 @@ mod tests {
     #[test]
     fn distill_rejects_non_array_json() {
         assert!(parse_distillation(r#"{"foo": "bar"}"#).is_err());
+    }
+
+    #[test]
+    fn parse_distillation_accepts_receipt_kind() {
+        let raw = r#"[{"content":"Implemented the handoff preset and its tests; did not touch the CLI; stopped once cargo test passed.","kind":"receipt","title":"Session receipt","summary":"Work record for the session","tags":["receipt"],"namespace":"project:clio","importance":2,"confidence":0.9}]"#;
+        let memories = parse_distillation(raw).expect("parse failed");
+        assert_eq!(memories.len(), 1);
+        assert_eq!(memories[0].kind, "receipt");
+        assert_eq!(memories[0].importance, 2);
     }
 
     #[test]
