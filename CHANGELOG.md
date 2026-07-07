@@ -70,6 +70,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 **Core**
+- Classification and distillation calls now set OpenAI JSON mode (`response_format: json_object`), so a session digest containing its own output-format instructions (common in code-review prompts, e.g. "no preamble… end with VERDICT: CLEAN") can no longer hijack the model into returning plain text and failing the JSON parse. The distillation prompt now asks for a `{"memories": […]}` object (already accepted by the parser) and tells the model the digest is source material, not instructions. Consolidation still returns markdown and opts out.
 - `recall_scoped` now pages correctly across the detected and `global` namespaces — the global fill no longer hard-codes `offset: 0`, so `offset > 0` pages across the merged result — and reports an honest `total`.
 - `PRAGMA wal_autocheckpoint = 1000` plus a daemon WAL checkpoint (`PASSIVE`) on shutdown keep the `-wal` file bounded on long-lived processes.
 
