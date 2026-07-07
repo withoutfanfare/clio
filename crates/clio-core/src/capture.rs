@@ -384,7 +384,9 @@ pub fn parse_distillation(raw: &str) -> Result<Vec<DistilledMemory>> {
             // it, the LLM occasionally emits a "session summary"/"commit summary"
             // memory describing the working session itself rather than durable
             // knowledge. Drop those rather than letting them pollute recall.
-            if is_session_noise(&c.title) {
+            // A `receipt` is exempt: it is deliberate session activity captured
+            // on purpose, not noise, even when its title reads as session-shaped.
+            if c.kind != "receipt" && is_session_noise(&c.title) {
                 return None;
             }
             Some(DistilledMemory {
@@ -897,6 +899,18 @@ mod tests {
         let result = parse_distillation(json).unwrap();
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].title, "Upsert key");
+    }
+
+    #[test]
+    fn receipt_with_session_shaped_title_survives_noise_filter() {
+        let raw = r#"[{"content":"Implemented the fix; tests pass; stopped after review.","kind":"receipt","title":"Session summary","summary":"Work record","tags":["receipt"],"namespace":"project:clio","importance":2,"confidence":0.9}]"#;
+        let memories = parse_distillation(raw).expect("parse failed");
+        assert_eq!(
+            memories.len(),
+            1,
+            "receipt must not be dropped as session noise"
+        );
+        assert_eq!(memories[0].kind, "receipt");
     }
 
     #[test]
