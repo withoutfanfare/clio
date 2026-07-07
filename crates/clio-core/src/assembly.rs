@@ -474,7 +474,8 @@ fn build_handoff(
     };
 
     // Relevance gets the lion's share of the budget; constraints and receipts
-    // take what remains.
+    // take what remains. This is intentional: at max_items <= 12 the relevant
+    // limit consumes the whole budget, leaving constraints and receipts empty.
     let relevant_limit = 12.min(max_items);
     let constraint_limit = 5.min(max_items.saturating_sub(relevant_limit));
     let receipt_limit = max_items
@@ -693,6 +694,37 @@ mod tests {
                 .any(|m| m.content.contains("migrations"))
         );
         assert!(brief.sections[2].items.iter().any(|m| m.kind == "receipt"));
+    }
+
+    #[test]
+    fn handoff_budget_prioritises_relevance_at_small_max_items() {
+        let conn = test_db();
+        make_memory(
+            &conn,
+            "project:test",
+            "constraint",
+            "Never edit applied migrations.",
+        );
+        make_memory(&conn, "project:test", "receipt", "Did a thing.");
+        make_memory(
+            &conn,
+            "project:test",
+            "note",
+            "The CAD-42 index work is in progress.",
+        );
+        let request = ContextRequest {
+            namespace: Some("project:test".into()),
+            preset: ContextPreset::Handoff,
+            query: Some("CAD-42".into()),
+            max_items: 10,
+            ..Default::default()
+        };
+        let brief = build_context(&conn, &request).unwrap();
+        // All budget goes to Directly Relevant; constraints and receipts sections
+        // exist but are empty at max_items <= 12.
+        assert_eq!(brief.sections[1].items.len(), 0);
+        assert_eq!(brief.sections[2].items.len(), 0);
+        assert!(!brief.sections[0].items.is_empty());
     }
 
     #[test]
