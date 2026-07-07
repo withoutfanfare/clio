@@ -26,6 +26,7 @@ pub enum ContextPreset {
     DecisionHistory,
     ActiveConstraints,
     RecentActivity,
+    Handoff,
     Custom,
 }
 
@@ -37,6 +38,7 @@ impl fmt::Display for ContextPreset {
             Self::DecisionHistory => "decision-history",
             Self::ActiveConstraints => "active-constraints",
             Self::RecentActivity => "recent-activity",
+            Self::Handoff => "handoff",
             Self::Custom => "custom",
         };
         f.write_str(s)
@@ -53,10 +55,11 @@ impl FromStr for ContextPreset {
             "decision-history" => Ok(Self::DecisionHistory),
             "active-constraints" => Ok(Self::ActiveConstraints),
             "recent-activity" => Ok(Self::RecentActivity),
+            "handoff" => Ok(Self::Handoff),
             "custom" => Ok(Self::Custom),
             other => Err(ClioError::Validation(format!(
                 "unknown context preset: '{other}'. Expected one of: project-brief, \
-                 person-brief, decision-history, active-constraints, recent-activity, custom"
+                 person-brief, decision-history, active-constraints, recent-activity, handoff, custom"
             ))),
         }
     }
@@ -183,6 +186,14 @@ pub fn build_context(conn: &Connection, request: &ContextRequest) -> Result<Cont
         ContextPreset::RecentActivity => build_recent_activity(
             conn,
             &ns,
+            request.max_items,
+            request.include_links,
+            &scoring,
+        )?,
+        ContextPreset::Handoff => build_handoff(
+            conn,
+            &ns,
+            request.query.as_deref(),
             request.max_items,
             request.include_links,
             &scoring,
@@ -440,6 +451,70 @@ fn build_custom(
     Ok(vec![results])
 }
 
+/// Handoff brief — everything an agent (or human) needs to pick up a ticket
+/// or topic: memories matching the query (tags are FTS-indexed, so memories
+/// tagged `ticket:<id>` surface too), the namespace's active constraints, and
+/// recent session receipts. The query is required.
+fn build_handoff(
+    conn: &Connection,
+    ns: &Option<String>,
+    query: Option<&str>,
+    max_items: u32,
+    include_links: bool,
+    scoring: &Option<ScoringConfig>,
+) -> Result<Vec<ContextSection>> {
+    let query = match query.map(str::trim).filter(|q| !q.is_empty()) {
+        Some(q) => q,
+        None => {
+            return Err(ClioError::Validation(
+                "the handoff preset requires a query — a ticket id or topic, e.g. \"CAD-42\""
+                    .into(),
+            ));
+        }
+    };
+
+    // Relevance gets the lion's share of the budget; constraints and receipts
+    // take what remains.
+    let relevant_limit = 12.min(max_items);
+    let constraint_limit = 5.min(max_items.saturating_sub(relevant_limit));
+    let receipt_limit = max_items
+        .saturating_sub(relevant_limit + constraint_limit)
+        .min(3);
+
+    let relevant = recall_section(
+        conn,
+        "Directly Relevant",
+        ns,
+        None,
+        Some(query),
+        relevant_limit,
+        include_links,
+        scoring,
+    )?;
+    let constraints = recall_section(
+        conn,
+        "Active Constraints",
+        ns,
+        Some("constraint"),
+        None,
+        constraint_limit,
+        include_links,
+        scoring,
+    )?;
+    let receipts = recall_section(
+        conn,
+        "Recent Receipts",
+        ns,
+        Some("receipt"),
+        None,
+        receipt_limit,
+        include_links,
+        scoring,
+    )?;
+
+    Ok(vec![relevant, constraints, receipts])
+}
+
 // ---------------------------------------------------------------------------
 // Shared helper — run a recall query and wrap the result as a section
 // ---------------------------------------------------------------------------
@@ -526,6 +601,7 @@ mod tests {
             ContextPreset::DecisionHistory,
             ContextPreset::ActiveConstraints,
             ContextPreset::RecentActivity,
+            ContextPreset::Handoff,
             ContextPreset::Custom,
         ];
 
@@ -534,6 +610,89 @@ mod tests {
             let parsed: ContextPreset = s.parse().unwrap();
             assert_eq!(parsed, preset);
         }
+    }
+
+    #[test]
+    fn handoff_preset_requires_query() {
+        let conn = test_db();
+        let request = ContextRequest {
+            namespace: Some("project:test".into()),
+            preset: ContextPreset::Handoff,
+            ..Default::default()
+        };
+        let result = build_context(&conn, &request);
+        assert!(result.is_err(), "handoff without a query must error");
+    }
+
+    #[test]
+    fn handoff_brief_gathers_ticket_memories_constraints_and_receipts() {
+        let conn = test_db();
+
+        // Tagged with the ticket id only — the content never mentions "cad-42".
+        // This pins the convention that tags are FTS-indexed, so a query for the
+        // ticket id finds tag-only memories.
+        repository::remember(
+            &conn,
+            &RememberInput {
+                namespace: "project:test".into(),
+                kind: "decision".into(),
+                title: Some("Index approach".into()),
+                summary: None,
+                content: "Chose the composite index approach for the orders table.".into(),
+                tags: vec!["ticket:cad-42".into()],
+                source: None,
+                source_ref: None,
+                confidence: None,
+                importance: 3,
+                metadata: serde_json::json!({}),
+                valid_from: None,
+                valid_until: None,
+                upsert: false,
+            },
+            &crate::settings::Settings::default(),
+        )
+        .unwrap();
+
+        make_memory(
+            &conn,
+            "project:test",
+            "constraint",
+            "Never edit applied migrations.",
+        );
+        make_memory(
+            &conn,
+            "project:test",
+            "receipt",
+            "Implemented the index; left the backfill undone.",
+        );
+
+        let request = ContextRequest {
+            namespace: Some("project:test".into()),
+            preset: ContextPreset::Handoff,
+            query: Some("CAD-42".into()),
+            ..Default::default()
+        };
+        let brief = build_context(&conn, &request).unwrap();
+
+        let headings: Vec<&str> = brief.sections.iter().map(|s| s.heading.as_str()).collect();
+        assert_eq!(
+            headings,
+            vec!["Directly Relevant", "Active Constraints", "Recent Receipts"]
+        );
+        assert!(
+            brief.sections[0]
+                .items
+                .iter()
+                .any(|m| m.content.contains("composite index")),
+            "tag-only ticket memory must surface in Directly Relevant"
+        );
+        assert!(
+            brief.sections[1]
+                .items
+                .iter()
+                .any(|m| m.content.contains("migrations"))
+        );
+        assert!(brief.sections[2].items.iter().any(|m| m.kind == "receipt"));
     }
 
     #[test]
