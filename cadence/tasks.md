@@ -1,8 +1,8 @@
 # Cadence Tasks
 
 ## TASK-1: Daemon 'stop'/'restart' leaves a stuck live process (run() never subscribes to shutdown broadcast)
-status: open
-labels: agent:triaged, agent:revised, agent:needs-human, agent:spec
+status: closed
+labels: agent:needs-human, agent:specced
 
 ## Problem
 
@@ -95,7 +95,7 @@ This does not fit the decision core's model (open PR passing/failing a bar) — 
 
 ## TASK-2: Integrity check falsely flags every unsorted-tag memory as corrupt (tags_text not sorted on write)
 status: completed
-labels: 
+labels: agent:triaged
 
 ## Problem
 
@@ -195,7 +195,7 @@ PR: https://github.com/withoutfanfare/clio/pull/2
 
 ## TASK-3: MCP memory_search silently drops global memories (default scope diverges from CLI and memory_recall)
 status: completed
-labels: 
+labels: agent:triaged
 
 ## Problem
 
