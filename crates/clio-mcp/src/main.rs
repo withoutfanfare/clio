@@ -348,11 +348,11 @@ struct ContextParams {
     #[serde(default)]
     cwd: Option<String>,
 
-    /// Preset: project-brief, person-brief, decision-history, active-constraints, recent-activity, custom.
+    /// Preset: project-brief, person-brief, decision-history, active-constraints, recent-activity, handoff, custom.
     #[serde(default = "default_preset")]
     preset: String,
 
-    /// FTS query for custom preset.
+    /// FTS query for the custom and handoff presets (handoff requires it — pass the ticket id or topic).
     #[serde(default)]
     query: Option<String>,
 
@@ -1764,8 +1764,13 @@ impl ServerHandler for ClioServer {
                  - memory_capture: LLM-classified store; low-confidence items queue to the \
                  inbox for review instead of storing immediately.\n\
                  - memory_context: assemble a scoped brief. Presets: project-brief, \
-                 person-brief, decision-history, active-constraints, recent-activity, custom.\n\
+                 person-brief, decision-history, active-constraints, recent-activity, handoff, custom. \
+                 The handoff preset requires `query` (a ticket id or topic) and returns a pickup \
+                 brief: relevant memories, active constraints, recent receipts.\n\
                  - memory_inbox: review queued captures (list/approve/reject/edit via `action`).\n\n\
+                 TICKET CONVENTION: when working a tracked issue, tag stored memories \
+                 `ticket:<issue-id>` (lowercase). Tags are FTS-indexed, so a later handoff \
+                 brief for that id finds them.\n\n\
                  Archive is a soft-delete: archived records are hidden and excluded from recall \
                  by default. Pass `response_format:\"json\"` for structured processing (cheaper \
                  tokens); markdown is for human display."

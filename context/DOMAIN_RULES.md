@@ -323,3 +323,19 @@ Indexed fields: `title`, `summary`, `content`, `tags_text`
 Tokeniser: `porter unicode61`
 
 Ranking: BM25 with weighting preference title > summary > content > tags.
+
+## Ticket and receipt conventions
+
+- **Ticket tag** — memories created while working a tracked issue carry the tag
+  `ticket:<issue-id>` (lowercase, e.g. `ticket:cad-42`). Tags are FTS-indexed,
+  so a handoff brief for "CAD-42" finds tagged memories even when the content
+  does not mention the id.
+- **Receipt kind** — a `receipt` is a short record of one working session: what
+  was done, what was left undone, and why it stopped. Emitted by the session
+  stop hooks via `clio distill` (importance 2, tagged `receipt`). Receipts are
+  activity, not knowledge: they surface in the handoff preset's "Recent
+  Receipts" section and in recent-activity listings.
+- **Handoff preset** — `memory_context` / `clio brief` preset `handoff`
+  requires a query (ticket id or topic) and assembles: Directly Relevant (FTS),
+  Active Constraints, Recent Receipts. Designed to be pasted into a ticket so
+  another agent or human can pick the work up with its context attached.
