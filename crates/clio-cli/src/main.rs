@@ -489,11 +489,11 @@ struct BriefArgs {
     #[arg(long)]
     namespace: Option<String>,
 
-    /// Preset: project-brief, person-brief, decision-history, active-constraints, recent-activity, custom.
+    /// Preset: project-brief, person-brief, decision-history, active-constraints, recent-activity, handoff, custom.
     #[arg(long, default_value = "project-brief")]
     preset: String,
 
-    /// FTS query (used with --preset custom).
+    /// FTS query (required by --preset handoff, used with --preset custom).
     #[arg(long)]
     query: Option<String>,
 

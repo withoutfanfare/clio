@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+**Handoff Briefs & Receipts**
+- New `handoff` context preset (`clio brief --preset handoff --query <ticket-id>`, and via MCP `memory_context`): assembles a ticket-pickup brief with three sections — Directly Relevant (FTS on the query), Active Constraints, and Recent Receipts — sized to the usual `--char-budget`. The query is required; relevance takes budget priority (at `max_items ≤ 12` the other sections are deliberately empty).
+- New `receipt` memory kind: a short per-session record of what was done, what was left undone, and why the session stopped. Distillation emits at most one per session (importance 2, tagged `receipt`) when substantive work happened, and receipts are exempt from the session-noise title filter so they cannot be silently dropped.
+- Ticket tag convention: memories stored while working a tracked issue carry `ticket:<issue-id>` (lowercase). Tags are FTS-indexed, so a handoff query for the ticket id finds them even when the content never mentions it. Documented in `context/DOMAIN_RULES.md` and the MCP server instructions.
+- Codex session capture: a new `codex_stop.py` hook (in the clio-hooks skill, registered via `~/.codex/hooks.json`) digests Codex rollout transcripts and reuses the shared distillation pipeline with `source: codex-session`; `distill_to_clio` gained a `source` parameter (default unchanged for Claude Code).
+
 **Knowledge Distillation**
 - `distill` / `distill_and_store` in `clio-core::capture`: send a long body of text (e.g. a session transcript) to the LLM and extract **zero or more** self-contained, durable memories (decisions, facts, constraints, insights). Routine input yields nothing, so noise is filtered by design.
 - `DistilledMemory` struct and `parse_distillation` (tolerant of bare arrays or `{"memories": […]}`, drops empty-content items).
@@ -70,6 +76,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 **Core**
+- Classification and distillation calls now set OpenAI JSON mode (`response_format: json_object`), so a session digest containing its own output-format instructions (common in code-review prompts, e.g. "no preamble… end with VERDICT: CLEAN") can no longer hijack the model into returning plain text and failing the JSON parse. The distillation prompt now asks for a `{"memories": […]}` object (already accepted by the parser) and tells the model the digest is source material, not instructions. Consolidation still returns markdown and opts out.
 - `recall_scoped` now pages correctly across the detected and `global` namespaces — the global fill no longer hard-codes `offset: 0`, so `offset > 0` pages across the merged result — and reports an honest `total`.
 - `PRAGMA wal_autocheckpoint = 1000` plus a daemon WAL checkpoint (`PASSIVE`) on shutdown keep the `-wal` file bounded on long-lived processes.
 

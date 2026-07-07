@@ -714,9 +714,21 @@ No parameters. Returns a sorted array of all namespace strings in the database.
 
 ```json
 {
-  "cwd": "Required. Working directory to detect namespace for."
+  "namespace": "Optional. Explicit namespace scope.",
+  "cwd": "Optional. Working directory for namespace auto-detection.",
+  "preset": "project-brief (default) | person-brief | decision-history | active-constraints | recent-activity | handoff | custom.",
+  "query": "FTS query. Required by the handoff preset (ticket id or topic); used with custom.",
+  "max_items": "20.",
+  "char_budget": "Optional. Character budget for the whole brief.",
+  "include_links": "false.",
+  "response_format": "markdown | json."
 }
 ```
+
+The `handoff` preset assembles a ticket-pickup brief: Directly Relevant
+(FTS on the query, which includes memories tagged `ticket:<id>`), Active
+Constraints, and Recent Receipts matching the query or ticket tag. See
+`reference/mcp-contract.md` for the full contract.
 
 ### memory_inbox_list
 

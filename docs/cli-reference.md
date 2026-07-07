@@ -89,6 +89,28 @@ clio recall --query "redis" --json
 
 **Sort orders:** `updated-desc` (default) `updated-asc` `importance-desc` `importance-asc` `created-desc` `created-asc`
 
+### Brief (context assembly)
+
+`brief` assembles a scoped context brief from presets: `project-brief`
+(default), `person-brief`, `decision-history`, `active-constraints`,
+`recent-activity`, `handoff`, `custom`.
+
+```sh
+# Project brief for the current directory's namespace
+clio brief
+
+# Handoff brief for picking up a ticket — relevant memories and receipts
+# (including any tagged ticket:<id>), plus active constraints
+clio brief --preset handoff --query CAD-42 --char-budget 4000
+
+# Custom FTS query
+clio brief --preset custom --query "embedding backend"
+```
+
+The `handoff` preset requires `--query` (a ticket id or topic). Useful flags:
+`--namespace`, `--max-items` (default 20), `--char-budget` (truncates sections
+greedily once reached), `--include-links`, `--json`.
+
 ---
 
 ## Knowledge Graph

@@ -206,10 +206,13 @@ fn insert_tags(conn: &Connection, memory_id: &str, tags: &[String], now: &str) -
 
 fn normalise_tags(tags: &[String]) -> Vec<String> {
     let mut seen = std::collections::HashSet::new();
-    tags.iter()
+    let mut out: Vec<String> = tags
+        .iter()
         .map(|t| t.trim().to_lowercase())
         .filter(|t| !t.is_empty() && seen.insert(t.clone()))
-        .collect()
+        .collect();
+    out.sort_unstable();
+    out
 }
 
 // ---------------------------------------------------------------------------
