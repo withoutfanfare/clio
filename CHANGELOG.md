@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+**Handoff Briefs & Receipts**
+- New `handoff` context preset (`clio brief --preset handoff --query <ticket-id>`, and via MCP `memory_context`): assembles a ticket-pickup brief with three sections — Directly Relevant (FTS on the query), Active Constraints, and Recent Receipts — sized to the usual `--char-budget`. The query is required; relevance takes budget priority (at `max_items ≤ 12` the other sections are deliberately empty).
+- New `receipt` memory kind: a short per-session record of what was done, what was left undone, and why the session stopped. Distillation emits at most one per session (importance 2, tagged `receipt`) when substantive work happened, and receipts are exempt from the session-noise title filter so they cannot be silently dropped.
+- Ticket tag convention: memories stored while working a tracked issue carry `ticket:<issue-id>` (lowercase). Tags are FTS-indexed, so a handoff query for the ticket id finds them even when the content never mentions it. Documented in `context/DOMAIN_RULES.md` and the MCP server instructions.
+- Codex session capture: a new `codex_stop.py` hook (in the clio-hooks skill, registered via `~/.codex/hooks.json`) digests Codex rollout transcripts and reuses the shared distillation pipeline with `source: codex-session`; `distill_to_clio` gained a `source` parameter (default unchanged for Claude Code).
+
 **Knowledge Distillation**
 - `distill` / `distill_and_store` in `clio-core::capture`: send a long body of text (e.g. a session transcript) to the LLM and extract **zero or more** self-contained, durable memories (decisions, facts, constraints, insights). Routine input yields nothing, so noise is filtered by design.
 - `DistilledMemory` struct and `parse_distillation` (tolerant of bare arrays or `{"memories": […]}`, drops empty-content items).
