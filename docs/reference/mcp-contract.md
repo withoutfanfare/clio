@@ -1092,7 +1092,7 @@ The `handoff` preset requires `query` (a ticket id or topic) and assembles a pic
 - `namespace`: null (auto-detected from `cwd` when provided)
 - `cwd`: null (no auto-detection)
 - `preset`: `project-brief`
-- `query`: null (used only with `custom` preset)
+- `query`: null (used with `custom`; required by `handoff`)
 - `max_items`: `20`
 - `include_links`: `false`
 - `response_format`: `markdown`
