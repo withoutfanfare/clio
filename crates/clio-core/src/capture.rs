@@ -271,16 +271,16 @@ pub fn parse_classification(raw: &str) -> Result<ClassificationResult> {
         ClioError::Validation(format!("capture classification JSON parse error: {e}"))
     })?;
 
-    Ok(classification_from_value(&v))
+    Ok(classification_from_value(&v, false))
 }
 
 /// Normalise and clamp the classification fields of a JSON object. Shared by
 /// `parse_classification` and `parse_distillation` so both apply identical
-/// rules for kind validation, title/summary truncation, tag normalisation,
-/// and importance/confidence clamping.
-fn classification_from_value(v: &serde_json::Value) -> ClassificationResult {
+/// rules for title/summary truncation, tag normalisation, and
+/// importance/confidence clamping.
+fn classification_from_value(v: &serde_json::Value, allow_receipt: bool) -> ClassificationResult {
     let kind = v["kind"].as_str().unwrap_or("note").to_lowercase();
-    let valid_kinds = [
+    let mut valid_kinds = vec![
         "note",
         "fact",
         "decision",
@@ -288,8 +288,10 @@ fn classification_from_value(v: &serde_json::Value) -> ClassificationResult {
         "task",
         "observation",
         "constraint",
-        "receipt",
     ];
+    if allow_receipt {
+        valid_kinds.push("receipt");
+    }
     let kind = if valid_kinds.contains(&kind.as_str()) {
         kind
     } else {
@@ -372,6 +374,7 @@ pub fn parse_distillation(raw: &str) -> Result<Vec<DistilledMemory>> {
         ));
     };
 
+    let mut seen_receipt = false;
     let memories = array
         .iter()
         .filter_map(|item| {
@@ -379,7 +382,7 @@ pub fn parse_distillation(raw: &str) -> Result<Vec<DistilledMemory>> {
             if content.is_empty() {
                 return None;
             }
-            let c = classification_from_value(item);
+            let c = classification_from_value(item, true);
             // Deterministic backstop: even with the distillation prompt forbidding
             // it, the LLM occasionally emits a "session summary"/"commit summary"
             // memory describing the working session itself rather than durable
@@ -388,6 +391,12 @@ pub fn parse_distillation(raw: &str) -> Result<Vec<DistilledMemory>> {
             // on purpose, not noise, even when its title reads as session-shaped.
             if c.kind != "receipt" && is_session_noise(&c.title) {
                 return None;
+            }
+            if c.kind == "receipt" {
+                if seen_receipt {
+                    return None;
+                }
+                seen_receipt = true;
             }
             Some(DistilledMemory {
                 content,
@@ -763,6 +772,22 @@ mod tests {
     }
 
     #[test]
+    fn parse_classification_does_not_accept_receipt_kind() {
+        let json = r#"{
+            "kind": "receipt",
+            "title": "Session receipt",
+            "summary": "",
+            "tags": ["receipt"],
+            "namespace": "global",
+            "importance": 2,
+            "confidence": 0.9
+        }"#;
+
+        let result = parse_classification(json).unwrap();
+        assert_eq!(result.kind, "note");
+    }
+
+    #[test]
     fn parse_missing_fields_uses_defaults() {
         let json = r#"{}"#;
 
@@ -853,6 +878,17 @@ mod tests {
         assert_eq!(memories.len(), 1);
         assert_eq!(memories[0].kind, "receipt");
         assert_eq!(memories[0].importance, 2);
+    }
+
+    #[test]
+    fn parse_distillation_keeps_only_one_receipt() {
+        let raw = r#"[
+            {"content":"First receipt.","kind":"receipt","title":"Session receipt","summary":"","tags":["receipt"],"namespace":"project:clio","importance":2,"confidence":0.9},
+            {"content":"Second receipt.","kind":"receipt","title":"Session receipt","summary":"","tags":["receipt"],"namespace":"project:clio","importance":2,"confidence":0.9}
+        ]"#;
+        let memories = parse_distillation(raw).expect("parse failed");
+        assert_eq!(memories.len(), 1);
+        assert_eq!(memories[0].content, "First receipt.");
     }
 
     #[test]

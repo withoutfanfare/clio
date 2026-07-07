@@ -473,16 +473,17 @@ fn build_handoff(
         }
     };
 
-    // Relevance gets the lion's share of the budget; constraints and receipts
-    // take what remains. This is intentional: at max_items <= 12 the relevant
-    // limit consumes the whole budget, leaving constraints and receipts empty.
-    let relevant_limit = 12.min(max_items);
-    let constraint_limit = 5.min(max_items.saturating_sub(relevant_limit));
-    let receipt_limit = max_items
-        .saturating_sub(relevant_limit + constraint_limit)
-        .min(3);
+    let reserved_constraints = u32::from(max_items >= 2);
+    let reserved_receipts = u32::from(max_items >= 3);
+    let mut remaining = max_items.saturating_sub(reserved_constraints + reserved_receipts);
+    let relevant_limit = 12.min(remaining);
+    remaining = remaining.saturating_sub(relevant_limit);
+    let extra_constraints = 4.min(remaining);
+    let constraint_limit = reserved_constraints + extra_constraints;
+    remaining = remaining.saturating_sub(extra_constraints);
+    let receipt_limit = reserved_receipts + 2.min(remaining);
 
-    let relevant = recall_section(
+    let mut relevant = recall_section(
         conn,
         "Directly Relevant",
         ns,
@@ -492,6 +493,7 @@ fn build_handoff(
         include_links,
         scoring,
     )?;
+    relevant.items.retain(|item| item.kind != "receipt");
     let constraints = recall_section(
         conn,
         "Active Constraints",
@@ -507,7 +509,7 @@ fn build_handoff(
         "Recent Receipts",
         ns,
         Some("receipt"),
-        None,
+        Some(query),
         receipt_limit,
         include_links,
         scoring,
@@ -571,6 +573,16 @@ mod tests {
     }
 
     fn make_memory(conn: &Connection, ns: &str, kind: &str, content: &str) -> Memory {
+        make_memory_with_tags(conn, ns, kind, content, Vec::new())
+    }
+
+    fn make_memory_with_tags(
+        conn: &Connection,
+        ns: &str,
+        kind: &str,
+        content: &str,
+        tags: Vec<String>,
+    ) -> Memory {
         repository::remember(
             conn,
             &RememberInput {
@@ -579,7 +591,7 @@ mod tests {
                 title: Some(format!("{kind}: {}", &content[..content.len().min(30)])),
                 summary: None,
                 content: content.into(),
-                tags: Vec::new(),
+                tags,
                 source: None,
                 source_ref: None,
                 confidence: None,
@@ -660,11 +672,19 @@ mod tests {
             "constraint",
             "Never edit applied migrations.",
         );
-        make_memory(
+        make_memory_with_tags(
             &conn,
             "project:test",
             "receipt",
             "Implemented the index; left the backfill undone.",
+            vec!["ticket:cad-42".into()],
+        );
+        make_memory_with_tags(
+            &conn,
+            "project:test",
+            "receipt",
+            "Worked on an unrelated ticket.",
+            vec!["ticket:cad-99".into()],
         );
 
         let request = ContextRequest {
@@ -697,7 +717,7 @@ mod tests {
     }
 
     #[test]
-    fn handoff_budget_prioritises_relevance_at_small_max_items() {
+    fn handoff_budget_reserves_constraints_and_receipts_at_small_max_items() {
         let conn = test_db();
         make_memory(
             &conn,
@@ -705,7 +725,13 @@ mod tests {
             "constraint",
             "Never edit applied migrations.",
         );
-        make_memory(&conn, "project:test", "receipt", "Did a thing.");
+        make_memory_with_tags(
+            &conn,
+            "project:test",
+            "receipt",
+            "Did a thing.",
+            vec!["ticket:cad-42".into()],
+        );
         make_memory(
             &conn,
             "project:test",
@@ -720,10 +746,8 @@ mod tests {
             ..Default::default()
         };
         let brief = build_context(&conn, &request).unwrap();
-        // All budget goes to Directly Relevant; constraints and receipts sections
-        // exist but are empty at max_items <= 12.
-        assert_eq!(brief.sections[1].items.len(), 0);
-        assert_eq!(brief.sections[2].items.len(), 0);
+        assert!(!brief.sections[1].items.is_empty());
+        assert!(!brief.sections[2].items.is_empty());
         assert!(!brief.sections[0].items.is_empty());
     }
 

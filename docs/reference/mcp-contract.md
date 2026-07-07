@@ -1071,7 +1071,7 @@ Build a scoped context brief for agent consumption.
 
 Agents often need to load relevant context before starting work. Instead of issuing multiple recall, recent, and filter queries, `memory_context` combines them into a single call that returns a structured brief organised by sections.
 
-The `handoff` preset requires `query` (a ticket id or topic) and assembles a pickup brief: Directly Relevant (FTS, which includes `ticket:<id>`-tagged memories), Active Constraints, Recent Receipts.
+The `handoff` preset requires `query` (a ticket id or topic) and assembles a pickup brief: Directly Relevant (FTS, which includes `ticket:<id>`-tagged memories), Active Constraints, and Recent Receipts matching the query or ticket tag.
 
 ### Input
 
@@ -1106,7 +1106,7 @@ The `handoff` preset requires `query` (a ticket id or topic) and assembles a pic
 | `decision-history` | Decisions (ordered by created_at) |
 | `active-constraints` | Constraints (non-archived) |
 | `recent-activity` | Recent memories |
-| `handoff` | Directly Relevant, Active Constraints, Recent Receipts (requires `query`) |
+| `handoff` | Directly Relevant, Active Constraints, Recent Receipts matching the query or ticket tag (requires `query`) |
 | `custom` | Search Results (uses `query` for FTS) |
 
 ### Structured response (JSON format)

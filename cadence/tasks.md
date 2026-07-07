@@ -1,8 +1,8 @@
 # Cadence Tasks
 
 ## TASK-1: Daemon 'stop'/'restart' leaves a stuck live process (run() never subscribes to shutdown broadcast)
-status: closed
-labels: agent:needs-human, agent:specced
+status: open
+labels: agent:needs-human
 
 ## Problem
 

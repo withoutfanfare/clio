@@ -99,8 +99,8 @@ clio recall --query "redis" --json
 # Project brief for the current directory's namespace
 clio brief
 
-# Handoff brief for picking up a ticket — relevant memories (including any
-# tagged ticket:<id>), active constraints, and recent session receipts
+# Handoff brief for picking up a ticket — relevant memories and receipts
+# (including any tagged ticket:<id>), plus active constraints
 clio brief --preset handoff --query CAD-42 --char-budget 4000
 
 # Custom FTS query

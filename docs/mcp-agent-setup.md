@@ -727,8 +727,8 @@ No parameters. Returns a sorted array of all namespace strings in the database.
 
 The `handoff` preset assembles a ticket-pickup brief: Directly Relevant
 (FTS on the query, which includes memories tagged `ticket:<id>`), Active
-Constraints, and Recent Receipts. See `reference/mcp-contract.md` for the
-full contract.
+Constraints, and Recent Receipts matching the query or ticket tag. See
+`reference/mcp-contract.md` for the full contract.
 
 ### memory_inbox_list
 
