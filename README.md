@@ -1,5 +1,9 @@
 # Clio
 
+<p align="center">
+  <img src="crates/clio-tauri/icons/128x128@2x.png" alt="Clio app icon" width="144" height="144">
+</p>
+
 **Local-first shared memory for AI tooling.** One Rust core, one SQLite database, every AI agent you use.
 
 ```text
