@@ -22,6 +22,29 @@ clio init --namespace project:my-project
 
 ---
 
+## Remote MCP Bridge
+
+Forward MCP traffic to a private Clio server over SSH while detecting project
+namespaces on the client computer:
+
+```sh
+clio --db-path /remote/memory.db remote-mcp <ssh-alias> \
+  --remote-binary /remote/clio-mcp
+```
+
+`--db-path` and `--remote-binary` are paths on the remote server. The SSH alias
+must support non-interactive key authentication. Explicit namespaces and
+global requests are preserved; scoped recall still combines the detected
+project namespace with `global` memories.
+
+This command shares MCP memory operations. Other CLI commands, the daemon,
+session hooks, and the desktop app remain local. Configure embeddings and
+capture on the remote server if you need those features there. See
+[MCP Agent Setup](mcp-agent-setup.md#shared-memory-over-ssh) for Codex and JSON
+client configuration.
+
+---
+
 ## Storing Memories
 
 ```sh

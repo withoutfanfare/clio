@@ -36,6 +36,11 @@ struct RememberParams {
     #[serde(default)]
     cwd: Option<String>,
 
+    /// Namespace detected by a local remote bridge.
+    #[serde(default, rename = "_clio_namespace")]
+    #[schemars(skip)]
+    clio_namespace: Option<String>,
+
     /// Memory kind: note, decision, snippet.
     #[serde(default = "default_kind")]
     kind: String,
@@ -105,6 +110,11 @@ struct RecallParams {
     /// Working dir for namespace detection.
     #[serde(default)]
     cwd: Option<String>,
+
+    /// Namespace detected by a local remote bridge.
+    #[serde(default, rename = "_clio_namespace")]
+    #[schemars(skip)]
+    clio_namespace: Option<String>,
 
     /// Kind filter.
     #[serde(default)]
@@ -261,6 +271,11 @@ struct CaptureParams {
     /// Working dir for namespace detection.
     #[serde(default)]
     cwd: Option<String>,
+
+    /// Namespace detected by a local remote bridge.
+    #[serde(default, rename = "_clio_namespace")]
+    #[schemars(skip)]
+    clio_namespace: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -279,6 +294,11 @@ struct SearchParams {
     /// Working dir for namespace detection.
     #[serde(default)]
     cwd: Option<String>,
+
+    /// Namespace detected by a local remote bridge.
+    #[serde(default, rename = "_clio_namespace")]
+    #[schemars(skip)]
+    clio_namespace: Option<String>,
 
     /// Include archived.
     #[serde(default)]
@@ -347,6 +367,11 @@ struct ContextParams {
     /// Working dir for namespace detection.
     #[serde(default)]
     cwd: Option<String>,
+
+    /// Namespace detected by a local remote bridge.
+    #[serde(default, rename = "_clio_namespace")]
+    #[schemars(skip)]
+    clio_namespace: Option<String>,
 
     /// Preset: project-brief, person-brief, decision-history, active-constraints, recent-activity, handoff, custom.
     #[serde(default = "default_preset")]
@@ -479,6 +504,42 @@ fn default_max_items() -> u32 {
 
 fn default_inbox_limit() -> u32 {
     20
+}
+
+fn resolve_mcp_namespace(
+    explicit: Option<&str>,
+    local_detected: Option<&str>,
+    cwd: Option<&std::path::Path>,
+    auto_detect: bool,
+) -> String {
+    let local_detected = if auto_detect { local_detected } else { None };
+    clio_core::context::resolve_namespace(explicit.or(local_detected), cwd, auto_detect)
+}
+
+#[cfg(test)]
+mod namespace_tests {
+    use super::resolve_mcp_namespace;
+
+    #[test]
+    fn local_detected_namespace_respects_precedence_and_setting() {
+        let cases = [
+            (
+                Some("project:explicit"),
+                Some("project:detected"),
+                true,
+                "project:explicit",
+            ),
+            (None, Some("project:detected"), true, "project:detected"),
+            (None, Some("project:detected"), false, "global"),
+        ];
+
+        for (explicit, detected, auto_detect, expected) in cases {
+            assert_eq!(
+                resolve_mcp_namespace(explicit, detected, None, auto_detect),
+                expected
+            );
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1024,8 +1085,9 @@ impl ClioServer {
         tokio::task::spawn_blocking(move || {
             let conn = conn.lock().map_err(|e| format!("lock error: {e}"))?;
             let cwd_path = params.cwd.as_deref().map(std::path::Path::new);
-            let namespace = clio_core::context::resolve_namespace(
+            let namespace = resolve_mcp_namespace(
                 params.namespace.as_deref(),
+                params.clio_namespace.as_deref(),
                 cwd_path,
                 settings.context.auto_detect,
             );
@@ -1083,8 +1145,9 @@ impl ClioServer {
         tokio::task::spawn_blocking(move || {
             let conn = conn.lock().map_err(|e| format!("lock error: {e}"))?;
             let cwd_path = params.cwd.as_deref().map(std::path::Path::new);
-            let detected_ns = clio_core::context::resolve_namespace(
+            let detected_ns = resolve_mcp_namespace(
                 params.namespace.as_deref(),
+                params.clio_namespace.as_deref(),
                 cwd_path,
                 settings.context.auto_detect,
             );
@@ -1367,9 +1430,11 @@ impl ClioServer {
             let ns_override = if params.namespace.is_some() {
                 params.namespace
             } else if settings.context.auto_detect {
-                cwd_path
-                    .and_then(clio_core::context::detect_namespace)
-                    .map(|ctx| ctx.namespace)
+                params.clio_namespace.or_else(|| {
+                    cwd_path
+                        .and_then(clio_core::context::detect_namespace)
+                        .map(|ctx| ctx.namespace)
+                })
             } else {
                 None
             };
@@ -1419,8 +1484,9 @@ impl ClioServer {
                 .map_err(|e| format_clio_error(&e))?;
 
             let cwd_path = params.cwd.as_deref().map(std::path::Path::new);
-            let detected_ns = clio_core::context::resolve_namespace(
+            let detected_ns = resolve_mcp_namespace(
                 params.namespace.as_deref(),
+                params.clio_namespace.as_deref(),
                 cwd_path,
                 settings.context.auto_detect,
             );
@@ -1592,8 +1658,9 @@ impl ClioServer {
         tokio::task::spawn_blocking(move || {
             let conn = conn.lock().map_err(|e| format!("lock error: {e}"))?;
             let cwd_path = params.cwd.as_deref().map(std::path::Path::new);
-            let namespace = clio_core::context::resolve_namespace(
+            let namespace = resolve_mcp_namespace(
                 params.namespace.as_deref(),
+                params.clio_namespace.as_deref(),
                 cwd_path,
                 settings.context.auto_detect,
             );

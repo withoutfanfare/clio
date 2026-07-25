@@ -49,6 +49,68 @@ clio setup generic       # prints config snippet (no file write)
 
 ---
 
+### Shared memory over SSH
+
+To share one Clio database across computers, run `clio-mcp` on a remote server
+and use the local CLI as an SSH bridge:
+
+```sh
+clio --db-path /remote/memory.db remote-mcp <ssh-alias> \
+  --remote-binary /remote/clio-mcp
+```
+
+`--db-path` is the database path on the remote server. The bridge requires:
+
+- `clio` installed on each client computer
+- `clio-mcp` and the SQLite database on the remote server
+- an SSH alias with non-interactive key authentication configured locally
+
+The bridge uses `BatchMode=yes`, so password prompts are not supported. The
+database and MCP server remain private behind SSH; neither needs a public
+network listener.
+
+For Codex, add the bridge to `~/.codex/config.toml`:
+
+```toml
+[mcp_servers.clio]
+command = "/path/to/clio"
+args = ["--db-path", "/remote/memory.db", "remote-mcp", "atlas", "--remote-binary", "/remote/clio-mcp"]
+```
+
+For an MCP client that uses JSON configuration:
+
+```json
+{
+  "mcpServers": {
+    "clio": {
+      "command": "/path/to/clio",
+      "args": [
+        "--db-path",
+        "/remote/memory.db",
+        "remote-mcp",
+        "atlas",
+        "--remote-binary",
+        "/remote/clio-mcp"
+      ]
+    }
+  }
+}
+```
+
+Replace `atlas` and the three paths with values for your computers and server.
+The bridge uses each tool call's `cwd` to detect the namespace locally, then
+forwards the request without that client path. Explicit namespaces and
+`global: true` still take precedence, and scoped recall still searches the
+project namespace before filling from `global`.
+
+This shares MCP memory operations only. Direct CLI commands, the daemon,
+session hooks, and the desktop app continue to use local storage. Semantic
+embeddings and capture also run on the server, so configure their providers
+there if required. Remote configuration is currently manual; `clio setup`
+still creates local MCP configurations.
+
+---
+
 ### Connection: Claude Code
 
 Add to `~/.claude.json` (not `~/.claude/settings.json`):
