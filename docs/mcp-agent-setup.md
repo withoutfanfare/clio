@@ -51,8 +51,8 @@ clio setup generic       # prints config snippet (no file write)
 
 ### Shared memory over SSH
 
-To share one Clio database across computers, run `clio-mcp` on a remote server
-and use the local CLI as an SSH bridge:
+To share one Clio database across computers, install `clio-mcp` on a remote
+server and use the local CLI as an SSH bridge:
 
 ```sh
 clio --db-path /remote/memory.db remote-mcp <ssh-alias> \
@@ -67,7 +67,16 @@ clio --db-path /remote/memory.db remote-mcp <ssh-alias> \
 
 The bridge uses `BatchMode=yes`, so password prompts are not supported. The
 database and MCP server remain private behind SSH; neither needs a public
-network listener.
+network listener. Each client connection starts its own remote `clio-mcp`
+process, which exits when the client disconnects; no long-running server is
+required.
+
+For a headless Linux server, build without local embeddings from the repository
+root so the project SQLite configuration is applied:
+
+```sh
+cargo build --locked --release --no-default-features -p clio-mcp
+```
 
 For Codex, add the bridge to `~/.codex/config.toml`:
 
@@ -103,11 +112,27 @@ forwards the request without that client path. Explicit namespaces and
 `global: true` still take precedence, and scoped recall still searches the
 project namespace before filling from `global`.
 
-This shares MCP memory operations only. Direct CLI commands, the daemon,
-session hooks, and the desktop app continue to use local storage. Semantic
-embeddings and capture also run on the server, so configure their providers
-there if required. Remote configuration is currently manual; `clio setup`
-still creates local MCP configurations.
+#### Current capability boundary
+
+| Capability | Remote bridge status |
+|---|---|
+| MCP reads, writes, recall, archive, links, stats, inbox and context | Shared through the remote database |
+| Project namespace detection | Runs locally, then sends the detected namespace to the remote MCP server |
+| Keyword recall | Works without an embedding provider |
+| Semantic search and auto-embedding | Requires an embedding provider configured on the remote server |
+| LLM capture | Requires capture credentials and settings on the remote server |
+| Direct CLI commands, daemon, session hooks and desktop app | Continue to use local storage |
+| Offline use and later synchronisation | Not implemented |
+
+SQLite remains suitable for this topology because every database connection is
+opened on the remote server; the database file is never mounted across the
+network. PostgreSQL is therefore not required for multi-computer MCP access.
+Changing database engines alone would not make the direct CLI, daemon, hooks or
+desktop app remote-aware; those interfaces need a shared transport or a later
+sync layer.
+
+Remote configuration is currently manual. `clio setup` still creates local MCP
+configurations.
 
 ---
 

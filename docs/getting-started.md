@@ -17,6 +17,19 @@ cargo install --path crates/clio-cli
 cargo install --path crates/clio-mcp
 ```
 
+### Headless Linux server build
+
+From the repository root, build the CLI and MCP server without local
+embeddings:
+
+```sh
+cargo build --locked --release --no-default-features -p clio-cli -p clio-mcp
+```
+
+Running from the repository root applies `.cargo/config.toml`, which enables
+SQLite maths. These binaries retain storage, keyword recall, capture, and
+OpenAI embeddings. Local fastembed semantic search is unavailable.
+
 ### Initialise the database
 
 ```sh
@@ -434,7 +447,38 @@ Once connected, AI clients have access to 21 tools. For full connection instruct
 | `memory_stats` | Aggregate statistics |
 | `memory_activity` | Recent activity feed |
 
-MCP tools that accept a `cwd` parameter (`memory_remember`, `memory_recall`, `memory_capture`, `memory_search`) will auto-detect the project namespace from the working directory, giving AI clients the same scoped recall behaviour as the CLI.
+MCP tools that accept a `cwd` parameter (`memory_remember`, `memory_recall`, `memory_capture`, `memory_search`, `memory_context`) will auto-detect the project namespace from the working directory, giving AI clients the same scoped recall behaviour as the CLI.
+
+### Share one database across computers
+
+Clio can keep one SQLite database on a private server while each computer
+connects through an SSH bridge:
+
+```text
+AI client -> local clio remote-mcp -> SSH -> remote clio-mcp -> remote SQLite
+```
+
+Install `clio` on each client computer. Install `clio-mcp` and initialise the
+database on the server. Then configure key-based SSH access and use:
+
+```sh
+clio --db-path /remote/memory.db remote-mcp <ssh-alias> \
+  --remote-binary /remote/clio-mcp
+```
+
+Both paths are on the server. Configure the MCP client to launch this command
+instead of a local `clio-mcp`. The bridge detects project namespaces on the
+client when namespace auto-detection is enabled, which is the default. See
+[MCP Agent Setup](mcp-agent-setup.md#shared-memory-over-ssh) for client-specific
+configuration.
+
+Current limits:
+
+- SSH must use non-interactive key authentication; password prompts are not supported.
+- A live SSH connection is required. There is no offline cache or synchronisation yet.
+- Only MCP tool calls use the remote database. CLI commands, the daemon, hooks, and the desktop app remain local.
+- Embeddings and capture run on the server, so configure their providers there.
+- Remote client configuration is manual; `clio setup` still generates local MCP configuration.
 
 ---
 
@@ -573,6 +617,7 @@ clio namespaces
 | `embed` | Manage embeddings | `--all`, `--id` |
 | `settings` | View or update settings | subcommands |
 | `serve` | Start MCP server | |
+| `remote-mcp` | Proxy MCP to a private server over SSH | `<ssh-alias>`, `--remote-binary`, `--db-path` |
 | `setup` | Generate MCP config | client name |
 | `schema` | Show DB schema summary | |
 
