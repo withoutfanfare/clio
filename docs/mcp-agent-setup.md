@@ -2,7 +2,7 @@
 
 > For the full MCP tool and resource contract, see [MCP Contract](reference/mcp-contract.md).
 
-Clio exposes an MCP (Model Context Protocol) server that gives AI coding agents persistent, structured memory across sessions. The server runs over stdio and provides 21 tools for reading, writing, searching, and linking memories.
+Clio exposes an MCP (Model Context Protocol) server that gives AI coding agents persistent, structured memory across sessions. The server runs over stdio and provides tools for reading, writing, searching, and linking memories.
 
 This section covers connection setup for six AI agents, then explains **how to actually use Clio** once connected — workflows, prompting patterns, and practical examples.
 
@@ -20,7 +20,7 @@ This section covers connection setup for six AI agents, then explains **how to a
 └──────────────┘                         └──────────┘
 ```
 
-The MCP server is a thin adapter over `clio-core`. All 21 tools map directly to the same functions the CLI uses. Memories stored by one agent are immediately available to every other agent and the CLI.
+The MCP server is a thin adapter over `clio-core`. Its tools map directly to the same functions the CLI uses. Memories stored by one agent are immediately available to every other agent and the CLI.
 
 ---
 
@@ -46,6 +46,151 @@ clio setup generic       # prints config snippet (no file write)
 - Safe to run multiple times — detects if Clio is already configured
 - Preview with `--dry-run` before writing
 - Use `--json` to get a raw config snippet instead of auto-installing
+
+---
+
+### Shared memory over SSH
+
+To share one Clio database across computers, install `clio-mcp` on a remote
+server and use the local CLI as an SSH bridge:
+
+```sh
+clio --db-path /remote/memory.db remote-mcp <ssh-alias> \
+  --remote-binary /remote/clio-mcp
+```
+
+`--db-path` is the database path on the remote server. The bridge requires:
+
+- `clio` installed on each client computer
+- `clio-mcp` and the SQLite database on the remote server
+- an SSH alias with non-interactive key authentication configured locally
+
+The bridge uses `BatchMode=yes`, so password prompts are not supported. The
+database and MCP server remain private behind SSH; neither needs a public
+network listener. Each client connection starts its own remote `clio-mcp`
+process, which exits when the client disconnects; no long-running server is
+required.
+
+For a headless Linux server, build without local embeddings from the repository
+root so the project SQLite configuration is applied:
+
+```sh
+cargo build --locked --release --no-default-features -p clio-mcp
+```
+
+To retain local semantic search on a Linux host that supplies its own ONNX
+Runtime library, use the dynamic feature:
+
+```sh
+cargo build --locked --release --no-default-features \
+  --features local-embeddings-dynamic -p clio-mcp
+```
+
+At runtime, set `ORT_DYLIB_PATH` to the library's absolute path. Placing
+`libonnxruntime.so` beside the executable is not sufficient when the process
+starts from another working directory:
+
+```sh
+ORT_DYLIB_PATH=/absolute/path/to/libonnxruntime.so \
+  CLIO_DB_PATH=/remote/memory.db /remote/clio-mcp
+```
+
+For the SSH bridge, make that variable available to non-interactive SSH
+commands or point `--remote-binary` at a wrapper that exports it before running
+`clio-mcp`. A loader path configured by the operating system is also valid.
+
+For Codex, add the bridge to `~/.codex/config.toml`:
+
+```toml
+[mcp_servers.clio]
+command = "/path/to/clio"
+args = ["--db-path", "/remote/memory.db", "remote-mcp", "atlas", "--remote-binary", "/remote/clio-mcp"]
+```
+
+For an MCP client that uses JSON configuration:
+
+```json
+{
+  "mcpServers": {
+    "clio": {
+      "command": "/path/to/clio",
+      "args": [
+        "--db-path",
+        "/remote/memory.db",
+        "remote-mcp",
+        "atlas",
+        "--remote-binary",
+        "/remote/clio-mcp"
+      ]
+    }
+  }
+}
+```
+
+Replace `atlas` and the three paths with values for your computers and server.
+The bridge uses each tool call's `cwd` to detect the namespace locally, then
+forwards the request without that client path. Explicit namespaces and
+`global: true` still take precedence, and scoped recall still searches the
+project namespace before filling from `global`.
+
+#### Current capability boundary
+
+| Capability | Remote bridge status |
+|---|---|
+| MCP reads, writes, recall, archive, links, stats, inbox and context | Shared through the remote database |
+| Project namespace detection | Runs locally, then sends the detected namespace to the remote MCP server |
+| Keyword recall | Works without an embedding provider |
+| Semantic search and auto-embedding | Requires an embedding provider configured on the remote server |
+| LLM capture | Requires capture credentials and settings on the remote server |
+| Tauri desktop memory, archive, link, namespace, statistics and semantic-search workflows | Can use the same SSH/MCP bridge when remote mode is configured |
+| Tauri bulk operations, import/export, maintenance, deduplication and namespace administration | Remain local only and are hidden in remote mode |
+| Direct CLI commands, daemon and session hooks | Continue to use local storage |
+| Offline use and later synchronisation | Not implemented |
+
+SQLite remains suitable for this topology because every database connection is
+opened on the remote server; the database file is never mounted across the
+network. PostgreSQL is therefore not required for multi-computer MCP access.
+Changing database engines alone would not make the direct CLI, daemon or hooks
+remote-aware; those interfaces need a shared transport or a later sync layer.
+
+#### Tauri desktop remote mode
+
+The desktop app reuses the bridge instead of mounting the remote SQLite file.
+Set these environment variables before starting it:
+
+```sh
+CLIO_REMOTE_HOST=atlas \
+CLIO_REMOTE_DB_PATH=/home/ubuntu/.local/share/clio/memory.db \
+CLIO_REMOTE_BINARY=/home/ubuntu/.local/bin/clio-mcp \
+CLIO_REMOTE_COMMAND=/Users/dannyharding/.cargo/bin/clio \
+./dev.sh
+```
+
+`CLIO_REMOTE_DB_PATH` and `CLIO_REMOTE_BINARY` are required.
+`CLIO_REMOTE_COMMAND` defaults to `clio`. Leave `CLIO_REMOTE_HOST` unset for
+local mode. The app bar identifies the active backend and reports whether the
+bridge is connected. A broken remote configuration is reported as disconnected;
+the app does not silently open a local database. Restart the app to reconnect
+after the bridge process or SSH connection exits. Connection setup, status
+checks and tool calls time out after 10 seconds; a timed-out bridge is stopped.
+
+Remote configuration is currently manual. `clio setup` still creates local MCP
+configurations.
+
+#### Temporary bridge diagnostics
+
+The bridge has privacy-safe diagnostics behind Rust's standard `RUST_LOG`
+filter. To record the tool name and resolved namespace without logging memory
+content, add this temporary environment entry to the MCP client configuration:
+
+```toml
+[mcp_servers.clio.env]
+RUST_LOG = "clio_remote_mcp=debug"
+```
+
+Bridge and remote-server logs are written to stderr so stdout remains reserved
+for MCP JSON-RPC. Remove the entry and restart the client to disable the extra
+diagnostics.
 
 ---
 
@@ -370,7 +515,7 @@ Run `clio setup generic` to get a ready-to-paste JSON block with your exact bina
 
 ## MCP Tools Reference
 
-Once connected, AI agents have access to 21 tools. Every tool returns either JSON or Markdown depending on the `response_format` parameter (default: `markdown` for human-readable output in chat, `json` for structured data).
+Once connected, AI agents have access to Clio's MCP tools. Each read or list tool returns either JSON or Markdown where its contract exposes `response_format` (default: `markdown` for human-readable output in chat, `json` for structured data).
 
 ### Write tools
 

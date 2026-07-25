@@ -69,7 +69,7 @@ async function applyTag() {
 
 <template>
   <Transition name="slide-up">
-    <div v-if="store.selectedCount >= 2" class="bulk-bar">
+    <div v-if="!store.isRemote && store.selectedCount >= 2" class="bulk-bar">
       <div class="bulk-info">
         <span class="bulk-count">{{ store.selectedCount }} selected</span>
         <button class="bulk-clear" @click="store.clearSelection()">Clear</button>

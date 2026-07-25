@@ -8,6 +8,7 @@ import type {
   RecallResult,
   MemoryStats,
   RecentEntry,
+  ConnectionStatus,
 } from "@/api/types";
 
 export const useMemoryStore = defineStore("memories", () => {
@@ -16,6 +17,11 @@ export const useMemoryStore = defineStore("memories", () => {
   const total = ref(0);
   const loading = ref(false);
   const error = ref<string | null>(null);
+  const connectionStatus = ref<ConnectionStatus | null>(null);
+  const connectionStatusError = ref<string | null>(null);
+  const isRemote = computed(
+    () => connectionStatus.value?.backend === "remote",
+  );
 
   // Namespaces
   const selectedNamespace = ref<string | null>(null);
@@ -367,6 +373,16 @@ export const useMemoryStore = defineStore("memories", () => {
 
   const activeNamespace = computed(() => selectedNamespace.value);
 
+  async function loadConnectionStatus() {
+    try {
+      connectionStatus.value = await api.connectionStatus();
+      connectionStatusError.value = null;
+    } catch (e) {
+      connectionStatus.value = null;
+      connectionStatusError.value = String(e);
+    }
+  }
+
   async function fetchNamespaces() {
     try {
       allNamespaces.value = await api.namespaces();
@@ -660,6 +676,9 @@ export const useMemoryStore = defineStore("memories", () => {
     total,
     loading,
     error,
+    connectionStatus,
+    connectionStatusError,
+    isRemote,
     selectedNamespace,
     allNamespaces,
     currentStats,
@@ -689,6 +708,7 @@ export const useMemoryStore = defineStore("memories", () => {
     paletteSemanticResults,
     paletteLoading,
     activeNamespace,
+    loadConnectionStatus,
     fetchNamespaces,
     searchMemories,
     loadRecent,

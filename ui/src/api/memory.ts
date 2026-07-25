@@ -5,6 +5,7 @@ import type {
   BulkResult,
   CleanupCandidate,
   CleanupReport,
+  ConnectionStatus,
   ConsolidationResult,
   DetectedContext,
   DuplicateScanResult,
@@ -21,6 +22,10 @@ import type {
   RestoreResult,
   SuggestionResult,
 } from "./types";
+
+export async function connectionStatus(): Promise<ConnectionStatus> {
+  return invoke<ConnectionStatus>("cmd_connection_status");
+}
 
 export async function remember(input: RememberInput): Promise<Memory> {
   return invoke<Memory>("cmd_remember", { ...input });

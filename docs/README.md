@@ -23,7 +23,7 @@ New to Clio? Start here:
 | Document | Description |
 |----------|-------------|
 | [CLI Reference](cli-reference.md) | All commands, flags, and examples |
-| [MCP Agent Setup](mcp-agent-setup.md) | Connecting AI agents to Clio with one-command setup |
+| [MCP Agent Setup](mcp-agent-setup.md) | Connecting AI agents locally or to shared memory over SSH |
 | [Desktop App (Tauri)](tauri-app.md) | Building, using, and extending the desktop app |
 | [Resource Limits](resource-limits.md) | Sizing constraints and thresholds |
 
@@ -81,6 +81,7 @@ For AI agents using Clio via MCP:
 |------|----------|
 | Install and set up Clio | [Getting Started](getting-started.md) |
 | Connect an AI agent | [MCP Agent Setup](mcp-agent-setup.md) |
+| Share memory across computers | [MCP Agent Setup — Shared memory over SSH](mcp-agent-setup.md#shared-memory-over-ssh) |
 | Learn CLI commands | [CLI Reference](cli-reference.md) |
 | Configure Clio | [Settings Reference](reference/settings.md) |
 | Understand the database schema | [Schema Reference](reference/schema.md) |

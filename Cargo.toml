@@ -15,7 +15,7 @@ license = "MIT"
 rust-version = "1.85"
 
 [workspace.dependencies]
-clio-core = { path = "crates/clio-core" }
+clio-core = { path = "crates/clio-core", default-features = false }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"

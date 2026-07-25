@@ -47,12 +47,42 @@ Clio is a local-first memory backbone for AI tooling. One Rust core, multiple ac
                          └───────────────────────────────────┘
 ```
 
+### Optional Remote MCP Topology
+
+```text
+┌──────────────────┐   stdio   ┌─────────────────┐   SSH   ┌──────────┐   rusqlite   ┌───────────┐
+│ AI client or     │ ◄───────► │ clio remote-mcp │ ◄─────► │ clio-mcp │ ◄──────────► │ SQLite DB │
+│ Tauri desktop    │           │ client computer │         │ server   │              │ server    │
+└──────────────────┘           └─────────────────┘         └──────────┘              └───────────┘
+```
+
+The AI client launches `clio remote-mcp` as its stdio MCP command. The local
+bridge detects the project namespace from each tool call's `cwd`, then forwards
+the request over SSH. Explicit namespaces and `global: true` still take
+precedence.
+
+The server owns `clio-mcp`, its settings, and the single SQLite database. SSH
+uses non-interactive key authentication, so Clio does not expose a network
+listener or database port.
+
+This topology shares MCP operations only and requires a live SSH connection.
+The desktop app can opt into the same bridge for its normal memory, archive,
+link, namespace, statistics, and semantic-search workflows. Its bulk,
+import/export, database maintenance, deduplication, and namespace administration
+operations remain local only. Direct CLI commands, the daemon, and session hooks
+still use local storage. Embeddings and capture run on the server and must be
+configured there. There is no offline cache or synchronisation.
+
+For a headless server, both binaries can be built with `--no-default-features`.
+This omits local fastembed support while retaining storage, keyword recall,
+capture, and OpenAI embeddings.
+
 ## Tech Stack
 
 - **Language:** Rust
 - **Storage:** SQLite (WAL mode, FTS5, foreign keys)
 - **Libraries:** rusqlite, serde, serde_json, clap, uuid, time, thiserror, tracing, fastembed (optional), reqwest (optional, OpenAI backend)
-- **Transport:** stdio (MCP), direct binary (CLI), Unix domain socket (daemon control)
+- **Transport:** stdio (MCP), SSH bridge (remote MCP), direct binary (CLI), Unix domain socket (daemon control)
 - **Daemon:** `notify` (filesystem watching), `tracing-appender` (rolling log files), `libc` (PID management)
 
 ## Directory Structure
@@ -117,7 +147,7 @@ Must NOT depend on: Tauri UI code, MCP-specific types, CLI formatting.
 
 Thin binary wrapper. Argument parsing (clap), text/JSON rendering, exit codes.
 
-Notable commands beyond CRUD: `clio serve` (locates `clio-mcp` binary adjacent to itself or on PATH, verifies the database is initialised, then execs it with stdio inherited and `CLIO_DB_PATH` set); `clio setup <client>` (generates ready-to-paste MCP client configuration for `claude-code`, `cursor`, `windsurf`, or `generic` — resolves the binary path and database path automatically); `clio daemon` subcommand group (`run`, `start`, `stop`, `restart`, `status`, `logs`, `install`, `uninstall`, `doctor`); `clio inbox` subcommand group (`list`, `approve`, `reject`, `edit`, `stats`); `clio brief` (context assembly with `--preset`, `--namespace`, `--query`).
+Notable commands beyond CRUD: `clio serve` (locates `clio-mcp` binary adjacent to itself or on PATH, verifies the database is initialised, then execs it with stdio inherited and `CLIO_DB_PATH` set); `clio remote-mcp` (proxies stdio MCP over SSH while resolving namespaces on the client); `clio setup <client>` (generates ready-to-paste MCP client configuration for `claude-code`, `cursor`, `windsurf`, or `generic` — resolves the binary path and database path automatically); `clio daemon` subcommand group (`run`, `start`, `stop`, `restart`, `status`, `logs`, `install`, `uninstall`, `doctor`); `clio inbox` subcommand group (`list`, `approve`, `reject`, `edit`, `stats`); `clio brief` (context assembly with `--preset`, `--namespace`, `--query`).
 
 Must NOT: open ad hoc SQL queries, implement its own validation rules.
 
@@ -125,7 +155,7 @@ Must NOT: open ad hoc SQL queries, implement its own validation rules.
 
 Thin MCP adapter. Maps MCP payloads to core input types.
 
-Tools: `memory_remember`, `memory_recall`, `memory_get`, `memory_recent`, `memory_link`, `memory_archive`, `memory_unarchive`, `memory_namespaces`, `memory_get_links`, `memory_capture`, `memory_search`, `memory_stats`, `memory_activity`, `memory_suggest_links`, `memory_delete`, `memory_context`, `memory_inbox_list`, `memory_inbox_approve`, `memory_inbox_reject`, `memory_inbox_edit`
+Tools: `memory_remember`, `memory_update`, `memory_recall`, `memory_get`, `memory_recent`, `memory_link`, `memory_archive`, `memory_unarchive`, `memory_delete`, `memory_move`, `memory_namespaces`, `memory_get_links`, `memory_capture`, `memory_search`, `memory_stats`, `memory_activity`, `memory_suggest_links`, `memory_context`, `memory_inbox`, `memory_cache_clear`
 
 Must NOT: duplicate persistence logic, invent alternate search semantics.
 
@@ -146,7 +176,7 @@ Must NOT: become the only way to use Clio, expose network listeners outside loca
 
 ### `clio-tauri`
 
-Desktop UI crate. Vue 3 frontend with Tauri 2 backend for browse/edit/archive/inspect workflows.
+Desktop UI crate. Vue 3 frontend with Tauri 2 backend for browse/edit/archive/inspect workflows. It opens `clio-core` directly in local mode or uses the existing SSH/MCP bridge when `CLIO_REMOTE_HOST` is set. Remote misconfiguration is surfaced as disconnected and never falls back to local storage.
 
 **Backend commands** (in `src/commands/`):
 - `memory.rs` — CRUD, archive, unarchive, recall, recent, update

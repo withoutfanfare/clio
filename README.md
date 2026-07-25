@@ -67,6 +67,26 @@ clio init
 clio setup claude-code   # or: codex, cursor, windsurf, gemini, copilot, opencode, kilo, kimi
 ```
 
+### Headless Linux server build
+
+From the repository root, build the CLI and MCP server without local embeddings:
+
+```sh
+cargo build --locked --release --no-default-features -p clio-cli -p clio-mcp
+```
+
+Running from the repository root applies `.cargo/config.toml`, which enables SQLite maths. The resulting binaries keep `remember` and keyword recall. Local semantic embeddings are unavailable, but OpenAI embeddings remain available when configured.
+
+### Share MCP memory over SSH
+
+Keep the SQLite database private on a remote server and connect each computer through an SSH alias:
+
+```sh
+clio --db-path /remote/memory.db remote-mcp <ssh-alias> --remote-binary /remote/clio-mcp
+```
+
+The bridge detects project namespaces on the client computer. See [MCP Agent Setup](docs/mcp-agent-setup.md#shared-memory-over-ssh) for prerequisites, client configuration, and current limits.
+
 ## First Memory
 
 ```sh

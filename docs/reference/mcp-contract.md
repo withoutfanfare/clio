@@ -91,7 +91,7 @@ Auto-detection is controlled by `context.auto_detect` in settings (default `true
 2. Auto-detected namespace from `cwd`
 3. `global`
 
-Tools that accept `cwd`: `memory_remember`, `memory_recall`, `memory_capture`, `memory_search`, `memory_context`.
+Tools that accept `cwd`: `memory_remember`, `memory_update`, `memory_recall`, `memory_capture`, `memory_search`, `memory_context`.
 
 ## Shared Types
 
@@ -218,6 +218,56 @@ Returns the stored memory record in structured form.
 - validation error
 - storage failure
 - malformed metadata
+
+## `memory_update`
+
+Update an existing memory in place.
+
+### Why it exists
+
+Interactive clients need to edit a known record without relying on a
+`source + source_ref` upsert key.
+
+### Input
+
+The input is the `memory_remember` payload with one additional required field:
+
+```json
+{
+  "memory_id": "01954d70-cf20-7d42-bb3b-ff2f0f0de123",
+  "namespace": "project:ai",
+  "kind": "decision",
+  "title": "Use SQLite over SSH",
+  "summary": "The shared store remains SQLite on the server.",
+  "content": "All database connections are opened on the remote server.",
+  "tags": ["sqlite", "ssh"],
+  "source": "desktop",
+  "source_ref": null,
+  "confidence": 0.93,
+  "importance": 4,
+  "metadata": {},
+  "valid_from": null,
+  "valid_until": null
+}
+```
+
+### Behaviour
+
+- applies the same validation and namespace resolution as `memory_remember`
+- preserves the existing `id` and `created_at`
+- updates tags and full-text search data through the core repository
+- attempts to regenerate the embedding when server-side `auto_embed` is enabled;
+  an embedding failure is logged and does not roll back the stored edit
+
+### Response
+
+Returns the updated memory record in structured form.
+
+### Failure cases
+
+- validation error
+- memory not found
+- storage failure
 
 ## `memory_recall`
 
@@ -1195,6 +1245,7 @@ Recommended annotation intent:
 | Tool | readOnlyHint | destructiveHint | idempotentHint |
 |---|---:|---:|---:|
 | `memory_remember` | false | false | false |
+| `memory_update` | false | false | false |
 | `memory_recall` | true | false | true |
 | `memory_get` | true | false | true |
 | `memory_recent` | true | false | true |
@@ -1283,6 +1334,7 @@ During development:
 The MCP implementation should be validated for:
 
 - remember flow
+- update flow, including tags, FTS data and auto-embedding
 - recall flow (FTS)
 - semantic search flow (`memory_search`)
 - get flow

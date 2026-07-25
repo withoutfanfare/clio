@@ -84,14 +84,14 @@ pub trait EmbeddingBackend: Send + Sync {
 // Local backend (fastembed)
 // ---------------------------------------------------------------------------
 
-#[cfg(feature = "local-embeddings")]
+#[cfg(feature = "local-embeddings-base")]
 pub struct LocalBackend {
     model: std::sync::Mutex<fastembed::TextEmbedding>,
     model_name: String,
     dimensions: usize,
 }
 
-#[cfg(feature = "local-embeddings")]
+#[cfg(feature = "local-embeddings-base")]
 impl LocalBackend {
     pub fn new(model_name: &str) -> Result<Self> {
         let fastembed_model = match model_name {
@@ -129,7 +129,7 @@ impl LocalBackend {
     }
 }
 
-#[cfg(feature = "local-embeddings")]
+#[cfg(feature = "local-embeddings-base")]
 impl EmbeddingBackend for LocalBackend {
     fn model_name(&self) -> &str {
         &self.model_name
@@ -323,14 +323,14 @@ pub fn create_backend(config: &EmbeddingConfig) -> Result<Box<dyn EmbeddingBacke
     match config {
         EmbeddingConfig::Disabled => Err(ClioError::Config("embeddings are disabled".into())),
 
-        #[cfg(feature = "local-embeddings")]
+        #[cfg(feature = "local-embeddings-base")]
         EmbeddingConfig::Local { model } => {
             let backend = LocalBackend::new(model)?;
             Ok(Box::new(backend))
         }
-        #[cfg(not(feature = "local-embeddings"))]
+        #[cfg(not(feature = "local-embeddings-base"))]
         EmbeddingConfig::Local { .. } => Err(ClioError::Config(
-            "local embeddings not available: compile with the 'local-embeddings' feature".into(),
+            "local embeddings not available: compile with the 'local-embeddings' or 'local-embeddings-dynamic' feature".into(),
         )),
 
         #[cfg(feature = "openai-embeddings")]

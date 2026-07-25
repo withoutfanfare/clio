@@ -1,5 +1,3 @@
-use std::sync::Mutex;
-
 use tauri::{AppHandle, Manager, State};
 
 use clio_core::models::{Memory, RecallResult};
@@ -17,11 +15,29 @@ pub async fn cmd_search(
     include_archived: Option<bool>,
     limit: Option<u32>,
 ) -> Result<RecallResult, CommandError> {
+    {
+        let state = app.state::<AppState>();
+        if let Some(remote) = state.remote() {
+            let global = namespace.is_none();
+            return remote
+                .call_json(
+                    "memory_search",
+                    serde_json::json!({
+                        "query": query,
+                        "namespace": namespace,
+                        "global": global,
+                        "include_archived": include_archived.unwrap_or(false),
+                        "limit": limit.unwrap_or(10),
+                        "response_format": "json",
+                    }),
+                )
+                .await;
+        }
+    }
+
     tauri::async_runtime::spawn_blocking(move || {
-        let state = app.state::<Mutex<AppState>>();
-        let app = state
-            .lock()
-            .map_err(|e| CommandError::Core(format!("Lock poisoned: {e}")))?;
+        let state = app.state::<AppState>();
+        let app = state.local()?;
 
         let backend = match &app.backend {
             BackendState::Ready(b) => b,
@@ -70,11 +86,26 @@ pub async fn cmd_suggest_links(
     threshold: Option<f64>,
     limit: Option<u32>,
 ) -> Result<Vec<SuggestionResult>, CommandError> {
+    {
+        let state = app.state::<AppState>();
+        if let Some(remote) = state.remote() {
+            return remote
+                .call_json(
+                    "memory_suggest_links",
+                    serde_json::json!({
+                        "memory_id": memory_id,
+                        "threshold": threshold.unwrap_or(0.7),
+                        "limit": limit.unwrap_or(5),
+                        "response_format": "json",
+                    }),
+                )
+                .await;
+        }
+    }
+
     tauri::async_runtime::spawn_blocking(move || {
-        let state = app.state::<Mutex<AppState>>();
-        let app = state
-            .lock()
-            .map_err(|e| CommandError::Core(format!("Lock poisoned: {e}")))?;
+        let state = app.state::<AppState>();
+        let app = state.local()?;
 
         let backend = match &app.backend {
             BackendState::Ready(b) => b,
@@ -107,17 +138,24 @@ pub async fn cmd_suggest_links(
     .map_err(|e| CommandError::Core(format!("Suggest-links task failed: {e}")))?
 }
 
-#[derive(serde::Serialize)]
+#[derive(serde::Deserialize, serde::Serialize)]
 pub struct SuggestionResult {
     pub memory: Memory,
     pub similarity: f64,
 }
 
 #[tauri::command]
-pub fn cmd_backend_status(state: State<'_, Mutex<AppState>>) -> Result<String, CommandError> {
-    let app = state
-        .lock()
-        .map_err(|e| CommandError::Core(format!("Lock poisoned: {e}")))?;
+pub async fn cmd_backend_status(state: State<'_, AppState>) -> Result<String, CommandError> {
+    if let Some(remote) = state.remote() {
+        let status = remote.status().await;
+        return Ok(if status.connected {
+            "ready".into()
+        } else {
+            format!("unavailable: {}", status.detail.unwrap_or_default())
+        });
+    }
+
+    let app = state.local()?;
     Ok(match &app.backend {
         BackendState::Ready(_) => "ready".to_string(),
         BackendState::Loading => "loading".to_string(),

@@ -36,6 +36,11 @@ struct RememberParams {
     #[serde(default)]
     cwd: Option<String>,
 
+    /// Namespace detected by a local remote bridge.
+    #[serde(default, rename = "_clio_namespace")]
+    #[schemars(skip)]
+    clio_namespace: Option<String>,
+
     /// Memory kind: note, decision, snippet.
     #[serde(default = "default_kind")]
     kind: String,
@@ -89,6 +94,15 @@ struct RememberParams {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+struct UpdateParams {
+    /// Memory ID to update in place.
+    memory_id: String,
+
+    #[serde(flatten)]
+    memory: RememberParams,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 struct RecallParams {
     /// Search query. Omit for recent.
     #[serde(default)]
@@ -105,6 +119,11 @@ struct RecallParams {
     /// Working dir for namespace detection.
     #[serde(default)]
     cwd: Option<String>,
+
+    /// Namespace detected by a local remote bridge.
+    #[serde(default, rename = "_clio_namespace")]
+    #[schemars(skip)]
+    clio_namespace: Option<String>,
 
     /// Kind filter.
     #[serde(default)]
@@ -261,6 +280,11 @@ struct CaptureParams {
     /// Working dir for namespace detection.
     #[serde(default)]
     cwd: Option<String>,
+
+    /// Namespace detected by a local remote bridge.
+    #[serde(default, rename = "_clio_namespace")]
+    #[schemars(skip)]
+    clio_namespace: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -279,6 +303,11 @@ struct SearchParams {
     /// Working dir for namespace detection.
     #[serde(default)]
     cwd: Option<String>,
+
+    /// Namespace detected by a local remote bridge.
+    #[serde(default, rename = "_clio_namespace")]
+    #[schemars(skip)]
+    clio_namespace: Option<String>,
 
     /// Include archived.
     #[serde(default)]
@@ -347,6 +376,11 @@ struct ContextParams {
     /// Working dir for namespace detection.
     #[serde(default)]
     cwd: Option<String>,
+
+    /// Namespace detected by a local remote bridge.
+    #[serde(default, rename = "_clio_namespace")]
+    #[schemars(skip)]
+    clio_namespace: Option<String>,
 
     /// Preset: project-brief, person-brief, decision-history, active-constraints, recent-activity, handoff, custom.
     #[serde(default = "default_preset")]
@@ -479,6 +513,77 @@ fn default_max_items() -> u32 {
 
 fn default_inbox_limit() -> u32 {
     20
+}
+
+fn resolve_mcp_namespace(
+    explicit: Option<&str>,
+    local_detected: Option<&str>,
+    cwd: Option<&std::path::Path>,
+    auto_detect: bool,
+) -> String {
+    let local_detected = if auto_detect { local_detected } else { None };
+    clio_core::context::resolve_namespace(explicit.or(local_detected), cwd, auto_detect)
+}
+
+fn validate_memory_payload(params: &RememberParams) -> Result<(), String> {
+    if params.content.trim().is_empty() {
+        return Err("content must not be empty.".into());
+    }
+    if params.content.len() > 1_048_576 {
+        return Err("content must not exceed 1 MiB.".into());
+    }
+    if params.tags.len() > 50 {
+        return Err("at most 50 tags are allowed.".into());
+    }
+    if serde_json::to_string(&params.metadata).is_ok_and(|value| value.len() > 65_536) {
+        return Err("metadata must not exceed 64 KiB when serialised.".into());
+    }
+    Ok(())
+}
+
+fn remember_input(params: RememberParams, namespace: String, upsert: bool) -> RememberInput {
+    RememberInput {
+        namespace,
+        kind: params.kind,
+        title: params.title,
+        summary: params.summary,
+        content: params.content,
+        tags: params.tags,
+        source: params.source,
+        source_ref: params.source_ref,
+        confidence: params.confidence,
+        importance: params.importance,
+        metadata: params.metadata,
+        valid_from: params.valid_from,
+        valid_until: params.valid_until,
+        upsert,
+    }
+}
+
+#[cfg(test)]
+mod namespace_tests {
+    use super::resolve_mcp_namespace;
+
+    #[test]
+    fn local_detected_namespace_respects_precedence_and_setting() {
+        let cases = [
+            (
+                Some("project:explicit"),
+                Some("project:detected"),
+                true,
+                "project:explicit",
+            ),
+            (None, Some("project:detected"), true, "project:detected"),
+            (None, Some("project:detected"), false, "global"),
+        ];
+
+        for (explicit, detected, auto_detect, expected) in cases {
+            assert_eq!(
+                resolve_mcp_namespace(explicit, detected, None, auto_detect),
+                expected
+            );
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1003,20 +1108,7 @@ impl ClioServer {
         Parameters(params): Parameters<RememberParams>,
     ) -> Result<String, String> {
         // MCP boundary validation (defence-in-depth on top of core validation).
-        if params.content.trim().is_empty() {
-            return Err("content must not be empty.".into());
-        }
-        if params.content.len() > 1_048_576 {
-            return Err("content must not exceed 1 MiB.".into());
-        }
-        if params.tags.len() > 50 {
-            return Err("at most 50 tags are allowed.".into());
-        }
-        if let Ok(serialised) = serde_json::to_string(&params.metadata) {
-            if serialised.len() > 65_536 {
-                return Err("metadata must not exceed 64 KiB when serialised.".into());
-            }
-        }
+        validate_memory_payload(&params)?;
         let conn = self.conn.clone();
         let cache = self.cache.clone();
         let settings = self.settings()?;
@@ -1024,32 +1116,61 @@ impl ClioServer {
         tokio::task::spawn_blocking(move || {
             let conn = conn.lock().map_err(|e| format!("lock error: {e}"))?;
             let cwd_path = params.cwd.as_deref().map(std::path::Path::new);
-            let namespace = clio_core::context::resolve_namespace(
+            let namespace = resolve_mcp_namespace(
                 params.namespace.as_deref(),
+                params.clio_namespace.as_deref(),
                 cwd_path,
                 settings.context.auto_detect,
             );
-            let input = RememberInput {
-                namespace,
-                kind: params.kind,
-                title: params.title,
-                summary: params.summary,
-                content: params.content,
-                tags: params.tags,
-                source: params.source,
-                source_ref: params.source_ref,
-                confidence: params.confidence,
-                importance: params.importance,
-                metadata: params.metadata,
-                valid_from: params.valid_from,
-                valid_until: params.valid_until,
-                upsert: params.upsert,
-            };
+            let upsert = params.upsert;
+            let input = remember_input(params, namespace, upsert);
             let memory = cache
                 .remember(&conn, &input, &settings)
                 .map_err(|e| format_clio_error(&e))?;
 
             // Auto-embed if enabled.
+            if settings.auto_embed {
+                if let Some(ref be) = *backend {
+                    if let Err(e) =
+                        clio_core::embeddings::embed_and_store(&conn, be.as_ref(), &memory)
+                    {
+                        tracing::warn!("auto-embed failed: {e}");
+                    }
+                }
+            }
+
+            serde_json::to_string_pretty(&memory).map_err(|e| format!("Serialisation error: {e}"))
+        })
+        .await
+        .map_err(|e| format!("Internal error: task failed: {e}"))?
+    }
+
+    /// Update a memory in place by ID.
+    #[tool(description = "Update a memory in place by ID without creating a duplicate.")]
+    async fn memory_update(
+        &self,
+        Parameters(params): Parameters<UpdateParams>,
+    ) -> Result<String, String> {
+        validate_memory_id(&params.memory_id, "memory_id")?;
+        validate_memory_payload(&params.memory)?;
+        let conn = self.conn.clone();
+        let cache = self.cache.clone();
+        let settings = self.settings()?;
+        let backend = self.embedding_backend.clone();
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock().map_err(|e| format!("lock error: {e}"))?;
+            let cwd_path = params.memory.cwd.as_deref().map(std::path::Path::new);
+            let namespace = resolve_mcp_namespace(
+                params.memory.namespace.as_deref(),
+                params.memory.clio_namespace.as_deref(),
+                cwd_path,
+                settings.context.auto_detect,
+            );
+            let input = remember_input(params.memory, namespace, false);
+            let memory = cache
+                .update(&conn, &params.memory_id, &input, &settings)
+                .map_err(|e| format_clio_error(&e))?;
+
             if settings.auto_embed {
                 if let Some(ref be) = *backend {
                     if let Err(e) =
@@ -1083,8 +1204,9 @@ impl ClioServer {
         tokio::task::spawn_blocking(move || {
             let conn = conn.lock().map_err(|e| format!("lock error: {e}"))?;
             let cwd_path = params.cwd.as_deref().map(std::path::Path::new);
-            let detected_ns = clio_core::context::resolve_namespace(
+            let detected_ns = resolve_mcp_namespace(
                 params.namespace.as_deref(),
+                params.clio_namespace.as_deref(),
                 cwd_path,
                 settings.context.auto_detect,
             );
@@ -1367,9 +1489,11 @@ impl ClioServer {
             let ns_override = if params.namespace.is_some() {
                 params.namespace
             } else if settings.context.auto_detect {
-                cwd_path
-                    .and_then(clio_core::context::detect_namespace)
-                    .map(|ctx| ctx.namespace)
+                params.clio_namespace.or_else(|| {
+                    cwd_path
+                        .and_then(clio_core::context::detect_namespace)
+                        .map(|ctx| ctx.namespace)
+                })
             } else {
                 None
             };
@@ -1419,8 +1543,9 @@ impl ClioServer {
                 .map_err(|e| format_clio_error(&e))?;
 
             let cwd_path = params.cwd.as_deref().map(std::path::Path::new);
-            let detected_ns = clio_core::context::resolve_namespace(
+            let detected_ns = resolve_mcp_namespace(
                 params.namespace.as_deref(),
+                params.clio_namespace.as_deref(),
                 cwd_path,
                 settings.context.auto_detect,
             );
@@ -1592,8 +1717,9 @@ impl ClioServer {
         tokio::task::spawn_blocking(move || {
             let conn = conn.lock().map_err(|e| format!("lock error: {e}"))?;
             let cwd_path = params.cwd.as_deref().map(std::path::Path::new);
-            let namespace = clio_core::context::resolve_namespace(
+            let namespace = resolve_mcp_namespace(
                 params.namespace.as_deref(),
+                params.clio_namespace.as_deref(),
                 cwd_path,
                 settings.context.auto_detect,
             );

@@ -1,3 +1,5 @@
+mod remote_mcp;
+
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::process;
@@ -143,6 +145,9 @@ enum Command {
 
     /// Start the MCP server (stdio transport).
     Serve,
+
+    /// Proxy MCP over SSH while resolving namespaces on this computer.
+    RemoteMcp(RemoteMcpArgs),
 
     /// Generate MCP client configuration for a specific AI tool.
     Setup(SetupArgs),
@@ -711,6 +716,16 @@ struct SetupArgs {
     dry_run: bool,
 }
 
+#[derive(Parser)]
+struct RemoteMcpArgs {
+    /// SSH host running the remote Clio MCP server.
+    host: String,
+
+    /// Path to the clio-mcp binary on the remote host.
+    #[arg(long)]
+    remote_binary: String,
+}
+
 #[derive(Subcommand)]
 enum SetupClient {
     /// Install MCP config for Claude Code / Claude Desktop.
@@ -859,6 +874,9 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         Command::Settings(args) => cmd_settings(cli.db_path.as_deref(), cli.json, args),
         Command::Brief(args) => cmd_brief(cli.db_path.as_deref(), cli.json, args),
         Command::Serve => cmd_serve(cli.db_path.as_deref()),
+        Command::RemoteMcp(args) => {
+            remote_mcp::run(&args.host, &args.remote_binary, cli.db_path.as_deref())
+        }
         Command::Setup(args) => cmd_setup(cli.db_path.as_deref(), cli.json, args),
         Command::Daemon { command } => cmd_daemon(cli.db_path.as_deref(), cli.json, command),
         Command::Cache { command } => match command {

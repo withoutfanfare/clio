@@ -1,5 +1,3 @@
-use std::sync::Mutex;
-
 use tauri::State;
 
 use clio_core::capture::CaptureResult;
@@ -11,8 +9,8 @@ use crate::{AppState, BackendState, CommandError};
 
 #[allow(clippy::too_many_arguments)]
 #[tauri::command]
-pub fn cmd_remember(
-    state: State<'_, Mutex<AppState>>,
+pub async fn cmd_remember(
+    state: State<'_, AppState>,
     namespace: Option<String>,
     kind: Option<String>,
     title: Option<String>,
@@ -26,9 +24,29 @@ pub fn cmd_remember(
     metadata: Option<serde_json::Value>,
     upsert: Option<bool>,
 ) -> Result<Memory, CommandError> {
-    let app = state
-        .lock()
-        .map_err(|e| CommandError::Core(format!("Lock poisoned: {e}")))?;
+    if let Some(remote) = state.remote() {
+        return remote
+            .call_json(
+                "memory_remember",
+                serde_json::json!({
+                    "namespace": namespace,
+                    "kind": kind.unwrap_or_else(|| "note".into()),
+                    "title": title,
+                    "summary": summary,
+                    "content": content,
+                    "tags": tags.unwrap_or_default(),
+                    "source": source,
+                    "source_ref": source_ref,
+                    "confidence": confidence,
+                    "importance": importance.unwrap_or(3),
+                    "metadata": metadata.unwrap_or(serde_json::json!({})),
+                    "upsert": upsert.unwrap_or(false),
+                }),
+            )
+            .await;
+    }
+
+    let app = state.local()?;
 
     let input = RememberInput {
         namespace: namespace.unwrap_or_else(|| "global".into()),
@@ -65,8 +83,8 @@ pub fn cmd_remember(
 
 #[allow(clippy::too_many_arguments)]
 #[tauri::command]
-pub fn cmd_update(
-    state: State<'_, Mutex<AppState>>,
+pub async fn cmd_update(
+    state: State<'_, AppState>,
     memory_id: String,
     namespace: Option<String>,
     kind: Option<String>,
@@ -80,9 +98,29 @@ pub fn cmd_update(
     importance: Option<i32>,
     metadata: Option<serde_json::Value>,
 ) -> Result<Memory, CommandError> {
-    let app = state
-        .lock()
-        .map_err(|e| CommandError::Core(format!("Lock poisoned: {e}")))?;
+    if let Some(remote) = state.remote() {
+        return remote
+            .call_json(
+                "memory_update",
+                serde_json::json!({
+                    "memory_id": memory_id,
+                    "namespace": namespace,
+                    "kind": kind.unwrap_or_else(|| "note".into()),
+                    "title": title,
+                    "summary": summary,
+                    "content": content,
+                    "tags": tags.unwrap_or_default(),
+                    "source": source,
+                    "source_ref": source_ref,
+                    "confidence": confidence,
+                    "importance": importance.unwrap_or(3),
+                    "metadata": metadata.unwrap_or(serde_json::json!({})),
+                }),
+            )
+            .await;
+    }
+
+    let app = state.local()?;
 
     let input = RememberInput {
         namespace: namespace.unwrap_or_else(|| "global".into()),
@@ -121,8 +159,8 @@ pub fn cmd_update(
 
 #[allow(clippy::too_many_arguments)]
 #[tauri::command]
-pub fn cmd_recall(
-    state: State<'_, Mutex<AppState>>,
+pub async fn cmd_recall(
+    state: State<'_, AppState>,
     query: Option<String>,
     namespace: Option<String>,
     kind: Option<String>,
@@ -135,9 +173,31 @@ pub fn cmd_recall(
     limit: Option<u32>,
     offset: Option<u32>,
 ) -> Result<RecallResult, CommandError> {
-    let app = state
-        .lock()
-        .map_err(|e| CommandError::Core(format!("Lock poisoned: {e}")))?;
+    if let Some(remote) = state.remote() {
+        let global = namespace.is_none();
+        return remote
+            .call_json(
+                "memory_recall",
+                serde_json::json!({
+                    "query": query,
+                    "namespace": namespace,
+                    "global": global,
+                    "kind": kind,
+                    "tags": tags.unwrap_or_default(),
+                    "match_all_tags": match_all_tags.unwrap_or(true),
+                    "importance_min": importance_min,
+                    "importance_max": importance_max,
+                    "sort_by": sort_by,
+                    "include_archived": include_archived.unwrap_or(false),
+                    "limit": limit.unwrap_or(10),
+                    "offset": offset.unwrap_or(0),
+                    "response_format": "json",
+                }),
+            )
+            .await;
+    }
+
+    let app = state.local()?;
 
     let q = RecallQuery {
         query,
@@ -161,21 +221,28 @@ pub fn cmd_recall(
 }
 
 #[tauri::command]
-pub fn cmd_get(
-    state: State<'_, Mutex<AppState>>,
+pub async fn cmd_get(
+    state: State<'_, AppState>,
     memory_id: String,
 ) -> Result<Memory, CommandError> {
-    let app = state
-        .lock()
-        .map_err(|e| CommandError::Core(format!("Lock poisoned: {e}")))?;
+    if let Some(remote) = state.remote() {
+        return remote
+            .call_json(
+                "memory_get",
+                serde_json::json!({ "memory_id": memory_id, "response_format": "json" }),
+            )
+            .await;
+    }
+
+    let app = state.local()?;
     let memory = app.cache.get(&app.conn, &memory_id)?;
     Ok(memory)
 }
 
 #[allow(clippy::too_many_arguments)]
 #[tauri::command]
-pub fn cmd_recent(
-    state: State<'_, Mutex<AppState>>,
+pub async fn cmd_recent(
+    state: State<'_, AppState>,
     namespace: Option<String>,
     kind: Option<String>,
     tags: Option<Vec<String>>,
@@ -186,9 +253,29 @@ pub fn cmd_recent(
     include_archived: Option<bool>,
     limit: Option<u32>,
 ) -> Result<RecallResult, CommandError> {
-    let app = state
-        .lock()
-        .map_err(|e| CommandError::Core(format!("Lock poisoned: {e}")))?;
+    if let Some(remote) = state.remote() {
+        let global = namespace.is_none();
+        return remote
+            .call_json(
+                "memory_recall",
+                serde_json::json!({
+                    "namespace": namespace,
+                    "global": global,
+                    "kind": kind,
+                    "tags": tags.unwrap_or_default(),
+                    "match_all_tags": match_all_tags.unwrap_or(true),
+                    "importance_min": importance_min,
+                    "importance_max": importance_max,
+                    "sort_by": sort_by,
+                    "include_archived": include_archived.unwrap_or(false),
+                    "limit": limit.unwrap_or(10),
+                    "response_format": "json",
+                }),
+            )
+            .await;
+    }
+
+    let app = state.local()?;
 
     let q = RecallQuery {
         query: None,
@@ -212,52 +299,85 @@ pub fn cmd_recent(
 }
 
 #[tauri::command]
-pub fn cmd_archive(
-    state: State<'_, Mutex<AppState>>,
+pub async fn cmd_archive(
+    state: State<'_, AppState>,
     memory_id: String,
 ) -> Result<Memory, CommandError> {
-    let app = state
-        .lock()
-        .map_err(|e| CommandError::Core(format!("Lock poisoned: {e}")))?;
+    if let Some(remote) = state.remote() {
+        return remote
+            .call_json(
+                "memory_archive",
+                serde_json::json!({ "memory_id": memory_id }),
+            )
+            .await;
+    }
+
+    let app = state.local()?;
     let memory = app.cache.archive(&app.conn, &memory_id)?;
     Ok(memory)
 }
 
 #[tauri::command]
-pub fn cmd_unarchive(
-    state: State<'_, Mutex<AppState>>,
+pub async fn cmd_unarchive(
+    state: State<'_, AppState>,
     memory_id: String,
 ) -> Result<Memory, CommandError> {
-    let app = state
-        .lock()
-        .map_err(|e| CommandError::Core(format!("Lock poisoned: {e}")))?;
+    if let Some(remote) = state.remote() {
+        return remote
+            .call_json(
+                "memory_unarchive",
+                serde_json::json!({ "memory_id": memory_id }),
+            )
+            .await;
+    }
+
+    let app = state.local()?;
     let memory = app.cache.unarchive(&app.conn, &memory_id)?;
     Ok(memory)
 }
 
 #[tauri::command]
-pub fn cmd_delete(
-    state: State<'_, Mutex<AppState>>,
+pub async fn cmd_delete(
+    state: State<'_, AppState>,
     memory_id: String,
 ) -> Result<Memory, CommandError> {
-    let app = state
-        .lock()
-        .map_err(|e| CommandError::Core(format!("Lock poisoned: {e}")))?;
+    if let Some(remote) = state.remote() {
+        return remote
+            .call_json(
+                "memory_delete",
+                serde_json::json!({ "memory_id": memory_id }),
+            )
+            .await;
+    }
+
+    let app = state.local()?;
     let memory = app.cache.delete(&app.conn, &memory_id)?;
     Ok(memory)
 }
 
 #[tauri::command]
-pub fn cmd_link(
-    state: State<'_, Mutex<AppState>>,
+pub async fn cmd_link(
+    state: State<'_, AppState>,
     from_memory_id: String,
     to_memory_id: String,
     relationship: Option<String>,
     metadata: Option<serde_json::Value>,
 ) -> Result<MemoryLink, CommandError> {
-    let app = state
-        .lock()
-        .map_err(|e| CommandError::Core(format!("Lock poisoned: {e}")))?;
+    if let Some(remote) = state.remote() {
+        return remote
+            .call_json(
+                "memory_link",
+                serde_json::json!({
+                    "from_memory_id": from_memory_id,
+                    "to_memory_id": to_memory_id,
+                    "relationship": relationship.unwrap_or_else(|| "relates_to".into()),
+                    "metadata": metadata.unwrap_or(serde_json::json!({})),
+                }),
+            )
+            .await;
+    }
+
+    let app = state.local()?;
 
     let input = LinkInput {
         from_memory_id,
@@ -271,26 +391,40 @@ pub fn cmd_link(
 }
 
 #[tauri::command]
-pub fn cmd_get_links(
-    state: State<'_, Mutex<AppState>>,
+pub async fn cmd_get_links(
+    state: State<'_, AppState>,
     memory_id: String,
 ) -> Result<Vec<MemoryLink>, CommandError> {
-    let app = state
-        .lock()
-        .map_err(|e| CommandError::Core(format!("Lock poisoned: {e}")))?;
+    if let Some(remote) = state.remote() {
+        return remote
+            .call_json(
+                "memory_get_links",
+                serde_json::json!({ "memory_id": memory_id }),
+            )
+            .await;
+    }
+
+    let app = state.local()?;
     let links = app.cache.get_links(&app.conn, &memory_id)?;
     Ok(links)
 }
 
 #[tauri::command]
-pub fn cmd_capture(
-    state: State<'_, Mutex<AppState>>,
+pub async fn cmd_capture(
+    state: State<'_, AppState>,
     text: String,
     namespace: Option<String>,
 ) -> Result<CaptureResult, CommandError> {
-    let app = state
-        .lock()
-        .map_err(|e| CommandError::Core(format!("Lock poisoned: {e}")))?;
+    if let Some(remote) = state.remote() {
+        return remote
+            .call_json(
+                "memory_capture",
+                serde_json::json!({ "text": text, "namespace": namespace }),
+            )
+            .await;
+    }
+
+    let app = state.local()?;
 
     if !app.settings.capture.enabled {
         return Err(CommandError::Config(
@@ -310,11 +444,9 @@ pub fn cmd_capture(
 
 #[tauri::command]
 pub fn cmd_cache_clear(
-    state: State<'_, Mutex<AppState>>,
+    state: State<'_, AppState>,
 ) -> Result<clio_core::cache::CacheClearResult, CommandError> {
-    let app = state
-        .lock()
-        .map_err(|e| CommandError::Core(format!("Lock poisoned: {e}")))?;
+    let app = state.local()?;
     Ok(app.cache.clear_all())
 }
 
@@ -329,12 +461,10 @@ pub struct BulkResult {
 
 #[tauri::command]
 pub fn cmd_bulk_archive(
-    state: State<'_, Mutex<AppState>>,
+    state: State<'_, AppState>,
     memory_ids: Vec<String>,
 ) -> Result<BulkResult, CommandError> {
-    let app = state
-        .lock()
-        .map_err(|e| CommandError::Core(format!("Lock poisoned: {e}")))?;
+    let app = state.local()?;
     let affected = clio_core::repository::archive_bulk(&app.conn, &memory_ids)?;
     app.cache.clear_all();
     Ok(BulkResult { affected })
@@ -342,12 +472,10 @@ pub fn cmd_bulk_archive(
 
 #[tauri::command]
 pub fn cmd_bulk_delete(
-    state: State<'_, Mutex<AppState>>,
+    state: State<'_, AppState>,
     memory_ids: Vec<String>,
 ) -> Result<BulkResult, CommandError> {
-    let app = state
-        .lock()
-        .map_err(|e| CommandError::Core(format!("Lock poisoned: {e}")))?;
+    let app = state.local()?;
     let affected = clio_core::repository::delete_bulk(&app.conn, &memory_ids)?;
     app.cache.clear_all();
     Ok(BulkResult { affected })
@@ -355,13 +483,11 @@ pub fn cmd_bulk_delete(
 
 #[tauri::command]
 pub fn cmd_bulk_add_tag(
-    state: State<'_, Mutex<AppState>>,
+    state: State<'_, AppState>,
     memory_ids: Vec<String>,
     tag: String,
 ) -> Result<BulkResult, CommandError> {
-    let app = state
-        .lock()
-        .map_err(|e| CommandError::Core(format!("Lock poisoned: {e}")))?;
+    let app = state.local()?;
     let affected = clio_core::repository::add_tag_bulk(&app.conn, &memory_ids, &tag)?;
     app.cache.clear_all();
     Ok(BulkResult { affected })
@@ -369,13 +495,11 @@ pub fn cmd_bulk_add_tag(
 
 #[tauri::command]
 pub fn cmd_bulk_remove_tag(
-    state: State<'_, Mutex<AppState>>,
+    state: State<'_, AppState>,
     memory_ids: Vec<String>,
     tag: String,
 ) -> Result<BulkResult, CommandError> {
-    let app = state
-        .lock()
-        .map_err(|e| CommandError::Core(format!("Lock poisoned: {e}")))?;
+    let app = state.local()?;
     let affected = clio_core::repository::remove_tag_bulk(&app.conn, &memory_ids, &tag)?;
     app.cache.clear_all();
     Ok(BulkResult { affected })
@@ -387,14 +511,12 @@ pub fn cmd_bulk_remove_tag(
 
 #[tauri::command]
 pub fn cmd_export_memories(
-    state: State<'_, Mutex<AppState>>,
+    state: State<'_, AppState>,
     namespace: Option<String>,
     include_archived: Option<bool>,
     format: Option<String>,
 ) -> Result<String, CommandError> {
-    let app = state
-        .lock()
-        .map_err(|e| CommandError::Core(format!("Lock poisoned: {e}")))?;
+    let app = state.local()?;
 
     let fmt = format.unwrap_or_else(|| "json".into());
     let mut buf = Vec::new();
@@ -427,12 +549,10 @@ pub struct ImportResult {
 
 #[tauri::command]
 pub fn cmd_import_memories(
-    state: State<'_, Mutex<AppState>>,
+    state: State<'_, AppState>,
     data: String,
 ) -> Result<ImportResult, CommandError> {
-    let app = state
-        .lock()
-        .map_err(|e| CommandError::Core(format!("Lock poisoned: {e}")))?;
+    let app = state.local()?;
 
     let mut reader = std::io::Cursor::new(data.as_bytes());
     let result = clio_core::export::import_jsonl(&app.conn, &mut reader)?;

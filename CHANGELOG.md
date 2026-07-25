@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Remote MCP bridge** - `clio remote-mcp` connects MCP clients to a private Clio database over SSH while detecting project namespaces on the client computer.
+
 **Handoff Briefs & Receipts**
 - New `handoff` context preset (`clio brief --preset handoff --query <ticket-id>`, and via MCP `memory_context`): assembles a ticket-pickup brief with three sections — Directly Relevant (FTS on the query), Active Constraints, and Recent Receipts — sized to the usual `--char-budget`. The query is required; relevance takes budget priority (at `max_items ≤ 12` the other sections are deliberately empty).
 - New `receipt` memory kind: a short per-session record of what was done, what was left undone, and why the session stopped. Distillation emits at most one per session (importance 2, tagged `receipt`) when substantive work happened, and receipts are exempt from the session-noise title filter so they cannot be silently dropped.
