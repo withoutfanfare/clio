@@ -79,13 +79,25 @@ cargo build --locked --release --no-default-features -p clio-mcp
 ```
 
 To retain local semantic search on a Linux host that supplies its own ONNX
-Runtime library, use the dynamic feature and place `libonnxruntime.so` beside
-the installed binary:
+Runtime library, use the dynamic feature:
 
 ```sh
 cargo build --locked --release --no-default-features \
   --features local-embeddings-dynamic -p clio-mcp
 ```
+
+At runtime, set `ORT_DYLIB_PATH` to the library's absolute path. Placing
+`libonnxruntime.so` beside the executable is not sufficient when the process
+starts from another working directory:
+
+```sh
+ORT_DYLIB_PATH=/absolute/path/to/libonnxruntime.so \
+  CLIO_DB_PATH=/remote/memory.db /remote/clio-mcp
+```
+
+For the SSH bridge, make that variable available to non-interactive SSH
+commands or point `--remote-binary` at a wrapper that exports it before running
+`clio-mcp`. A loader path configured by the operating system is also valid.
 
 For Codex, add the bridge to `~/.codex/config.toml`:
 
@@ -159,7 +171,8 @@ CLIO_REMOTE_COMMAND=/Users/dannyharding/.cargo/bin/clio \
 local mode. The app bar identifies the active backend and reports whether the
 bridge is connected. A broken remote configuration is reported as disconnected;
 the app does not silently open a local database. Restart the app to reconnect
-after the bridge process or SSH connection exits.
+after the bridge process or SSH connection exits. Connection setup, status
+checks and tool calls time out after 10 seconds; a timed-out bridge is stopped.
 
 Remote configuration is currently manual. `clio setup` still creates local MCP
 configurations.

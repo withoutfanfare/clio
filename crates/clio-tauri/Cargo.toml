@@ -26,7 +26,7 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 rmcp = { version = "0.17", default-features = false, features = ["client", "transport-child-process"] }
-tokio = { workspace = true, features = ["process", "rt-multi-thread"] }
+tokio = { workspace = true, features = ["process", "rt-multi-thread", "time"] }
 
 [build-dependencies]
 tauri-build = { workspace = true }

@@ -1,6 +1,7 @@
 use std::borrow::Cow;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use rmcp::model::{CallToolRequestParams, CallToolResult, RawContent};
 use rmcp::transport::TokioChildProcess;
@@ -13,6 +14,10 @@ const REMOTE_HOST_ENV: &str = "CLIO_REMOTE_HOST";
 const REMOTE_DB_ENV: &str = "CLIO_REMOTE_DB_PATH";
 const REMOTE_BINARY_ENV: &str = "CLIO_REMOTE_BINARY";
 const REMOTE_COMMAND_ENV: &str = "CLIO_REMOTE_COMMAND";
+#[cfg(not(test))]
+const REMOTE_TIMEOUT: Duration = Duration::from_secs(10);
+#[cfg(test)]
+const REMOTE_TIMEOUT: Duration = Duration::from_secs(1);
 
 pub struct RemoteConfig {
     pub host: String,
@@ -65,15 +70,17 @@ impl RemoteState {
             &config.remote_binary,
         ]);
 
-        let result = async {
+        let result = tokio::time::timeout(REMOTE_TIMEOUT, async {
             let transport = TokioChildProcess::new(command)
                 .map_err(|e| format!("failed to start {}: {e}", config.command))?;
             let service = ().serve(transport).await.map_err(|e| e.to_string())?;
             let peer = service.peer().clone();
             let shutdown = service.cancellation_token();
             Ok::<_, String>((service, peer, shutdown))
-        }
-        .await;
+        })
+        .await
+        .map_err(|_| timeout_error("bridge connection"))
+        .and_then(|result| result);
 
         match result {
             Ok((service, peer, shutdown)) => {
@@ -127,31 +134,42 @@ impl RemoteState {
         })?;
 
         tracing::debug!(target: "clio_tauri_remote", tool, host = self.host, "calling Atlas MCP tool");
-        let result = peer
-            .call_tool(CallToolRequestParams {
-                meta: None,
-                name: Cow::Owned(tool.to_string()),
-                arguments: Some(arguments),
-                task: None,
-            })
-            .await
-            .map_err(|error| {
+        let request = peer.call_tool(CallToolRequestParams {
+            meta: None,
+            name: Cow::Owned(tool.to_string()),
+            arguments: Some(arguments),
+            task: None,
+        });
+        let result = match tokio::time::timeout(REMOTE_TIMEOUT, request).await {
+            Ok(result) => result.map_err(|error| {
                 self.record_error(error.to_string());
                 CommandError::Core(format!("Atlas bridge error: {error}"))
-            })?;
+            })?,
+            Err(_) => {
+                let error = timeout_error(&format!("MCP tool {tool}"));
+                self.record_error(error.clone());
+                self.shutdown();
+                return Err(CommandError::Core(error));
+            }
+        };
 
         decode_tool_result(result)
     }
 
     pub async fn status(&self) -> ConnectionStatus {
         let connected = if let Some(peer) = self.peer.as_ref() {
-            match peer.list_tools(None).await {
-                Ok(_) => {
+            match tokio::time::timeout(REMOTE_TIMEOUT, peer.list_tools(None)).await {
+                Ok(Ok(_)) => {
                     self.connected.store(true, Ordering::Release);
                     true
                 }
-                Err(error) => {
+                Ok(Err(error)) => {
                     self.record_error(error.to_string());
+                    false
+                }
+                Err(_) => {
+                    self.record_error(timeout_error("status check"));
+                    self.shutdown();
                     false
                 }
             }
@@ -206,6 +224,13 @@ pub struct ConnectionStatus {
     pub detail: Option<String>,
 }
 
+fn timeout_error(operation: &str) -> String {
+    format!(
+        "Atlas {operation} timed out after {} seconds",
+        REMOTE_TIMEOUT.as_secs()
+    )
+}
+
 fn decode_tool_result<T: DeserializeOwned>(result: CallToolResult) -> Result<T, CommandError> {
     let text = result
         .content
@@ -225,9 +250,18 @@ fn decode_tool_result<T: DeserializeOwned>(result: CallToolResult) -> Result<T, 
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    use std::fs;
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
+    #[cfg(unix)]
+    use std::process::{Command, Stdio};
+    #[cfg(unix)]
+    use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
     use rmcp::model::{CallToolResult, Content};
 
-    use super::decode_tool_result;
+    use super::{RemoteConfig, RemoteState, decode_tool_result};
 
     #[test]
     fn decodes_json_and_surfaces_tool_errors() {
@@ -244,5 +278,54 @@ mod tests {
             )]))
             .unwrap_err();
         assert_eq!(error.to_string(), "remote failure");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn connection_timeout_stops_the_bridge_process() {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!("clio-timeout-{suffix}"));
+        let script = directory.join("bridge");
+        let pid_file = directory.join("pid");
+        fs::create_dir(&directory).unwrap();
+        fs::write(&script, "#!/bin/sh\necho $$ > \"$2\"\nexec sleep 30\n").unwrap();
+        let mut permissions = fs::metadata(&script).unwrap().permissions();
+        permissions.set_mode(0o700);
+        fs::set_permissions(&script, permissions).unwrap();
+
+        let state = tauri::async_runtime::block_on(RemoteState::connect(RemoteConfig {
+            host: "atlas".into(),
+            db_path: pid_file.to_string_lossy().into_owned(),
+            remote_binary: "unused".into(),
+            command: script.to_string_lossy().into_owned(),
+        }));
+        assert!(state.last_error().unwrap().contains("timed out"));
+
+        let pid = fs::read_to_string(&pid_file).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let stopped = loop {
+            let running = Command::new("kill")
+                .args(["-0", pid.trim()])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .is_ok_and(|status| status.success());
+            if !running || Instant::now() >= deadline {
+                break !running;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        if !stopped {
+            let _ = Command::new("kill")
+                .arg(pid.trim())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status();
+        }
+        fs::remove_dir_all(directory).unwrap();
+        assert!(stopped, "timed-out bridge process was still running");
     }
 }

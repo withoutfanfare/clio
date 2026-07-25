@@ -5,6 +5,7 @@ import { useMemoryStore } from "@/stores/memories";
 
 const store = useMemoryStore();
 const statusText = computed(() => {
+  if (store.connectionStatusError) return "Connection unavailable";
   const status = store.connectionStatus;
   if (!status) return "Checking connection…";
   return `${status.label} · ${status.connected ? "Connected" : "Disconnected"}`;
@@ -17,8 +18,8 @@ const statusText = computed(() => {
       <div class="appbar-left">
         <div
           class="backend-status"
-          :class="{ disconnected: store.connectionStatus && !store.connectionStatus.connected }"
-          :title="store.connectionStatus?.detail ?? undefined"
+          :class="{ disconnected: !!store.connectionStatusError || (store.connectionStatus && !store.connectionStatus.connected) }"
+          :title="store.connectionStatusError ?? store.connectionStatus?.detail ?? undefined"
           role="status"
         >
           <span class="backend-dot" />

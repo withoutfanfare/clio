@@ -18,8 +18,9 @@ export const useMemoryStore = defineStore("memories", () => {
   const loading = ref(false);
   const error = ref<string | null>(null);
   const connectionStatus = ref<ConnectionStatus | null>(null);
+  const connectionStatusError = ref<string | null>(null);
   const isRemote = computed(
-    () => connectionStatus.value?.backend !== "local",
+    () => connectionStatus.value?.backend === "remote",
   );
 
   // Namespaces
@@ -375,13 +376,10 @@ export const useMemoryStore = defineStore("memories", () => {
   async function loadConnectionStatus() {
     try {
       connectionStatus.value = await api.connectionStatus();
+      connectionStatusError.value = null;
     } catch (e) {
-      connectionStatus.value = {
-        backend: "remote",
-        label: "Atlas",
-        connected: false,
-        detail: String(e),
-      };
+      connectionStatus.value = null;
+      connectionStatusError.value = String(e);
     }
   }
 
@@ -679,6 +677,7 @@ export const useMemoryStore = defineStore("memories", () => {
     loading,
     error,
     connectionStatus,
+    connectionStatusError,
     isRemote,
     selectedNamespace,
     allNamespaces,
