@@ -81,6 +81,7 @@ useKeyboard({
 });
 
 onMounted(() => {
+  store.loadConnectionStatus();
   store.fetchNamespaces();
 });
 </script>

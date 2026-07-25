@@ -105,6 +105,13 @@ export interface DetectedContext {
   marker_path: string;
 }
 
+export interface ConnectionStatus {
+  backend: "local" | "remote";
+  label: string;
+  connected: boolean;
+  detail: string | null;
+}
+
 // Bulk operations
 export interface BulkResult {
   affected: number;

@@ -1,11 +1,12 @@
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard};
 
 use rusqlite::Connection;
 use tauri::Manager;
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 
 mod commands;
+mod remote;
 
 /// State of the embedding backend, which loads asynchronously on startup.
 pub enum BackendState {
@@ -20,12 +21,43 @@ pub enum BackendState {
 /// Shared application state: holds a persistent DB connection, cached settings,
 /// a deferred embedding backend, and an in-memory cache so commands avoid
 /// per-request reinit.
-pub struct AppState {
+pub struct LocalState {
     pub db_path: PathBuf,
     pub conn: Connection,
     pub settings: clio_core::settings::Settings,
     pub backend: BackendState,
     pub cache: clio_core::cache::ClioCache,
+}
+
+pub enum AppState {
+    Local(Box<Mutex<LocalState>>),
+    Remote(remote::RemoteState),
+}
+
+impl AppState {
+    pub fn local(&self) -> Result<MutexGuard<'_, LocalState>, CommandError> {
+        match self {
+            Self::Local(state) => state
+                .lock()
+                .map_err(|e| CommandError::Core(format!("Lock poisoned: {e}"))),
+            Self::Remote(_) => Err(CommandError::Config(
+                "This maintenance operation is not available in Atlas remote mode".into(),
+            )),
+        }
+    }
+
+    pub fn remote(&self) -> Option<&remote::RemoteState> {
+        match self {
+            Self::Remote(state) => Some(state),
+            Self::Local(_) => None,
+        }
+    }
+
+    fn shutdown(&self) {
+        if let Self::Remote(state) = self {
+            state.shutdown();
+        }
+    }
 }
 
 /// Serialisable error type for Tauri command returns.
@@ -106,55 +138,70 @@ pub fn run() {
             }
         })
         .setup(|app| {
-            let db_path = resolve_db_path();
-            let conn = clio_core::db::open(&db_path)
-                .map_err(|e| format!("failed to open Clio database: {e}"))?;
+            if std::env::var_os("CLIO_REMOTE_HOST").is_some() {
+                let host = std::env::var("CLIO_REMOTE_HOST").unwrap_or_else(|_| "remote".into());
+                let db_path = std::env::var("CLIO_REMOTE_DB_PATH").unwrap_or_default();
+                let remote = match remote::RemoteConfig::from_env() {
+                    Ok(config) => {
+                        tauri::async_runtime::block_on(remote::RemoteState::connect(config))
+                    }
+                    Err(error) => remote::RemoteState::disconnected(host, db_path, error),
+                };
+                app.manage(AppState::Remote(remote));
+            } else {
+                let db_path = resolve_db_path();
+                let conn = clio_core::db::open(&db_path)
+                    .map_err(|e| format!("failed to open Clio database: {e}"))?;
 
-            let settings = clio_core::settings::load(&db_path).unwrap_or_default();
-            tracing::info!(
-                "Embeddings provider: {}",
-                match &settings.embeddings {
-                    clio_core::embeddings::EmbeddingConfig::Local { model } =>
-                        format!("Local ({model})"),
-                    clio_core::embeddings::EmbeddingConfig::OpenAi { model, .. } =>
-                        format!("OpenAI ({model})"),
-                    clio_core::embeddings::EmbeddingConfig::Disabled => "Disabled".to_string(),
-                }
-            );
-            let embedding_config = settings.embeddings.clone();
-            let cache = clio_core::cache::ClioCache::with_defaults();
+                let settings = clio_core::settings::load(&db_path).unwrap_or_default();
+                tracing::info!(
+                    "Embeddings provider: {}",
+                    match &settings.embeddings {
+                        clio_core::embeddings::EmbeddingConfig::Local { model } =>
+                            format!("Local ({model})"),
+                        clio_core::embeddings::EmbeddingConfig::OpenAi { model, .. } =>
+                            format!("OpenAI ({model})"),
+                        clio_core::embeddings::EmbeddingConfig::Disabled => "Disabled".to_string(),
+                    }
+                );
+                let embedding_config = settings.embeddings.clone();
+                let cache = clio_core::cache::ClioCache::with_defaults();
 
-            app.manage(Mutex::new(AppState {
-                db_path,
-                conn,
-                settings,
-                backend: BackendState::Loading,
-                cache,
-            }));
+                app.manage(AppState::Local(Box::new(Mutex::new(LocalState {
+                    db_path,
+                    conn,
+                    settings,
+                    backend: BackendState::Loading,
+                    cache,
+                }))));
+
+                // Load embedding backend on a background thread so the window
+                // appears immediately without waiting for model init.
+                let app_handle = app.handle().clone();
+                std::thread::spawn(move || {
+                    let state_handle = app_handle.state::<AppState>();
+                    let AppState::Local(state) = state_handle.inner() else {
+                        return;
+                    };
+                    let result = clio_core::embeddings::create_backend(&embedding_config);
+                    let mut app_state = state.lock().expect("AppState lock poisoned");
+                    app_state.backend = match result {
+                        Ok(b) => {
+                            tracing::info!("Embedding backend loaded successfully");
+                            BackendState::Ready(b)
+                        }
+                        Err(e) => {
+                            tracing::error!("Embedding backend unavailable: {e}");
+                            BackendState::Unavailable(e.to_string())
+                        }
+                    };
+                });
+            }
 
             // Register global hotkey: Cmd+Shift+M to show/hide the window.
             app.global_shortcut()
                 .register("CmdOrCtrl+Shift+M")
                 .map_err(|e| format!("failed to register global shortcut: {e}"))?;
-
-            // Load embedding backend on a background thread so the window
-            // appears immediately without waiting for model init.
-            let app_handle = app.handle().clone();
-            std::thread::spawn(move || {
-                let state_handle = app_handle.state::<Mutex<AppState>>();
-                let result = clio_core::embeddings::create_backend(&embedding_config);
-                let mut app_state = state_handle.inner().lock().expect("AppState lock poisoned");
-                app_state.backend = match result {
-                    Ok(b) => {
-                        tracing::info!("Embedding backend loaded successfully");
-                        BackendState::Ready(b)
-                    }
-                    Err(e) => {
-                        tracing::error!("Embedding backend unavailable: {e}");
-                        BackendState::Unavailable(e.to_string())
-                    }
-                };
-            });
 
             Ok(())
         })
@@ -202,6 +249,7 @@ pub fn run() {
             commands::deduplication::cmd_find_duplicates,
             commands::deduplication::cmd_preview_merge,
             commands::deduplication::cmd_merge_memories,
+            commands::status::cmd_connection_status,
         ])
         .build(tauri::generate_context!())
         .expect("Failed to build Clio")
@@ -213,6 +261,9 @@ pub fn run() {
                     let _ = window.show();
                     let _ = window.set_focus();
                 }
+            }
+            if let tauri::RunEvent::Exit = event {
+                app_handle.state::<AppState>().shutdown();
             }
         });
 }

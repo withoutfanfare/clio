@@ -50,10 +50,10 @@ Clio is a local-first memory backbone for AI tooling. One Rust core, multiple ac
 ### Optional Remote MCP Topology
 
 ```text
-┌────────────┐   stdio   ┌─────────────────┐   SSH   ┌──────────┐   rusqlite   ┌───────────┐
-│ AI client  │ ◄───────► │ clio remote-mcp │ ◄─────► │ clio-mcp │ ◄──────────► │ SQLite DB │
-│ computer A │           │ computer A      │         │ server   │              │ server    │
-└────────────┘           └─────────────────┘         └──────────┘              └───────────┘
+┌──────────────────┐   stdio   ┌─────────────────┐   SSH   ┌──────────┐   rusqlite   ┌───────────┐
+│ AI client or     │ ◄───────► │ clio remote-mcp │ ◄─────► │ clio-mcp │ ◄──────────► │ SQLite DB │
+│ Tauri desktop    │           │ client computer │         │ server   │              │ server    │
+└──────────────────┘           └─────────────────┘         └──────────┘              └───────────┘
 ```
 
 The AI client launches `clio remote-mcp` as its stdio MCP command. The local
@@ -66,9 +66,12 @@ uses non-interactive key authentication, so Clio does not expose a network
 listener or database port.
 
 This topology shares MCP operations only and requires a live SSH connection.
-Direct CLI commands, the daemon, session hooks, and the desktop app still use
-local storage. Embeddings and capture run on the server and must be configured
-there. There is no offline cache or synchronisation yet.
+The desktop app can opt into the same bridge for its normal memory, archive,
+link, namespace, statistics, and semantic-search workflows. Its bulk,
+import/export, database maintenance, deduplication, and namespace administration
+operations remain local only. Direct CLI commands, the daemon, and session hooks
+still use local storage. Embeddings and capture run on the server and must be
+configured there. There is no offline cache or synchronisation.
 
 For a headless server, both binaries can be built with `--no-default-features`.
 This omits local fastembed support while retaining storage, keyword recall,
@@ -152,7 +155,7 @@ Must NOT: open ad hoc SQL queries, implement its own validation rules.
 
 Thin MCP adapter. Maps MCP payloads to core input types.
 
-Tools: `memory_remember`, `memory_recall`, `memory_get`, `memory_recent`, `memory_link`, `memory_archive`, `memory_unarchive`, `memory_namespaces`, `memory_get_links`, `memory_capture`, `memory_search`, `memory_stats`, `memory_activity`, `memory_suggest_links`, `memory_delete`, `memory_context`, `memory_inbox_list`, `memory_inbox_approve`, `memory_inbox_reject`, `memory_inbox_edit`
+Tools: `memory_remember`, `memory_update`, `memory_recall`, `memory_get`, `memory_recent`, `memory_link`, `memory_archive`, `memory_unarchive`, `memory_delete`, `memory_move`, `memory_namespaces`, `memory_get_links`, `memory_capture`, `memory_search`, `memory_stats`, `memory_activity`, `memory_suggest_links`, `memory_context`, `memory_inbox`, `memory_cache_clear`
 
 Must NOT: duplicate persistence logic, invent alternate search semantics.
 
@@ -173,7 +176,7 @@ Must NOT: become the only way to use Clio, expose network listeners outside loca
 
 ### `clio-tauri`
 
-Desktop UI crate. Vue 3 frontend with Tauri 2 backend for browse/edit/archive/inspect workflows.
+Desktop UI crate. Vue 3 frontend with Tauri 2 backend for browse/edit/archive/inspect workflows. It opens `clio-core` directly in local mode or uses the existing SSH/MCP bridge when `CLIO_REMOTE_HOST` is set. Remote misconfiguration is surfaced as disconnected and never falls back to local storage.
 
 **Backend commands** (in `src/commands/`):
 - `memory.rs` — CRUD, archive, unarchive, recall, recent, update

@@ -2,7 +2,7 @@
 
 > For the full MCP tool and resource contract, see [MCP Contract](reference/mcp-contract.md).
 
-Clio exposes an MCP (Model Context Protocol) server that gives AI coding agents persistent, structured memory across sessions. The server runs over stdio and provides 21 tools for reading, writing, searching, and linking memories.
+Clio exposes an MCP (Model Context Protocol) server that gives AI coding agents persistent, structured memory across sessions. The server runs over stdio and provides tools for reading, writing, searching, and linking memories.
 
 This section covers connection setup for six AI agents, then explains **how to actually use Clio** once connected — workflows, prompting patterns, and practical examples.
 
@@ -20,7 +20,7 @@ This section covers connection setup for six AI agents, then explains **how to a
 └──────────────┘                         └──────────┘
 ```
 
-The MCP server is a thin adapter over `clio-core`. All 21 tools map directly to the same functions the CLI uses. Memories stored by one agent are immediately available to every other agent and the CLI.
+The MCP server is a thin adapter over `clio-core`. Its tools map directly to the same functions the CLI uses. Memories stored by one agent are immediately available to every other agent and the CLI.
 
 ---
 
@@ -130,15 +130,36 @@ project namespace before filling from `global`.
 | Keyword recall | Works without an embedding provider |
 | Semantic search and auto-embedding | Requires an embedding provider configured on the remote server |
 | LLM capture | Requires capture credentials and settings on the remote server |
-| Direct CLI commands, daemon, session hooks and desktop app | Continue to use local storage |
+| Tauri desktop memory, archive, link, namespace, statistics and semantic-search workflows | Can use the same SSH/MCP bridge when remote mode is configured |
+| Tauri bulk operations, import/export, maintenance, deduplication and namespace administration | Remain local only and are hidden in remote mode |
+| Direct CLI commands, daemon and session hooks | Continue to use local storage |
 | Offline use and later synchronisation | Not implemented |
 
 SQLite remains suitable for this topology because every database connection is
 opened on the remote server; the database file is never mounted across the
 network. PostgreSQL is therefore not required for multi-computer MCP access.
-Changing database engines alone would not make the direct CLI, daemon, hooks or
-desktop app remote-aware; those interfaces need a shared transport or a later
-sync layer.
+Changing database engines alone would not make the direct CLI, daemon or hooks
+remote-aware; those interfaces need a shared transport or a later sync layer.
+
+#### Tauri desktop remote mode
+
+The desktop app reuses the bridge instead of mounting the remote SQLite file.
+Set these environment variables before starting it:
+
+```sh
+CLIO_REMOTE_HOST=atlas \
+CLIO_REMOTE_DB_PATH=/home/ubuntu/.local/share/clio/memory.db \
+CLIO_REMOTE_BINARY=/home/ubuntu/.local/bin/clio-mcp \
+CLIO_REMOTE_COMMAND=/Users/dannyharding/.cargo/bin/clio \
+./dev.sh
+```
+
+`CLIO_REMOTE_DB_PATH` and `CLIO_REMOTE_BINARY` are required.
+`CLIO_REMOTE_COMMAND` defaults to `clio`. Leave `CLIO_REMOTE_HOST` unset for
+local mode. The app bar identifies the active backend and reports whether the
+bridge is connected. A broken remote configuration is reported as disconnected;
+the app does not silently open a local database. Restart the app to reconnect
+after the bridge process or SSH connection exits.
 
 Remote configuration is currently manual. `clio setup` still creates local MCP
 configurations.
@@ -481,7 +502,7 @@ Run `clio setup generic` to get a ready-to-paste JSON block with your exact bina
 
 ## MCP Tools Reference
 
-Once connected, AI agents have access to 21 tools. Every tool returns either JSON or Markdown depending on the `response_format` parameter (default: `markdown` for human-readable output in chat, `json` for structured data).
+Once connected, AI agents have access to Clio's MCP tools. Each read or list tool returns either JSON or Markdown where its contract exposes `response_format` (default: `markdown` for human-readable output in chat, `json` for structured data).
 
 ### Write tools
 

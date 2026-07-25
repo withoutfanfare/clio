@@ -4,3 +4,4 @@ pub mod memory;
 pub mod namespaces;
 pub mod search;
 pub mod stats;
+pub mod status;

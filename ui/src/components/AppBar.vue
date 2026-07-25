@@ -1,14 +1,30 @@
 <script setup lang="ts">
+import { computed } from "vue";
 import { SButton, SKbd } from "@stuntrocket/ui";
 import { useMemoryStore } from "@/stores/memories";
 
 const store = useMemoryStore();
+const statusText = computed(() => {
+  const status = store.connectionStatus;
+  if (!status) return "Checking connection…";
+  return `${status.label} · ${status.connected ? "Connected" : "Disconnected"}`;
+});
 </script>
 
 <template>
   <header class="appbar">
     <div class="appbar-inner">
-      <div class="appbar-left" />
+      <div class="appbar-left">
+        <div
+          class="backend-status"
+          :class="{ disconnected: store.connectionStatus && !store.connectionStatus.connected }"
+          :title="store.connectionStatus?.detail ?? undefined"
+          role="status"
+        >
+          <span class="backend-dot" />
+          {{ statusText }}
+        </div>
+      </div>
 
       <div class="appbar-right">
         <SButton
@@ -52,8 +68,29 @@ const store = useMemoryStore();
   height: 100%;
   display: flex;
   align-items: center;
-  justify-content: flex-end;
+  justify-content: space-between;
   padding: 0 var(--space-4);
+}
+
+.backend-status {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--color-text-secondary);
+  font-size: 11px;
+}
+
+.backend-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--colour-success);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--colour-success) 15%, transparent);
+}
+
+.backend-status.disconnected .backend-dot {
+  background: var(--colour-danger);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--colour-danger) 15%, transparent);
 }
 
 .appbar-left {
