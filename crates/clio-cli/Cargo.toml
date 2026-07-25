@@ -6,12 +6,16 @@ license.workspace = true
 rust-version.workspace = true
 description = "CLI for Clio shared memory system"
 
+[features]
+default = ["local-embeddings"]
+local-embeddings = ["clio-core/local-embeddings"]
+
 [[bin]]
 name = "clio"
 path = "src/main.rs"
 
 [dependencies]
-clio-core = { workspace = true, features = ["local-embeddings", "openai-embeddings", "capture"] }
+clio-core = { workspace = true, default-features = false, features = ["openai-embeddings", "capture"] }
 clap = { version = "4", features = ["derive"] }
 rusqlite = { workspace = true }
 serde = { workspace = true }
