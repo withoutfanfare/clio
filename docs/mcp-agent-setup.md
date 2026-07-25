@@ -78,6 +78,15 @@ root so the project SQLite configuration is applied:
 cargo build --locked --release --no-default-features -p clio-mcp
 ```
 
+To retain local semantic search on a Linux host that supplies its own ONNX
+Runtime library, use the dynamic feature and place `libonnxruntime.so` beside
+the installed binary:
+
+```sh
+cargo build --locked --release --no-default-features \
+  --features local-embeddings-dynamic -p clio-mcp
+```
+
 For Codex, add the bridge to `~/.codex/config.toml`:
 
 ```toml
@@ -133,6 +142,21 @@ sync layer.
 
 Remote configuration is currently manual. `clio setup` still creates local MCP
 configurations.
+
+#### Temporary bridge diagnostics
+
+The bridge has privacy-safe diagnostics behind Rust's standard `RUST_LOG`
+filter. To record the tool name and resolved namespace without logging memory
+content, add this temporary environment entry to the MCP client configuration:
+
+```toml
+[mcp_servers.clio.env]
+RUST_LOG = "clio_remote_mcp=debug"
+```
+
+Bridge and remote-server logs are written to stderr so stdout remains reserved
+for MCP JSON-RPC. Remove the entry and restart the client to disable the extra
+diagnostics.
 
 ---
 

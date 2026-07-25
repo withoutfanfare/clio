@@ -9,6 +9,7 @@ description = "CLI for Clio shared memory system"
 [features]
 default = ["local-embeddings"]
 local-embeddings = ["clio-core/local-embeddings"]
+local-embeddings-dynamic = ["clio-core/local-embeddings-dynamic"]
 
 [[bin]]
 name = "clio"

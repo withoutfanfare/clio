@@ -10,6 +10,13 @@ pub(crate) fn run(
     remote_binary: &str,
     remote_db: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    tracing::info!(
+        target: "clio_remote_mcp",
+        host,
+        remote_binary,
+        remote_db_override = remote_db.is_some(),
+        "starting SSH bridge"
+    );
     let mut child = Command::new("ssh")
         .args(["-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "--"])
         .arg(host)
@@ -51,6 +58,7 @@ pub(crate) fn run(
     if !status.success() {
         return Err(format!("SSH bridge to {host} exited with {status}").into());
     }
+    tracing::info!(target: "clio_remote_mcp", host, "SSH bridge stopped");
     output_result?;
     if let Some(input_result) = input_result {
         input_result?;
@@ -79,6 +87,12 @@ fn rewrite_request(line: &[u8]) -> Cow<'_, [u8]> {
     if request.get("method").and_then(Value::as_str) != Some("tools/call") {
         return Cow::Borrowed(line);
     }
+    let tool = request
+        .get("params")
+        .and_then(|params| params.get("name"))
+        .and_then(Value::as_str)
+        .unwrap_or("unknown")
+        .to_string();
 
     let Some(arguments) = request
         .get_mut("params")
@@ -87,18 +101,39 @@ fn rewrite_request(line: &[u8]) -> Cow<'_, [u8]> {
     else {
         return Cow::Borrowed(line);
     };
-    if arguments
+    let should_detect_namespace = !(arguments
         .get("namespace")
         .is_some_and(|namespace| !namespace.is_null())
-        || arguments.get("global").and_then(Value::as_bool) == Some(true)
+        || arguments.get("global").and_then(Value::as_bool) == Some(true));
+
+    let cwd = arguments.get("cwd").and_then(Value::as_str);
+    let detected = should_detect_namespace
+        .then(|| cwd.and_then(|cwd| clio_core::context::detect_namespace(Path::new(cwd))))
+        .flatten();
+    let (namespace, scope) = if let Some(namespace) = arguments
+        .get("namespace")
+        .filter(|namespace| !namespace.is_null())
+        .and_then(Value::as_str)
     {
+        (namespace, "explicit")
+    } else if arguments.get("global").and_then(Value::as_bool) == Some(true) {
+        ("global", "global")
+    } else if let Some(detected) = detected.as_ref() {
+        (detected.namespace.as_str(), "detected")
+    } else {
+        ("global", "fallback")
+    };
+    tracing::debug!(
+        target: "clio_remote_mcp",
+        tool,
+        namespace,
+        scope,
+        "forwarding MCP tool call"
+    );
+
+    if cwd.is_none() {
         return Cow::Borrowed(line);
     }
-
-    let Some(cwd) = arguments.get("cwd").and_then(Value::as_str) else {
-        return Cow::Borrowed(line);
-    };
-    let detected = clio_core::context::detect_namespace(Path::new(cwd));
 
     arguments.remove("cwd");
     arguments.remove("_clio_namespace");
@@ -177,7 +212,7 @@ mod tests {
     }
 
     #[test]
-    fn leaves_explicit_global_and_non_tool_requests_untouched() {
+    fn removes_cwd_for_explicit_scope_and_leaves_other_inputs_untouched() {
         let cwd = namespace_dir();
         let cwd = serde_json::to_string(cwd.to_str().unwrap()).unwrap();
         let non_tool = serde_json::json!({
@@ -186,20 +221,32 @@ mod tests {
         })
         .to_string()
             + "\n";
-        let lines = [
+        let scoped_lines = [
             format!(
                 "{{ \"method\": \"tools/call\", \"params\": {{\"arguments\": {{\"cwd\":{cwd},\"namespace\":\"project:explicit\"}}}} }}\n"
             ),
             format!(
                 "{{\"method\":\"tools/call\",\"params\":{{\"arguments\":{{\"cwd\":{cwd},\"global\":true}}}}}}\n"
             ),
-            non_tool,
-            "not json at all\n".to_string(),
         ];
 
-        for line in lines {
-            assert!(matches!(rewrite_request(line.as_bytes()), Cow::Borrowed(_)));
-            assert_eq!(rewrite_request(line.as_bytes()).as_ref(), line.as_bytes());
+        for line in scoped_lines {
+            let rewritten = rewrite_request(line.as_bytes());
+            assert!(matches!(&rewritten, Cow::Owned(_)));
+            let value: Value = serde_json::from_slice(&rewritten).unwrap();
+            let arguments = value["params"]["arguments"].as_object().unwrap();
+            assert!(!arguments.contains_key("cwd"));
+            assert!(!arguments.contains_key("_clio_namespace"));
+            assert!(
+                arguments.get("namespace").and_then(Value::as_str) == Some("project:explicit")
+                    || arguments.get("global").and_then(Value::as_bool) == Some(true)
+            );
+        }
+
+        for line in [non_tool, "not json at all\n".to_string()] {
+            let rewritten = rewrite_request(line.as_bytes());
+            assert!(matches!(&rewritten, Cow::Borrowed(_)));
+            assert_eq!(rewritten.as_ref(), line.as_bytes());
         }
 
         fs::remove_dir_all(serde_json::from_str::<String>(&cwd).unwrap()).unwrap();
