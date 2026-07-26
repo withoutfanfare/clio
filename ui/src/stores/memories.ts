@@ -378,7 +378,6 @@ export const useMemoryStore = defineStore("memories", () => {
       connectionStatus.value = await api.connectionStatus();
       connectionStatusError.value = null;
     } catch (e) {
-      connectionStatus.value = null;
       connectionStatusError.value = String(e);
     }
   }
