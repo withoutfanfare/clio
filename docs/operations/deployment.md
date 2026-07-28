@@ -191,10 +191,11 @@ deleted executable.
 ### Migration gate
 
 After taking the online backup, deploy copies that snapshot to a disposable
-database and lets the candidate CLI apply its migrations there. It also runs a
-semantic-search smoke check against the dynamically loaded ONNX Runtime. The
-live database is touched only after the probe succeeds, and its resulting
-migration set must match the probe.
+database and lets the candidate CLI apply its migrations there. It also runs
+keyword-recall and semantic-search smoke checks, exercising both the repository
+SQLite maths configuration and the dynamically loaded ONNX Runtime. The live
+database is touched only after the probe succeeds, and its resulting migration
+set must match the probe.
 
 If the probe finds pending migrations, deploy temporarily gates the stable MCP
 entry point before counting active sessions. New connections fail fast during

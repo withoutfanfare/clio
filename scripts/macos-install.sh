@@ -255,8 +255,8 @@ install_command() {
     cargo tauri --version >/dev/null 2>&1 || fail "cargo-tauri is required for --with-app."
     app_is_running && fail "Clio is running; quit it before installing the desktop app."
   fi
-  cargo build --manifest-path "$CLIO_REPO_DIR/Cargo.toml" --locked --release --no-default-features -p clio-cli --bin clio
-  [[ "$with_daemon" != true ]] || cargo build --manifest-path "$CLIO_REPO_DIR/Cargo.toml" --locked --release -p clio-daemon --bin clio-daemon
+  (cd "$CLIO_REPO_DIR" && cargo build --locked --release --no-default-features -p clio-cli --bin clio)
+  [[ "$with_daemon" != true ]] || (cd "$CLIO_REPO_DIR" && cargo build --locked --release -p clio-daemon --bin clio-daemon)
   if [[ "$with_app" == true ]]; then
     npm --prefix "$CLIO_REPO_DIR/ui" ci
     sign_identity="${APPLE_SIGNING_IDENTITY:--}"

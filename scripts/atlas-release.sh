@@ -250,6 +250,8 @@ probe_migrations() {
   cp "$CLIO_LAST_BACKUP/memory.db" "$CLIO_TEMP_PROBE/memory.db"
   before="$(migration_versions "$CLIO_TEMP_PROBE/memory.db")"
   "$candidate" --db-path "$CLIO_TEMP_PROBE/memory.db" --json stats >/dev/null
+  "$candidate" --db-path "$CLIO_TEMP_PROBE/memory.db" --json recall \
+    --query "deployment" --global --limit 1 >/dev/null
   "$candidate" --db-path "$CLIO_TEMP_PROBE/memory.db" --json search \
     "deployment smoke test" --global --limit 1 >/dev/null
   after="$(migration_versions "$CLIO_TEMP_PROBE/memory.db")"
@@ -275,10 +277,10 @@ deploy() {
   acquire_deploy_lock
   preflight "$sha"
   detect_existing_gate
-  cargo build --manifest-path "$CLIO_REPO_DIR/Cargo.toml" --locked --release \
-    --no-default-features --features local-embeddings-dynamic -p clio-cli --bin clio
-  cargo build --manifest-path "$CLIO_REPO_DIR/Cargo.toml" --locked --release \
-    --no-default-features --features local-embeddings-dynamic -p clio-mcp --bin clio-mcp
+  (cd "$CLIO_REPO_DIR" && cargo build --locked --release \
+    --no-default-features --features local-embeddings-dynamic -p clio-cli --bin clio)
+  (cd "$CLIO_REPO_DIR" && cargo build --locked --release \
+    --no-default-features --features local-embeddings-dynamic -p clio-mcp --bin clio-mcp)
   check_checkout "$sha"
   release_dir="$CLIO_INSTALL_ROOT/releases/$sha"
   install -d -m 755 "$release_dir/bin" "$CLIO_BIN_DIR"
