@@ -78,11 +78,10 @@ Every read tool should:
 
 Several tools accept an optional `cwd` parameter (working directory path). When `cwd` is provided and `namespace` is omitted, the server attempts to detect the project namespace from the directory tree:
 
-1. Walk up from `cwd` looking for project markers
-2. `.clio-namespace` file — highest priority; contains the full namespace string (e.g. `project:clio`)
-3. `.git` directory — derives `project:<repo-name>` from the directory name
-4. `Cargo.toml` or `package.json` — derives `project:<dir-name>` from the directory name
-5. If no marker is found, falls back to `global`
+1. Search every ancestor from `cwd` for `.clio-namespace`; the nearest valid file supplies the full namespace string (e.g. `project:clio`). This explicit marker wins over any nested package manifest.
+2. If no `.clio-namespace` exists, use the nearest `.git` marker and derive `project:<repo-name>` from its directory.
+3. Otherwise use the nearest `Cargo.toml` or `package.json` and derive `project:<dir-name>` from its directory.
+4. If no marker is found, fall back to `global`.
 
 Auto-detection is controlled by `context.auto_detect` in settings (default `true`). When `false`, `cwd` is ignored.
 
@@ -91,7 +90,7 @@ Auto-detection is controlled by `context.auto_detect` in settings (default `true
 2. Auto-detected namespace from `cwd`
 3. `global`
 
-Tools that accept `cwd`: `memory_remember`, `memory_update`, `memory_recall`, `memory_capture`, `memory_search`, `memory_context`.
+Tools that accept `cwd`: `memory_remember`, `memory_recall`, `memory_capture`, `memory_search`, `memory_context`.
 
 ## Shared Types
 
@@ -221,7 +220,7 @@ Returns the stored memory record in structured form.
 
 ## `memory_update`
 
-Update an existing memory in place.
+Patch an existing memory in place.
 
 ### Why it exists
 
@@ -230,34 +229,40 @@ Interactive clients need to edit a known record without relying on a
 
 ### Input
 
-The input is the `memory_remember` payload with one additional required field:
+`memory_id` and a non-empty `expected_updated_at` are required. Copy
+`expected_updated_at` from the record's last observed `updated_at` value and
+supply only the fields to change:
 
 ```json
 {
   "memory_id": "01954d70-cf20-7d42-bb3b-ff2f0f0de123",
-  "namespace": "project:ai",
-  "kind": "decision",
   "title": "Use SQLite over SSH",
-  "summary": "The shared store remains SQLite on the server.",
-  "content": "All database connections are opened on the remote server.",
-  "tags": ["sqlite", "ssh"],
-  "source": "desktop",
-  "source_ref": null,
-  "confidence": 0.93,
-  "importance": 4,
-  "metadata": {},
-  "valid_from": null,
-  "valid_until": null
+  "summary": null,
+  "expected_updated_at": "2026-03-02T19:15:00Z"
 }
 ```
 
+Patchable fields are `namespace`, `kind`, `title`, `summary`, `content`,
+`tags`, `source`, `source_ref`, `confidence`, `importance`, `metadata`,
+`valid_from`, and `valid_until`.
+
 ### Behaviour
 
-- applies the same validation and namespace resolution as `memory_remember`
+- omitted fields remain unchanged
+- JSON `null` clears nullable fields: `title`, `summary`, `source`,
+  `source_ref`, `confidence`, `valid_from`, and `valid_until`
+- `metadata` is not nullable; send `{}` to clear it
+- namespace auto-detection does not run for updates; omit `namespace` to retain
+  it, or supply the new namespace explicitly
+- validates the complete merged record before committing the patch
 - preserves the existing `id` and `created_at`
-- updates tags and full-text search data through the core repository
+- updates tags and full-text search data atomically through the core repository
+- rejects the whole patch if `expected_updated_at` differs from the stored
+  timestamp
 - attempts to regenerate the embedding when server-side `auto_embed` is enabled;
   an embedding failure is logged and does not roll back the stored edit
+- the Tauri editor sends only changed fields with the last observed
+  `updated_at`, then refreshes its local record from the response
 
 ### Response
 
@@ -266,7 +271,9 @@ Returns the updated memory record in structured form.
 ### Failure cases
 
 - validation error
+- missing or blank `expected_updated_at`
 - memory not found
+- stale `expected_updated_at` → `Conflict: memory <id> changed after it was read; fetch the latest record and retry`
 - storage failure
 
 ## `memory_recall`
@@ -722,13 +729,39 @@ Bridges the gap between raw thought capture and structured memory. A caller can 
 3. Parse the LLM response into classification fields (kind, title, summary, tags, namespace, importance, confidence)
 4. Apply normalisation: unknown `kind` values fall back to `note`; tags are lowercased and spaces replaced with hyphens; `importance` is clamped 1–5; `confidence` is clamped 0.0–1.0; missing fields use safe defaults
 5. Namespace resolution order: explicit `namespace` field → auto-detected from `cwd` → LLM suggestion
-6. Store as a memory with `source = "capture"`
-7. Auto-embed the stored memory if `auto_embed` is enabled in settings
-8. Return the stored memory record
+6. If confidence is below `capture.review_threshold`, queue the suggested memory with `source_route = "capture"` and return a `Queued` outcome
+7. Otherwise store as a memory with `source = "capture"`, auto-embed when enabled, and return a `Stored` outcome
 
 ### Response
 
-Returns the full memory record in JSON, identical in shape to `memory_remember`. The `source` field will be `"capture"`.
+Returns an internally tagged result. A stored result has `outcome = "Stored"`
+alongside the full memory record. Abridged example:
+
+```json
+{
+  "outcome": "Stored",
+  "id": "01954d70-cf20-7d42-bb3b-ff2f0f0de123",
+  "source": "capture",
+  "source_ref": null,
+  "content": "We decided to move the auth service to a separate repo.",
+  "namespace": "project:ai"
+}
+```
+
+A low-confidence result has `outcome = "Queued"` alongside the review item.
+It is not yet a durable memory. Abridged example:
+
+```json
+{
+  "outcome": "Queued",
+  "id": "01954d70-cf20-7d42-bb3b-ff2f0f0de456",
+  "content": "We may move the auth service.",
+  "suggested_namespace": "project:ai",
+  "source_route": "capture",
+  "source_ref": null,
+  "status": "pending"
+}
+```
 
 ### Failure cases
 
@@ -911,9 +944,10 @@ Helps discover relationships between memories that have not been explicitly link
 - fetches or generates the embedding for `memory_id` on-the-fly (stores it if missing)
 - collects IDs of memories already linked to or from `memory_id` in either direction
 - excludes the target memory itself and all already-linked memories
-- scans all non-archived memories with stored embeddings and computes cosine similarity
+- scans non-archived memories whose stored model and dimensions match the active backend, then computes cosine similarity
 - returns candidates with similarity ≥ `threshold`, sorted by similarity descending
 - embeddings must be enabled in settings for this tool to work
+- after changing provider or model, restart the MCP client and run `clio embed backfill` before expecting all memories to participate
 
 ### Structured response (JSON format)
 
@@ -973,7 +1007,7 @@ Find memories by semantic meaning using vector embeddings.
 ### Behaviour
 
 - embed the query text using the active embedding backend
-- compute cosine similarity between the query embedding and all stored embeddings
+- compute cosine similarity only against stored embeddings with the active model name and matching vector dimensions
 - when `namespace` is explicitly provided, filter to that namespace
 - when `cwd` is provided and `namespace` is omitted, use scoped recall: search detected namespace first, then fill remaining slots from `global`; project-scoped results appear before global results
 - when detection falls back to `global`, search only `global` unless `global: true` requests all namespaces
@@ -1022,6 +1056,7 @@ Returns a recall envelope identical in shape to `memory_recall`. The `rank` fiel
 - embedding backend not available at compile time → configuration error
 - embedding backend unreachable (e.g. OpenAI API key missing) → configuration error
 - no memories have been embedded yet → returns empty results without error
+- memories embedded with another model or dimensionality are ignored until `clio embed backfill` replaces them
 - storage failure
 
 ## Resource Definitions
@@ -1226,8 +1261,9 @@ ignored for `list`.
 
 - `list`: returns items with `status = 'pending'`, ordered by `created_at ASC`
 - `approve`: creates a memory from the suggested fields via
-  `repository::remember()`, sets status to `approved` and `reviewed_at` to now,
-  returns the created memory
+  `repository::remember()`, preserving `source_route` as `source`, plus
+  `source_ref` and metadata; it sets status to `approved` and `reviewed_at` to
+  now, auto-embeds when enabled, and returns the created memory
 - `reject`: sets status to `rejected` and `reviewed_at` to now, returns the item
 - `edit`: updates only the provided fields, sets status to `edited`; the item
   still requires `action: "approve"` afterwards
@@ -1237,6 +1273,30 @@ ignored for `list`.
 - unknown `action`
 - `approve`/`reject`/`edit` without `review_id`
 - review item not found, or already approved/rejected
+
+## `memory_cache_clear`
+
+Clear the current MCP process's namespace-list cache.
+
+Individual memory, recall, recent and embedding reads deliberately go directly
+to SQLite so separate MCP processes observe committed changes. Only the
+namespace list is cached, with a 30-second TTL. This tool clears that entry
+immediately; it does not affect another MCP process.
+
+### Input
+
+No parameters.
+
+### Response
+
+```json
+{
+  "memory_cleared": 0,
+  "recall_cleared": 0,
+  "namespace_cleared": 1,
+  "embedding_cleared": 0
+}
+```
 
 ## Tool Annotation Guidance
 
@@ -1263,6 +1323,7 @@ Recommended annotation intent:
 | `memory_suggest_links` | true | false | false |
 | `memory_context` | true | false | true |
 | `memory_inbox` | false | false | false |
+| `memory_cache_clear` | false | false | true |
 
 ## Output Discipline
 
@@ -1345,12 +1406,15 @@ The MCP implementation should be validated for:
 - get links for a memory with and without outgoing links
 - not-found behaviour (get, unarchive, get_links)
 - capture flow (success, capture-disabled error, missing API key error)
+- capture result discrimination (`Stored` and `Queued`) and provenance-preserving approval
 - stats flow (all namespaces, scoped to namespace)
 - activity flow (creates, updates, archives classified correctly)
 - suggest-links flow (above threshold returned, already-linked excluded)
 - validation errors
 - resource lookup
 - embedding disabled error from `memory_search` and `memory_suggest_links`
+- embedding model/dimension isolation and stale-vector backfill
+- cross-connection freshness for individual memory reads
 
 ## Invariants For Implementers
 

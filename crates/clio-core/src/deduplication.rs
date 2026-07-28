@@ -183,8 +183,7 @@ pub fn merge_memories(conn: &Connection, keep_id: &str, merge_ids: &[String]) ->
 
     // Wrap the whole mutation in a savepoint so a mid-merge failure rolls back
     // cleanly instead of leaving the kept memory half-mutated.
-    conn.execute_batch("SAVEPOINT merge_memories")?;
-    let result = (|| -> Result<()> {
+    crate::db::with_savepoint(conn, "merge_memories", || {
         conn.execute(
             "UPDATE memories SET tags_text = ?1, confidence = ?2, importance = ?3, updated_at = ?4
              WHERE id = ?5",
@@ -228,16 +227,7 @@ pub fn merge_memories(conn: &Connection, keep_id: &str, merge_ids: &[String]) ->
             repository::archive(conn, merge_id)?;
         }
         Ok(())
-    })();
-
-    match result {
-        Ok(()) => conn.execute_batch("RELEASE merge_memories")?,
-        Err(e) => {
-            let _ = conn.execute_batch("ROLLBACK TO merge_memories");
-            let _ = conn.execute_batch("RELEASE merge_memories");
-            return Err(e);
-        }
-    }
+    })?;
 
     // Return the updated kept memory without inflating its access_count.
     repository::get_raw(conn, keep_id)

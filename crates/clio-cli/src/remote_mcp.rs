@@ -18,7 +18,20 @@ pub(crate) fn run(
         "starting SSH bridge"
     );
     let mut child = Command::new("ssh")
-        .args(["-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "--"])
+        .args([
+            "-T",
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            "ConnectTimeout=10",
+            "-o",
+            "ServerAliveInterval=15",
+            "-o",
+            "ServerAliveCountMax=3",
+            "-o",
+            "ClearAllForwardings=yes",
+            "--",
+        ])
         .arg(host)
         .arg(remote_command(remote_binary, remote_db))
         .stdin(Stdio::piped())

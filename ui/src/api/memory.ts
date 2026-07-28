@@ -5,6 +5,7 @@ import type {
   BulkResult,
   CleanupCandidate,
   CleanupReport,
+  CaptureResult,
   ConnectionStatus,
   ConsolidationResult,
   DetectedContext,
@@ -21,6 +22,7 @@ import type {
   RememberInput,
   RestoreResult,
   SuggestionResult,
+  UpdateInput,
 } from "./types";
 
 export async function connectionStatus(): Promise<ConnectionStatus> {
@@ -28,14 +30,32 @@ export async function connectionStatus(): Promise<ConnectionStatus> {
 }
 
 export async function remember(input: RememberInput): Promise<Memory> {
-  return invoke<Memory>("cmd_remember", { ...input });
+  return invoke<Memory>("cmd_remember", {
+    namespace: input.namespace,
+    kind: input.kind,
+    title: input.title,
+    summary: input.summary,
+    content: input.content,
+    tags: input.tags,
+    source: input.source,
+    sourceRef: input.source_ref,
+    confidence: input.confidence,
+    importance: input.importance,
+    metadata: input.metadata,
+    validFrom: input.valid_from,
+    validUntil: input.valid_until,
+    upsert: input.upsert,
+  });
 }
 
 export async function updateMemory(
   memoryId: string,
-  input: RememberInput,
+  patch: UpdateInput,
 ): Promise<Memory> {
-  return invoke<Memory>("cmd_update", { memoryId, ...input });
+  return invoke<Memory>("cmd_update", {
+    memoryId,
+    patch,
+  });
 }
 
 export async function recall(params: {
@@ -170,8 +190,8 @@ export async function suggestLinks(params: {
 export async function capture(params: {
   text: string;
   namespace?: string;
-}): Promise<Memory> {
-  return invoke<Memory>("cmd_capture", params);
+}): Promise<CaptureResult> {
+  return invoke<CaptureResult>("cmd_capture", params);
 }
 
 export async function initNamespace(

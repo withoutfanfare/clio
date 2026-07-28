@@ -59,6 +59,7 @@ pub async fn cmd_search(
             &app.conn,
             &query,
             &query_embedding,
+            backend.model_name(),
             namespace.as_deref(),
             include_archived.unwrap_or(false),
             false,

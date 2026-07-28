@@ -333,7 +333,7 @@ fn dirs_home() -> Result<PathBuf> {
 // Health checks
 // ---------------------------------------------------------------------------
 
-/// Check database connectivity by opening the file and running a trivial query.
+/// Check database connectivity and SQLite file integrity.
 pub fn check_database_health(db_path: &Path) -> HealthCheck {
     if !db_path.exists() {
         return HealthCheck {
@@ -345,14 +345,30 @@ pub fn check_database_health(db_path: &Path) -> HealthCheck {
     match rusqlite::Connection::open_with_flags(db_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
     {
         Ok(conn) => {
-            match conn.query_row("SELECT count(*) FROM memories", [], |r| r.get::<_, i64>(0)) {
-                Ok(count) => HealthCheck {
-                    status: HealthStatus::Healthy,
-                    message: format!("{count} memories in database"),
+            match conn.query_row("PRAGMA quick_check(1)", [], |row| row.get::<_, String>(0)) {
+                Ok(result) if result != "ok" => HealthCheck {
+                    status: HealthStatus::Unhealthy,
+                    message: format!("SQLite quick check failed: {result}"),
                 },
+                Ok(_) => {
+                    match conn
+                        .query_row("SELECT count(*) FROM memories", [], |r| r.get::<_, i64>(0))
+                    {
+                        Ok(count) => HealthCheck {
+                            status: HealthStatus::Healthy,
+                            message: format!(
+                                "SQLite quick check passed; {count} memories in database"
+                            ),
+                        },
+                        Err(e) => HealthCheck {
+                            status: HealthStatus::Degraded,
+                            message: format!("query failed: {e}"),
+                        },
+                    }
+                }
                 Err(e) => HealthCheck {
-                    status: HealthStatus::Degraded,
-                    message: format!("query failed: {e}"),
+                    status: HealthStatus::Unhealthy,
+                    message: format!("SQLite quick check failed: {e}"),
                 },
             }
         }
@@ -416,5 +432,22 @@ pub fn run_health_checks(db_path: &Path, settings: &Settings) -> DaemonHealth {
         database: check_database_health(db_path),
         embeddings: check_embeddings_health(settings),
         capture: check_capture_health(settings),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn database_health_runs_sqlite_quick_check() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("memory.db");
+        crate::db::open(&path).unwrap();
+
+        let health = check_database_health(&path);
+
+        assert_eq!(health.status, HealthStatus::Healthy);
+        assert!(health.message.contains("quick check passed"));
     }
 }

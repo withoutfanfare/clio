@@ -1,6 +1,6 @@
 import { ref, onUnmounted } from "vue";
 import * as api from "@/api/memory";
-import type { Memory, RememberInput } from "@/api/types";
+import type { Memory, MemoryPatch } from "@/api/types";
 
 export function useAutoSave(delay = 2000) {
   const saving = ref(false);
@@ -10,7 +10,7 @@ export function useAutoSave(delay = 2000) {
   let timeout: ReturnType<typeof setTimeout>;
   let savedTimeout: ReturnType<typeof setTimeout>;
 
-  function scheduleAutoSave(memory: Memory, updates: Partial<RememberInput>) {
+  function scheduleAutoSave(memory: Memory, updates: MemoryPatch) {
     clearTimeout(timeout);
     clearTimeout(savedTimeout);
     dirty.value = true;
@@ -22,17 +22,11 @@ export function useAutoSave(delay = 2000) {
       saving.value = true;
       dirty.value = false;
       try {
-        await api.updateMemory(memory.id, {
-          namespace: updates.namespace ?? memory.namespace,
-          kind: updates.kind ?? memory.kind,
-          title: updates.title ?? memory.title ?? undefined,
-          summary: updates.summary ?? memory.summary ?? undefined,
-          content: updates.content ?? memory.content,
-          tags: updates.tags ?? memory.tags,
-          importance: updates.importance ?? memory.importance,
-          source: memory.source ?? undefined,
-          source_ref: memory.source_ref ?? undefined,
+        const updated = await api.updateMemory(memory.id, {
+          ...updates,
+          expected_updated_at: memory.updated_at,
         });
+        Object.assign(memory, updated);
         saved.value = true;
         error.value = null;
         // Clear "Saved" after 4 seconds so it doesn't linger forever

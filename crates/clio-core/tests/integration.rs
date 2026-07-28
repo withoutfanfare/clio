@@ -1884,6 +1884,7 @@ fn approve_review_of_duplicate_content_does_not_create_second_memory() {
         suggested_importance: 3,
         suggested_confidence: Some(0.4),
         source_route: Some("capture".into()),
+        source_ref: None,
         metadata: serde_json::json!({}),
     };
     let r1 = queue_for_review(&conn, &mk()).unwrap();
@@ -1926,7 +1927,7 @@ fn semantic_search_returns_best_match_first() {
     store_embedding(&conn, &worst.id, "test", 2, &[0.0, 1.0]).unwrap();
 
     let query = [1.0_f32, 0.0];
-    let results = semantic_search(&conn, &query, None, false, false, 10).unwrap();
+    let results = semantic_search(&conn, &query, "test", None, false, false, 10).unwrap();
 
     assert_eq!(results[0].memory_id, best.id);
     assert_eq!(results[1].memory_id, middle.id);
@@ -1961,7 +1962,8 @@ fn semantic_recall_importance_lifts_weaker_match_when_scoring_enabled() {
     let query = [1.0_f32, 0.0];
 
     // Without scoring: pure cosine — the perfect match A ranks first.
-    let plain = semantic_recall(&conn, "zzqq", &query, None, false, false, None, 10).unwrap();
+    let plain =
+        semantic_recall(&conn, "zzqq", &query, "test", None, false, false, None, 10).unwrap();
     assert_eq!(plain[0].memory.id, a.id, "pure cosine should rank A first");
 
     // With scoring: importance lifts B above A.
@@ -1973,6 +1975,7 @@ fn semantic_recall_importance_lifts_weaker_match_when_scoring_enabled() {
         &conn,
         "zzqq",
         &query,
+        "test",
         None,
         false,
         false,
@@ -2010,6 +2013,7 @@ fn semantic_recall_keyword_boost_is_proportional() {
         &conn,
         "borrow checker",
         &query,
+        "test",
         None,
         false,
         false,
@@ -2046,8 +2050,18 @@ fn semantic_recall_scoped_includes_global_memories() {
     store_embedding(&conn, &other.id, "test", 2, &[1.0, 0.0]).unwrap();
 
     let query = [1.0_f32, 0.0];
-    let scoped =
-        semantic_recall_scoped(&conn, "zzqq", &query, "project:x", false, false, None, 10).unwrap();
+    let scoped = semantic_recall_scoped(
+        &conn,
+        "zzqq",
+        &query,
+        "test",
+        "project:x",
+        false,
+        false,
+        None,
+        10,
+    )
+    .unwrap();
     let scoped_ids: std::collections::HashSet<_> =
         scoped.iter().map(|item| item.memory.id.as_str()).collect();
 
@@ -2059,6 +2073,7 @@ fn semantic_recall_scoped_includes_global_memories() {
         &conn,
         "zzqq",
         &query,
+        "test",
         Some("project:x"),
         false,
         false,
@@ -2092,11 +2107,12 @@ fn semantic_recall_excludes_expired_when_requested() {
     let query = [1.0_f32, 0.0];
 
     // Default: both returned.
-    let all = semantic_recall(&conn, "zzqq", &query, None, false, false, None, 10).unwrap();
+    let all = semantic_recall(&conn, "zzqq", &query, "test", None, false, false, None, 10).unwrap();
     assert_eq!(all.len(), 2);
 
     // exclude_expired: the past-expired memory is dropped.
-    let live_only = semantic_recall(&conn, "zzqq", &query, None, false, true, None, 10).unwrap();
+    let live_only =
+        semantic_recall(&conn, "zzqq", &query, "test", None, false, true, None, 10).unwrap();
     assert_eq!(live_only.len(), 1);
     assert_eq!(live_only[0].memory.id, live.id);
 }
@@ -2118,8 +2134,18 @@ fn semantic_recall_scoped_prefers_project_then_global() {
 
     let query = [1.0_f32, 0.0];
 
-    let scoped =
-        semantic_recall_scoped(&conn, "zzqq", &query, "project:x", false, false, None, 2).unwrap();
+    let scoped = semantic_recall_scoped(
+        &conn,
+        "zzqq",
+        &query,
+        "test",
+        "project:x",
+        false,
+        false,
+        None,
+        2,
+    )
+    .unwrap();
     assert_eq!(scoped.len(), 2);
     assert_eq!(scoped[0].memory.id, project.id);
     assert_eq!(scoped[1].memory.id, global.id);
@@ -2128,6 +2154,7 @@ fn semantic_recall_scoped_prefers_project_then_global() {
         &conn,
         "zzqq",
         &query,
+        "test",
         Some("project:x"),
         false,
         false,
@@ -2138,8 +2165,10 @@ fn semantic_recall_scoped_prefers_project_then_global() {
     assert_eq!(explicit.len(), 1);
     assert_eq!(explicit[0].memory.id, project.id);
 
-    let global_only =
-        semantic_recall_scoped(&conn, "zzqq", &query, "global", false, false, None, 10).unwrap();
+    let global_only = semantic_recall_scoped(
+        &conn, "zzqq", &query, "test", "global", false, false, None, 10,
+    )
+    .unwrap();
     assert_eq!(global_only.len(), 1);
     assert_eq!(global_only[0].memory.id, global.id);
 }

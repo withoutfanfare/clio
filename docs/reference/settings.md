@@ -39,6 +39,17 @@ Three variants (tagged by `provider`):
 |-----|------|---|-------------|
 | `provider` | string | `"disabled"` | Turns off all embedding functionality |
 
+The MCP server creates its embedding backend at process start. After changing
+the provider or model, restart each MCP client, then run:
+
+```sh
+clio embed backfill
+```
+
+Semantic search and link suggestions compare only embeddings whose model and
+dimensions match the active backend. Backfill replaces missing or stale rows;
+repeat it with an appropriate `--batch-size` until every memory is refreshed.
+
 ## capture
 
 | Key | Type | Default | Description |

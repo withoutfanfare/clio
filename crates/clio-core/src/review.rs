@@ -28,6 +28,7 @@ pub struct ReviewItem {
     pub suggested_importance: i32,
     pub suggested_confidence: Option<f64>,
     pub source_route: Option<String>,
+    pub source_ref: Option<String>,
     pub metadata: serde_json::Value,
     pub status: String,
     pub created_at: String,
@@ -50,6 +51,8 @@ pub struct ReviewInput {
     pub suggested_importance: i32,
     pub suggested_confidence: Option<f64>,
     pub source_route: Option<String>,
+    #[serde(default)]
+    pub source_ref: Option<String>,
     #[serde(default = "default_metadata")]
     pub metadata: serde_json::Value,
 }
@@ -107,8 +110,8 @@ pub fn queue_for_review(conn: &Connection, input: &ReviewInput) -> Result<Review
     conn.execute(
         "INSERT INTO review_queue (id, content, suggested_namespace, suggested_kind,
             suggested_title, suggested_summary, suggested_tags, suggested_importance,
-            suggested_confidence, source_route, metadata_json, status, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 'pending', ?12)",
+            suggested_confidence, source_route, source_ref, metadata_json, status, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 'pending', ?13)",
         params![
             id,
             input.content,
@@ -120,6 +123,7 @@ pub fn queue_for_review(conn: &Connection, input: &ReviewInput) -> Result<Review
             input.suggested_importance,
             input.suggested_confidence,
             input.source_route,
+            input.source_ref,
             metadata_str,
             now,
         ],
@@ -133,7 +137,7 @@ pub fn list_pending(conn: &Connection, limit: u32) -> Result<Vec<ReviewItem>> {
     let mut stmt = conn.prepare(
         "SELECT id, content, suggested_namespace, suggested_kind, suggested_title,
                 suggested_summary, suggested_tags, suggested_importance, suggested_confidence,
-                source_route, metadata_json, status, created_at, reviewed_at
+                source_route, source_ref, metadata_json, status, created_at, reviewed_at
          FROM review_queue
          WHERE status = 'pending'
          ORDER BY created_at ASC
@@ -154,7 +158,7 @@ pub fn get_review(conn: &Connection, id: &str) -> Result<ReviewItem> {
     let mut stmt = conn.prepare(
         "SELECT id, content, suggested_namespace, suggested_kind, suggested_title,
                 suggested_summary, suggested_tags, suggested_importance, suggested_confidence,
-                source_route, metadata_json, status, created_at, reviewed_at
+                source_route, source_ref, metadata_json, status, created_at, reviewed_at
          FROM review_queue
          WHERE id = ?1",
     )?;
@@ -174,74 +178,96 @@ pub fn approve_review(
     id: &str,
     settings: &crate::settings::Settings,
 ) -> Result<Memory> {
-    let item = get_review(conn, id)?;
-
-    if item.status != "pending" && item.status != "edited" {
-        return Err(ClioError::Validation(format!(
-            "cannot approve review item with status '{}'",
-            item.status
-        )));
-    }
-
-    // Suppress duplicate writes: if an identical, non-archived memory already
-    // exists in the suggested namespace, resolve the review against it instead
-    // of inserting a second copy.
-    if let Some(existing_id) =
-        crate::repository::find_content_duplicate(conn, &item.suggested_namespace, &item.content)?
-    {
-        let memory = crate::repository::get(conn, &existing_id)?;
+    let owns_transaction = conn.is_autocommit();
+    conn.execute_batch(if owns_transaction {
+        "BEGIN IMMEDIATE"
+    } else {
+        "SAVEPOINT approve_review"
+    })?;
+    let result = (|| -> Result<Memory> {
         let now = now_utc();
-        conn.execute(
-            "UPDATE review_queue SET status = 'approved', reviewed_at = ?1 WHERE id = ?2",
+        let changed = conn.execute(
+            "UPDATE review_queue SET status = 'approved', reviewed_at = ?1
+             WHERE id = ?2 AND status IN ('pending', 'edited')",
             params![now, id],
         )?;
-        return Ok(memory);
-    }
+        if changed == 0 {
+            let current = get_review(conn, id)?;
+            return Err(ClioError::Validation(format!(
+                "cannot approve review item with status '{}'",
+                current.status
+            )));
+        }
+        let item = get_review(conn, id)?;
 
-    let input = crate::models::RememberInput {
-        namespace: item.suggested_namespace,
-        kind: item.suggested_kind,
-        title: item.suggested_title,
-        summary: item.suggested_summary,
-        content: item.content,
-        tags: item.suggested_tags,
-        source: Some("capture".into()),
-        source_ref: None,
-        confidence: item.suggested_confidence,
-        importance: item.suggested_importance,
-        metadata: item.metadata,
-        valid_from: None,
-        valid_until: None,
-        upsert: false,
+        // Resolve exact duplicates to the existing memory while the review
+        // transition remains protected by the same write transaction.
+        if let Some(existing_id) = crate::repository::find_content_duplicate(
+            conn,
+            &item.suggested_namespace,
+            &item.content,
+        )? {
+            return crate::repository::get(conn, &existing_id);
+        }
+
+        let upsert = item.source_route.is_some() && item.source_ref.is_some();
+        let input = crate::models::RememberInput {
+            namespace: item.suggested_namespace,
+            kind: item.suggested_kind,
+            title: item.suggested_title,
+            summary: item.suggested_summary,
+            content: item.content,
+            tags: item.suggested_tags,
+            source: item.source_route,
+            source_ref: item.source_ref,
+            confidence: item.suggested_confidence,
+            importance: item.suggested_importance,
+            metadata: item.metadata,
+            valid_from: None,
+            valid_until: None,
+            upsert,
+        };
+
+        crate::repository::remember(conn, &input, settings)
+    })();
+
+    let memory = match result {
+        Ok(memory) => {
+            crate::db::finish_transaction(conn, owns_transaction, "approve_review")?;
+            memory
+        }
+        Err(e) => {
+            crate::db::rollback_transaction(conn, owns_transaction, "approve_review");
+            return Err(e);
+        }
     };
 
-    let memory = crate::repository::remember(conn, &input, settings)?;
-
-    let now = now_utc();
-    conn.execute(
-        "UPDATE review_queue SET status = 'approved', reviewed_at = ?1 WHERE id = ?2",
-        params![now, id],
-    )?;
+    if settings.auto_embed {
+        if let Ok(backend) = crate::embeddings::create_backend(&settings.embeddings) {
+            if let Err(e) = crate::embeddings::embed_and_store(conn, backend.as_ref(), &memory) {
+                tracing::warn!("review approval auto-embed failed: {e}");
+            }
+        }
+    }
 
     Ok(memory)
 }
 
 /// Reject a review item.
 pub fn reject_review(conn: &Connection, id: &str) -> Result<ReviewItem> {
-    let item = get_review(conn, id)?;
-
-    if item.status != "pending" && item.status != "edited" {
-        return Err(ClioError::Validation(format!(
-            "cannot reject review item with status '{}'",
-            item.status
-        )));
-    }
-
     let now = now_utc();
-    conn.execute(
-        "UPDATE review_queue SET status = 'rejected', reviewed_at = ?1 WHERE id = ?2",
+    let changed = conn.execute(
+        "UPDATE review_queue SET status = 'rejected', reviewed_at = ?1
+         WHERE id = ?2 AND status IN ('pending', 'edited')",
         params![now, id],
     )?;
+    if changed == 0 {
+        let current = get_review(conn, id)?;
+        return Err(ClioError::Validation(format!(
+            "cannot reject review item with status '{}'",
+            current.status
+        )));
+    }
 
     get_review(conn, id)
 }
@@ -249,15 +275,6 @@ pub fn reject_review(conn: &Connection, id: &str) -> Result<ReviewItem> {
 /// Edit the suggested fields of a review item. Only provided fields are
 /// updated; the status is set to 'edited'.
 pub fn edit_review(conn: &Connection, id: &str, edits: &ReviewEdits) -> Result<ReviewItem> {
-    let item = get_review(conn, id)?;
-
-    if item.status != "pending" && item.status != "edited" {
-        return Err(ClioError::Validation(format!(
-            "cannot edit review item with status '{}'",
-            item.status
-        )));
-    }
-
     // Build dynamic UPDATE query from provided edits.
     let mut set_clauses = Vec::new();
     let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
@@ -311,14 +328,21 @@ pub fn edit_review(conn: &Connection, id: &str, edits: &ReviewEdits) -> Result<R
 
     let idx = param_values.len() + 1;
     let sql = format!(
-        "UPDATE review_queue SET {} WHERE id = ?{idx}",
+        "UPDATE review_queue SET {} WHERE id = ?{idx} AND status IN ('pending', 'edited')",
         set_clauses.join(", ")
     );
     param_values.push(Box::new(id.to_string()));
 
     let param_refs: Vec<&dyn rusqlite::types::ToSql> =
         param_values.iter().map(|p| p.as_ref()).collect();
-    conn.execute(&sql, param_refs.as_slice())?;
+    let changed = conn.execute(&sql, param_refs.as_slice())?;
+    if changed == 0 {
+        let current = get_review(conn, id)?;
+        return Err(ClioError::Validation(format!(
+            "cannot edit review item with status '{}'",
+            current.status
+        )));
+    }
 
     get_review(conn, id)
 }
@@ -371,6 +395,7 @@ struct ReviewItemRow {
     suggested_importance: i32,
     suggested_confidence: Option<f64>,
     source_route: Option<String>,
+    source_ref: Option<String>,
     metadata_json: String,
     status: String,
     created_at: String,
@@ -389,10 +414,11 @@ fn row_to_review_item(row: &rusqlite::Row) -> rusqlite::Result<ReviewItemRow> {
         suggested_importance: row.get(7)?,
         suggested_confidence: row.get(8)?,
         source_route: row.get(9)?,
-        metadata_json: row.get(10)?,
-        status: row.get(11)?,
-        created_at: row.get(12)?,
-        reviewed_at: row.get(13)?,
+        source_ref: row.get(10)?,
+        metadata_json: row.get(11)?,
+        status: row.get(12)?,
+        created_at: row.get(13)?,
+        reviewed_at: row.get(14)?,
     })
 }
 
@@ -419,6 +445,7 @@ fn parse_review_row(raw: ReviewItemRow) -> Result<ReviewItem> {
         suggested_importance: raw.suggested_importance,
         suggested_confidence: raw.suggested_confidence,
         source_route: raw.source_route,
+        source_ref: raw.source_ref,
         metadata,
         status: raw.status,
         created_at: raw.created_at,

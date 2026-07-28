@@ -1537,7 +1537,12 @@ fn cmd_import(db_path: Option<&str>, args: ImportArgs) -> Result<(), Box<dyn std
         if s.auto_embed {
             match embeddings::create_backend(&s.embeddings) {
                 Ok(backend) => {
-                    let ids = embeddings::list_unembedded(&conn, result.imported)?;
+                    let ids = embeddings::list_embeddings_needing_refresh(
+                        &conn,
+                        backend.model_name(),
+                        backend.dimensions(),
+                        result.imported,
+                    )?;
                     let mut success = 0u32;
                     let mut failed = 0u32;
 
@@ -1604,6 +1609,7 @@ fn cmd_search(
         &conn,
         &args.query,
         &query_embedding,
+        backend.model_name(),
         args.namespace.as_deref(),
         args.include_archived,
         false,
@@ -1981,7 +1987,12 @@ fn cmd_embed(db_path: Option<&str>, args: EmbedArgs) -> Result<(), Box<dyn std::
             let s = settings::load(&path)?;
             let backend = embeddings::create_backend(&s.embeddings)?;
 
-            let ids = embeddings::list_unembedded(&conn, batch_size)?;
+            let ids = embeddings::list_embeddings_needing_refresh(
+                &conn,
+                backend.model_name(),
+                backend.dimensions(),
+                batch_size,
+            )?;
             if ids.is_empty() {
                 eprintln!("All memories already have embeddings.");
                 return Ok(());
@@ -2055,6 +2066,9 @@ fn cmd_settings(
             };
             settings::save(&path, &s)?;
             eprintln!("Embedding provider set to local (all-MiniLM-L6-v2).");
+            eprintln!(
+                "Restart MCP clients, then run `clio embed backfill` to refresh stale vectors."
+            );
         }
         SettingsSubcommand::UseOpenai {
             api_key,
@@ -2069,6 +2083,9 @@ fn cmd_settings(
             };
             settings::save(&path, &s)?;
             eprintln!("Embedding provider set to OpenAI.");
+            eprintln!(
+                "Restart MCP clients, then run `clio embed backfill` to refresh stale vectors."
+            );
         }
         SettingsSubcommand::Disable => {
             let mut s = settings::load(&path)?;

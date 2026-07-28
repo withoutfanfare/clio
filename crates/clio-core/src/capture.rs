@@ -647,6 +647,7 @@ fn store_or_queue(
                 suggested_importance: classification.importance,
                 suggested_confidence: Some(classification.confidence),
                 source_route: Some(source.to_string()),
+                source_ref: source_ref.map(String::from),
                 metadata: metadata.clone(),
             };
 
