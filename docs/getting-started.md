@@ -472,6 +472,10 @@ client when namespace auto-detection is enabled, which is the default. See
 [MCP Agent Setup](mcp-agent-setup.md#shared-memory-over-ssh) for client-specific
 configuration.
 
+For repeatable production updates, including exact-commit Atlas releases,
+native Mac installation, backups and rollback, see the
+[Deployment Runbook](operations/deployment.md).
+
 Current limits:
 
 - SSH must use non-interactive key authentication; password prompts are not supported.

@@ -88,9 +88,10 @@ cargo build --locked --release --no-default-features \
   --features local-embeddings-dynamic -p clio-mcp
 ```
 
-At runtime, set `ORT_DYLIB_PATH` to the library's absolute path. Placing
-`libonnxruntime.so` beside the executable is not sufficient when the process
-starts from another working directory:
+At runtime, either set `ORT_DYLIB_PATH` to the library's absolute path or place
+it beside the resolved executable as `libonnxruntime.so`. The dynamic loader
+checks that executable directory independently of the process working
+directory:
 
 ```sh
 ORT_DYLIB_PATH=/absolute/path/to/libonnxruntime.so \
@@ -98,8 +99,15 @@ ORT_DYLIB_PATH=/absolute/path/to/libonnxruntime.so \
 ```
 
 For the SSH bridge, make that variable available to non-interactive SSH
-commands or point `--remote-binary` at a wrapper that exports it before running
-`clio-mcp`. A loader path configured by the operating system is also valid.
+commands, place the library beside the remote executable, or point
+`--remote-binary` at a wrapper that exports it before running `clio-mcp`. A
+loader path configured by the operating system is also valid.
+
+For the managed Atlas installation, use the
+[Deployment Runbook](operations/deployment.md) instead of copying a manual
+build. Its release script builds both Linux binaries with dynamic local
+embeddings, packages the configured ONNX Runtime beside them, and exercises a
+semantic-search probe before activation.
 
 For Codex, add the bridge to `~/.codex/config.toml`:
 

@@ -109,6 +109,7 @@ clio recall --query "storage"
 | [Getting Started](docs/getting-started.md) | Installation, setup, and first steps |
 | [CLI Reference](docs/cli-reference.md) | All commands, flags, and examples |
 | [MCP Agent Setup](docs/mcp-agent-setup.md) | Connecting AI agents to Clio |
+| [Deployment Runbook](docs/operations/deployment.md) | Git-based Atlas releases and native Mac installation |
 | [Settings Reference](docs/reference/settings.md) | All configuration keys and defaults |
 | [Schema Reference](docs/reference/schema.md) | SQLite tables, indexes, FTS, triggers |
 | [MCP Contract](docs/reference/mcp-contract.md) | Full MCP tool and resource definitions |
