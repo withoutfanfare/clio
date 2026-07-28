@@ -422,3 +422,17 @@ than a few Macs need updates. That release should publish a checksummed Linux
 and keep Atlas database migration as an explicit operator step rather than an
 unattended auto-update. Until then, native builds avoid a signing and
 cross-compilation pipeline without weakening the database gate.
+
+## Deferred work register
+
+These items are deliberately outside the current release. Revisit them at the
+stated trigger instead of adding more machinery to the private deployment now.
+
+| Priority | Work | Trigger | Finished when |
+|---|---|---|---|
+| 1 | Off-host Atlas backups | Before relying on Atlas for disaster recovery | Encrypted standalone snapshots leave Atlas automatically, failures alert, retention is enforced and a restore drill passes. |
+| 1 | Remaining Mac installations | When the Mac mini and MacBook Pro are online and reachable by SSH | Each machine checks out the same pushed SHA, runs `macos-install.sh`, reconnects its AI clients, and passes cross-machine write and recall checks. |
+| 1 | Persistent Tauri remote settings | When the desktop app must connect to Atlas when opened from Finder | Atlas connection settings persist securely, can be tested in the app, and no shell environment is required. |
+| 2 | Atlas infrastructure as code | Before rebuilding Atlas or adding another server | A private Ansible setup recreates the user, packages, Rust toolchain, SSH/firewall policy, ONNX Runtime and backup job without committing secrets. |
+| 2 | Release artefacts | When releases become frequent or more than a few Macs need updates | CI publishes checksummed Linux and native Mac builds; the Mac app is Developer ID signed, notarised and stapled. |
+| 2 | Operational monitoring | Before Clio becomes business-critical | Disk capacity, backup age, SQLite integrity and deployment failures are monitored with actionable alerts. |
