@@ -2,7 +2,7 @@ use tauri::State;
 
 use clio_core::capture::CaptureResult;
 use clio_core::models::{
-    LinkInput, Memory, MemoryLink, RecallQuery, RecallResult, RememberInput, SortOrder,
+    LinkInput, Memory, MemoryLink, RecallQuery, RecallResult, RememberInput, SortOrder, UpdateInput,
 };
 
 use crate::{AppState, BackendState, CommandError};
@@ -22,6 +22,8 @@ pub async fn cmd_remember(
     confidence: Option<f64>,
     importance: Option<i32>,
     metadata: Option<serde_json::Value>,
+    valid_from: Option<String>,
+    valid_until: Option<String>,
     upsert: Option<bool>,
 ) -> Result<Memory, CommandError> {
     if let Some(remote) = state.remote() {
@@ -40,6 +42,8 @@ pub async fn cmd_remember(
                     "confidence": confidence,
                     "importance": importance.unwrap_or(3),
                     "metadata": metadata.unwrap_or(serde_json::json!({})),
+                    "valid_from": valid_from,
+                    "valid_until": valid_until,
                     "upsert": upsert.unwrap_or(false),
                 }),
             )
@@ -60,8 +64,8 @@ pub async fn cmd_remember(
         confidence,
         importance: importance.unwrap_or(3),
         metadata: metadata.unwrap_or(serde_json::Value::Object(Default::default())),
-        valid_from: None,
-        valid_until: None,
+        valid_from,
+        valid_until,
         upsert: upsert.unwrap_or(false),
     };
 
@@ -81,67 +85,36 @@ pub async fn cmd_remember(
     Ok(memory)
 }
 
-#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub async fn cmd_update(
     state: State<'_, AppState>,
     memory_id: String,
-    namespace: Option<String>,
-    kind: Option<String>,
-    title: Option<String>,
-    summary: Option<String>,
-    content: String,
-    tags: Option<Vec<String>>,
-    source: Option<String>,
-    source_ref: Option<String>,
-    confidence: Option<f64>,
-    importance: Option<i32>,
-    metadata: Option<serde_json::Value>,
+    patch: UpdateInput,
 ) -> Result<Memory, CommandError> {
+    if patch
+        .expected_updated_at
+        .as_deref()
+        .is_none_or(|timestamp| timestamp.trim().is_empty())
+    {
+        return Err(CommandError::Core(
+            "Validation error: expected_updated_at is required.".into(),
+        ));
+    }
+
     if let Some(remote) = state.remote() {
-        return remote
-            .call_json(
-                "memory_update",
-                serde_json::json!({
-                    "memory_id": memory_id,
-                    "namespace": namespace,
-                    "kind": kind.unwrap_or_else(|| "note".into()),
-                    "title": title,
-                    "summary": summary,
-                    "content": content,
-                    "tags": tags.unwrap_or_default(),
-                    "source": source,
-                    "source_ref": source_ref,
-                    "confidence": confidence,
-                    "importance": importance.unwrap_or(3),
-                    "metadata": metadata.unwrap_or(serde_json::json!({})),
-                }),
-            )
-            .await;
+        let mut arguments = serde_json::to_value(&patch)?;
+        arguments
+            .as_object_mut()
+            .expect("UpdateInput serialises as an object")
+            .insert("memory_id".into(), memory_id.into());
+        return remote.call_json("memory_update", arguments).await;
     }
 
     let app = state.local()?;
 
-    let input = RememberInput {
-        namespace: namespace.unwrap_or_else(|| "global".into()),
-        kind: kind.unwrap_or_else(|| "note".into()),
-        title,
-        summary,
-        content,
-        tags: tags.unwrap_or_default(),
-        source,
-        source_ref,
-        confidence,
-        importance: importance.unwrap_or(3),
-        metadata: metadata.unwrap_or(serde_json::Value::Object(Default::default())),
-        valid_from: None,
-        valid_until: None,
-        upsert: false,
-    };
-
     let memory = app
         .cache
-        .update(&app.conn, &memory_id, &input, &app.settings)?;
+        .update(&app.conn, &memory_id, &patch, &app.settings)?;
 
     // Auto-embed using the cached backend.
     if app.settings.auto_embed {

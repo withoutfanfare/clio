@@ -27,23 +27,78 @@ pub fn remember(
     // Resolve the title: explicit > AI-generated > string-based extraction.
     let title = crate::title::resolve_title(input.title.clone(), &input.content, settings);
 
-    // Upsert path: look for existing record by source + source_ref.
-    if input.upsert {
-        if let (Some(source), Some(source_ref)) = (&input.source, &input.source_ref) {
-            if let Some(existing_id) = find_by_source_ref(conn, source, source_ref)? {
-                return update_existing(
-                    conn,
-                    &existing_id,
-                    input,
-                    &tags,
-                    &tags_text,
-                    &metadata_str,
-                    &now,
-                    settings,
-                );
+    // Let SQLite arbitrate source/reference conflicts atomically. A separate
+    // SELECT-then-INSERT races when two MCP processes create the same source
+    // reference at once.
+    if input.upsert && input.source.is_some() && input.source_ref.is_some() {
+        let proposed_id = new_id();
+        let owns_transaction = conn.is_autocommit();
+        conn.execute_batch(if owns_transaction {
+            "BEGIN IMMEDIATE"
+        } else {
+            "SAVEPOINT remember_upsert"
+        })?;
+        let result = (|| -> Result<Memory> {
+            let stored_id: String = conn.query_row(
+                "INSERT INTO memories (id, namespace, kind, title, summary, content, tags_text,
+                    source, source_ref, confidence, importance, metadata_json,
+                    valid_from, valid_until, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
+                 ON CONFLICT DO UPDATE SET
+                    namespace = excluded.namespace,
+                    kind = excluded.kind,
+                    title = excluded.title,
+                    summary = excluded.summary,
+                    content = excluded.content,
+                    tags_text = excluded.tags_text,
+                    source = excluded.source,
+                    source_ref = excluded.source_ref,
+                    confidence = excluded.confidence,
+                    importance = excluded.importance,
+                    metadata_json = excluded.metadata_json,
+                    valid_from = excluded.valid_from,
+                    valid_until = excluded.valid_until,
+                    updated_at = excluded.updated_at
+                 RETURNING id",
+                params![
+                    proposed_id,
+                    input.namespace,
+                    input.kind,
+                    title,
+                    input.summary,
+                    input.content,
+                    tags_text,
+                    input.source,
+                    input.source_ref,
+                    input.confidence,
+                    input.importance,
+                    metadata_str,
+                    input.valid_from,
+                    input.valid_until,
+                    now,
+                    now,
+                ],
+                |row| row.get(0),
+            )?;
+
+            conn.execute(
+                "DELETE FROM memory_tags WHERE memory_id = ?1",
+                params![stored_id],
+            )?;
+            insert_tags(conn, &stored_id, &tags, &now)?;
+            get_raw(conn, &stored_id)
+        })();
+
+        return match result {
+            Ok(memory) => {
+                crate::db::finish_transaction(conn, owns_transaction, "remember_upsert")?;
+                Ok(memory)
             }
-        }
-        // If upsert requested but source/source_ref incomplete, fall through to insert.
+            Err(e) => {
+                crate::db::rollback_transaction(conn, owns_transaction, "remember_upsert");
+                Err(e)
+            }
+        };
     }
 
     let id = new_id();
@@ -79,10 +134,9 @@ pub fn remember(
     })();
 
     match result {
-        Ok(()) => conn.execute_batch("RELEASE remember_insert")?,
+        Ok(()) => crate::db::finish_transaction(conn, false, "remember_insert")?,
         Err(e) => {
-            let _ = conn.execute_batch("ROLLBACK TO remember_insert");
-            let _ = conn.execute_batch("RELEASE remember_insert");
+            crate::db::rollback_transaction(conn, false, "remember_insert");
             return Err(e);
         }
     }
@@ -98,53 +152,42 @@ fn update_existing(
     tags_text: &str,
     metadata_str: &str,
     now: &str,
-    settings: &crate::settings::Settings,
+    expected_updated_at: Option<&str>,
 ) -> Result<Memory> {
-    // Resolve the title: explicit > AI-generated > string-based extraction.
-    let title = crate::title::resolve_title(input.title.clone(), &input.content, settings);
-
-    conn.execute_batch("SAVEPOINT remember_update")?;
-    let result = (|| -> Result<()> {
-        conn.execute(
-            "UPDATE memories SET namespace = ?1, kind = ?2, title = ?3, summary = ?4,
-                content = ?5, tags_text = ?6, source = ?7, source_ref = ?8,
-                confidence = ?9, importance = ?10, metadata_json = ?11,
-                valid_from = ?12, valid_until = ?13, updated_at = ?14
-             WHERE id = ?15",
-            params![
-                input.namespace,
-                input.kind,
-                title,
-                input.summary,
-                input.content,
-                tags_text,
-                input.source,
-                input.source_ref,
-                input.confidence,
-                input.importance,
-                metadata_str,
-                input.valid_from,
-                input.valid_until,
-                now,
-                id,
-            ],
-        )?;
-
-        // Replace tags: delete old, insert new.
-        conn.execute("DELETE FROM memory_tags WHERE memory_id = ?1", params![id])?;
-        insert_tags(conn, id, tags, now)?;
-        Ok(())
-    })();
-
-    match result {
-        Ok(()) => conn.execute_batch("RELEASE remember_update")?,
-        Err(e) => {
-            let _ = conn.execute_batch("ROLLBACK TO remember_update");
-            let _ = conn.execute_batch("RELEASE remember_update");
-            return Err(e);
-        }
+    let changed = conn.execute(
+        "UPDATE memories SET namespace = ?1, kind = ?2, title = ?3, summary = ?4,
+            content = ?5, tags_text = ?6, source = ?7, source_ref = ?8,
+            confidence = ?9, importance = ?10, metadata_json = ?11,
+            valid_from = ?12, valid_until = ?13, updated_at = ?14
+         WHERE id = ?15 AND (?16 IS NULL OR updated_at = ?16)",
+        params![
+            input.namespace,
+            input.kind,
+            input.title,
+            input.summary,
+            input.content,
+            tags_text,
+            input.source,
+            input.source_ref,
+            input.confidence,
+            input.importance,
+            metadata_str,
+            input.valid_from,
+            input.valid_until,
+            now,
+            id,
+            expected_updated_at,
+        ],
+    )?;
+    if changed == 0 {
+        return Err(ClioError::Conflict(format!(
+            "memory {id} changed after it was read; fetch the latest record and retry"
+        )));
     }
 
+    // Replace tags after the guarded record update succeeds.
+    conn.execute("DELETE FROM memory_tags WHERE memory_id = ?1", params![id])?;
+    insert_tags(conn, id, tags, now)?;
     get_raw(conn, id)
 }
 
@@ -223,29 +266,77 @@ fn normalise_tags(tags: &[String]) -> Vec<String> {
 pub fn update(
     conn: &Connection,
     id: &str,
-    input: &RememberInput,
-    settings: &crate::settings::Settings,
+    patch: &UpdateInput,
+    _settings: &crate::settings::Settings,
 ) -> Result<Memory> {
-    // Verify memory exists.
-    get_raw(conn, id)?;
+    let owns_transaction = conn.is_autocommit();
+    conn.execute_batch(if owns_transaction {
+        "BEGIN IMMEDIATE"
+    } else {
+        "SAVEPOINT memory_patch"
+    })?;
 
-    validate::remember_input(input)?;
+    let result = (|| -> Result<Memory> {
+        let existing = get_raw(conn, id)?;
+        if patch
+            .expected_updated_at
+            .as_deref()
+            .is_some_and(|expected| expected != existing.updated_at)
+        {
+            return Err(ClioError::Conflict(format!(
+                "memory {id} changed after it was read; fetch the latest record and retry"
+            )));
+        }
 
-    let tags = normalise_tags(&input.tags);
-    let tags_text = tags.join(" ");
-    let metadata_str = serde_json::to_string(&input.metadata)?;
-    let now = now_utc();
+        let input = RememberInput {
+            namespace: patch
+                .namespace
+                .clone()
+                .unwrap_or_else(|| existing.namespace.clone()),
+            kind: patch.kind.clone().unwrap_or_else(|| existing.kind.clone()),
+            title: patch.title.clone().unwrap_or(existing.title),
+            summary: patch.summary.clone().unwrap_or(existing.summary),
+            content: patch
+                .content
+                .clone()
+                .unwrap_or_else(|| existing.content.clone()),
+            tags: patch.tags.clone().unwrap_or(existing.tags),
+            source: patch.source.clone().unwrap_or(existing.source),
+            source_ref: patch.source_ref.clone().unwrap_or(existing.source_ref),
+            confidence: patch.confidence.unwrap_or(existing.confidence),
+            importance: patch.importance.unwrap_or(existing.importance),
+            metadata: patch.metadata.clone().unwrap_or(existing.metadata),
+            valid_from: patch.valid_from.clone().unwrap_or(existing.valid_from),
+            valid_until: patch.valid_until.clone().unwrap_or(existing.valid_until),
+            upsert: false,
+        };
+        validate::remember_input(&input)?;
 
-    update_existing(
-        conn,
-        id,
-        input,
-        &tags,
-        &tags_text,
-        &metadata_str,
-        &now,
-        settings,
-    )
+        let tags = normalise_tags(&input.tags);
+        let tags_text = tags.join(" ");
+        let metadata_str = serde_json::to_string(&input.metadata)?;
+        update_existing(
+            conn,
+            id,
+            &input,
+            &tags,
+            &tags_text,
+            &metadata_str,
+            &now_utc(),
+            patch.expected_updated_at.as_deref(),
+        )
+    })();
+
+    match result {
+        Ok(memory) => {
+            crate::db::finish_transaction(conn, owns_transaction, "memory_patch")?;
+            Ok(memory)
+        }
+        Err(error) => {
+            crate::db::rollback_transaction(conn, owns_transaction, "memory_patch");
+            Err(error)
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1139,17 +1230,17 @@ pub fn archive_bulk(conn: &Connection, ids: &[String]) -> Result<u32> {
         return Ok(0);
     }
     let now = now_utc();
-    conn.execute_batch("SAVEPOINT bulk_archive")?;
-    let mut count = 0u32;
-    for id in ids {
-        let affected = conn.execute(
-            "UPDATE memories SET archived_at = COALESCE(archived_at, ?1), updated_at = ?1 WHERE id = ?2",
-            params![now, id],
-        )?;
-        count += affected as u32;
-    }
-    conn.execute_batch("RELEASE bulk_archive")?;
-    Ok(count)
+    crate::db::with_savepoint(conn, "bulk_archive", || {
+        let mut count = 0u32;
+        for id in ids {
+            let affected = conn.execute(
+                "UPDATE memories SET archived_at = COALESCE(archived_at, ?1), updated_at = ?1 WHERE id = ?2",
+                params![now, id],
+            )?;
+            count += affected as u32;
+        }
+        Ok(count)
+    })
 }
 
 /// Bulk delete multiple memories in a single transaction.
@@ -1157,14 +1248,14 @@ pub fn delete_bulk(conn: &Connection, ids: &[String]) -> Result<u32> {
     if ids.is_empty() {
         return Ok(0);
     }
-    conn.execute_batch("SAVEPOINT bulk_delete")?;
-    let mut count = 0u32;
-    for id in ids {
-        let affected = conn.execute("DELETE FROM memories WHERE id = ?1", params![id])?;
-        count += affected as u32;
-    }
-    conn.execute_batch("RELEASE bulk_delete")?;
-    Ok(count)
+    crate::db::with_savepoint(conn, "bulk_delete", || {
+        let mut count = 0u32;
+        for id in ids {
+            let affected = conn.execute("DELETE FROM memories WHERE id = ?1", params![id])?;
+            count += affected as u32;
+        }
+        Ok(count)
+    })
 }
 
 /// Bulk add a tag to multiple memories.
@@ -1174,32 +1265,32 @@ pub fn add_tag_bulk(conn: &Connection, ids: &[String], tag: &str) -> Result<u32>
     }
     let normalised = tag.trim().to_lowercase();
     let now = now_utc();
-    conn.execute_batch("SAVEPOINT bulk_tag_add")?;
-    let mut count = 0u32;
-    for id in ids {
-        // Insert tag if not already present
-        let affected = conn.execute(
-            "INSERT OR IGNORE INTO memory_tags (memory_id, tag, created_at) VALUES (?1, ?2, ?3)",
-            params![id, normalised, now],
-        )?;
-        if affected > 0 {
-            // Update tags_text
-            let tags: Vec<String> = {
-                let mut stmt =
-                    conn.prepare("SELECT tag FROM memory_tags WHERE memory_id = ?1 ORDER BY tag")?;
-                let rows = stmt.query_map(params![id], |row| row.get(0))?;
-                rows.collect::<std::result::Result<Vec<_>, _>>()?
-            };
-            let tags_text = tags.join(" ");
-            conn.execute(
-                "UPDATE memories SET tags_text = ?1, updated_at = ?2 WHERE id = ?3",
-                params![tags_text, now, id],
+    crate::db::with_savepoint(conn, "bulk_tag_add", || {
+        let mut count = 0u32;
+        for id in ids {
+            // Insert tag if not already present
+            let affected = conn.execute(
+                "INSERT OR IGNORE INTO memory_tags (memory_id, tag, created_at) VALUES (?1, ?2, ?3)",
+                params![id, normalised, now],
             )?;
-            count += 1;
+            if affected > 0 {
+                // Update tags_text
+                let tags: Vec<String> = {
+                    let mut stmt = conn
+                        .prepare("SELECT tag FROM memory_tags WHERE memory_id = ?1 ORDER BY tag")?;
+                    let rows = stmt.query_map(params![id], |row| row.get(0))?;
+                    rows.collect::<std::result::Result<Vec<_>, _>>()?
+                };
+                let tags_text = tags.join(" ");
+                conn.execute(
+                    "UPDATE memories SET tags_text = ?1, updated_at = ?2 WHERE id = ?3",
+                    params![tags_text, now, id],
+                )?;
+                count += 1;
+            }
         }
-    }
-    conn.execute_batch("RELEASE bulk_tag_add")?;
-    Ok(count)
+        Ok(count)
+    })
 }
 
 /// Bulk remove a tag from multiple memories.
@@ -1209,30 +1300,30 @@ pub fn remove_tag_bulk(conn: &Connection, ids: &[String], tag: &str) -> Result<u
     }
     let normalised = tag.trim().to_lowercase();
     let now = now_utc();
-    conn.execute_batch("SAVEPOINT bulk_tag_remove")?;
-    let mut count = 0u32;
-    for id in ids {
-        let affected = conn.execute(
-            "DELETE FROM memory_tags WHERE memory_id = ?1 AND tag = ?2",
-            params![id, normalised],
-        )?;
-        if affected > 0 {
-            let tags: Vec<String> = {
-                let mut stmt =
-                    conn.prepare("SELECT tag FROM memory_tags WHERE memory_id = ?1 ORDER BY tag")?;
-                let rows = stmt.query_map(params![id], |row| row.get(0))?;
-                rows.collect::<std::result::Result<Vec<_>, _>>()?
-            };
-            let tags_text = tags.join(" ");
-            conn.execute(
-                "UPDATE memories SET tags_text = ?1, updated_at = ?2 WHERE id = ?3",
-                params![tags_text, now, id],
+    crate::db::with_savepoint(conn, "bulk_tag_remove", || {
+        let mut count = 0u32;
+        for id in ids {
+            let affected = conn.execute(
+                "DELETE FROM memory_tags WHERE memory_id = ?1 AND tag = ?2",
+                params![id, normalised],
             )?;
-            count += 1;
+            if affected > 0 {
+                let tags: Vec<String> = {
+                    let mut stmt = conn
+                        .prepare("SELECT tag FROM memory_tags WHERE memory_id = ?1 ORDER BY tag")?;
+                    let rows = stmt.query_map(params![id], |row| row.get(0))?;
+                    rows.collect::<std::result::Result<Vec<_>, _>>()?
+                };
+                let tags_text = tags.join(" ");
+                conn.execute(
+                    "UPDATE memories SET tags_text = ?1, updated_at = ?2 WHERE id = ?3",
+                    params![tags_text, now, id],
+                )?;
+                count += 1;
+            }
         }
-    }
-    conn.execute_batch("RELEASE bulk_tag_remove")?;
-    Ok(count)
+        Ok(count)
+    })
 }
 
 // ---------------------------------------------------------------------------

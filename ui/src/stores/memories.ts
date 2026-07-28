@@ -515,20 +515,21 @@ export const useMemoryStore = defineStore("memories", () => {
 
   async function captureMemory(text: string, namespace?: string) {
     try {
-      await api.capture({ text, namespace });
+      const result = await api.capture({ text, namespace });
       composeOpen.value = false;
+      if (result.outcome === "Queued") {
+        pushToast("Capture queued for review", "info");
+        return result;
+      }
       invalidateSearchCache();
       await loadRecent();
-    } catch {
-      // Capture unavailable — fall back to simple remember
-      await api.remember({
-        content: text,
-        namespace: namespace ?? undefined,
-        source: "desktop",
-      });
-      composeOpen.value = false;
-      invalidateSearchCache();
-      await loadRecent();
+      return result;
+    } catch (error) {
+      pushToast(
+        "Capture failed; check recent memories before retrying",
+        "error",
+      );
+      throw error;
     }
   }
 

@@ -178,36 +178,46 @@ const MIGRATIONS: &[Migration] = &[
                 ON memories(namespace, length(content));
         "#,
     },
+    Migration {
+        version: "008_review_source_ref",
+        sql: r#"
+            ALTER TABLE review_queue ADD COLUMN source_ref TEXT;
+        "#,
+    },
 ];
 
 /// Run all pending migrations inside a transaction.
 pub fn run(conn: &Connection) -> Result<()> {
-    // Ensure the migrations table exists (outside the versioned migrations).
-    conn.execute_batch(
-        "CREATE TABLE IF NOT EXISTS schema_migrations (
-            version TEXT PRIMARY KEY,
-            applied_at TEXT NOT NULL
-        );",
-    )?;
+    // The common startup path is read-only. Only contend for SQLite's write
+    // lock when this process actually observes a pending migration.
+    if migrations_current(conn)? {
+        return Ok(());
+    }
 
-    let applied: Vec<String> = {
-        let mut stmt = conn.prepare("SELECT version FROM schema_migrations ORDER BY version")?;
-        let rows = stmt.query_map([], |row| row.get(0))?;
-        rows.collect::<std::result::Result<Vec<_>, _>>()?
-    };
+    // Acquire the write lock before reading migration state so simultaneous
+    // MCP process starts cannot both decide that the same migration is pending.
+    conn.execute_batch("BEGIN IMMEDIATE")?;
+    let result = (|| -> Result<()> {
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS schema_migrations (
+                version TEXT PRIMARY KEY,
+                applied_at TEXT NOT NULL
+            );",
+        )?;
 
-    for migration in MIGRATIONS {
-        if applied.contains(&migration.version.to_string()) {
-            continue;
-        }
+        let applied: Vec<String> = {
+            let mut stmt =
+                conn.prepare("SELECT version FROM schema_migrations ORDER BY version")?;
+            let rows = stmt.query_map([], |row| row.get(0))?;
+            rows.collect::<std::result::Result<Vec<_>, _>>()?
+        };
 
-        tracing::info!(version = migration.version, "applying migration");
+        for migration in MIGRATIONS {
+            if applied.iter().any(|version| version == migration.version) {
+                continue;
+            }
 
-        // Wrap each migration + its version record in a savepoint so that a
-        // partial failure rolls back cleanly rather than leaving the schema in
-        // an inconsistent state.
-        conn.execute_batch("SAVEPOINT apply_migration")?;
-        let result = (|| -> Result<()> {
+            tracing::info!(version = migration.version, "applying migration");
             conn.execute_batch(migration.sql).map_err(|e| {
                 ClioError::Migration(format!(
                     "failed to apply migration {}: {e}",
@@ -219,20 +229,39 @@ pub fn run(conn: &Connection) -> Result<()> {
                 "INSERT INTO schema_migrations (version, applied_at) VALUES (?1, ?2)",
                 rusqlite::params![migration.version, now_utc()],
             )?;
-            Ok(())
-        })();
+        }
+        Ok(())
+    })();
 
-        match result {
-            Ok(()) => conn.execute_batch("RELEASE apply_migration")?,
-            Err(e) => {
-                let _ = conn.execute_batch("ROLLBACK TO apply_migration");
-                let _ = conn.execute_batch("RELEASE apply_migration");
-                return Err(e);
-            }
+    match result {
+        Ok(()) => {
+            crate::db::finish_transaction(conn, true, "")?;
+            Ok(())
+        }
+        Err(e) => {
+            crate::db::rollback_transaction(conn, true, "");
+            Err(e)
         }
     }
+}
 
-    Ok(())
+fn migrations_current(conn: &Connection) -> Result<bool> {
+    let table_exists: bool = conn.query_row(
+        "SELECT EXISTS(
+             SELECT 1 FROM sqlite_master
+             WHERE type = 'table' AND name = 'schema_migrations'
+         )",
+        [],
+        |row| row.get(0),
+    )?;
+    if !table_exists {
+        return Ok(false);
+    }
+
+    let applied = applied_versions(conn)?;
+    Ok(MIGRATIONS
+        .iter()
+        .all(|migration| applied.iter().any(|version| version == migration.version)))
 }
 
 /// Return the list of applied migration versions.

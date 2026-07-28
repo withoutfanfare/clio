@@ -15,9 +15,13 @@ const REMOTE_DB_ENV: &str = "CLIO_REMOTE_DB_PATH";
 const REMOTE_BINARY_ENV: &str = "CLIO_REMOTE_BINARY";
 const REMOTE_COMMAND_ENV: &str = "CLIO_REMOTE_COMMAND";
 #[cfg(not(test))]
-const REMOTE_TIMEOUT: Duration = Duration::from_secs(10);
+const REMOTE_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+#[cfg(not(test))]
+const REMOTE_OPERATION_TIMEOUT: Duration = Duration::from_secs(60);
 #[cfg(test)]
-const REMOTE_TIMEOUT: Duration = Duration::from_secs(1);
+const REMOTE_CONNECT_TIMEOUT: Duration = Duration::from_secs(1);
+#[cfg(test)]
+const REMOTE_OPERATION_TIMEOUT: Duration = Duration::from_secs(1);
 
 pub struct RemoteConfig {
     pub host: String,
@@ -70,7 +74,7 @@ impl RemoteState {
             &config.remote_binary,
         ]);
 
-        let result = tokio::time::timeout(REMOTE_TIMEOUT, async {
+        let result = tokio::time::timeout(REMOTE_CONNECT_TIMEOUT, async {
             let transport = TokioChildProcess::new(command)
                 .map_err(|e| format!("failed to start {}: {e}", config.command))?;
             let service = ().serve(transport).await.map_err(|e| e.to_string())?;
@@ -79,7 +83,7 @@ impl RemoteState {
             Ok::<_, String>((service, peer, shutdown))
         })
         .await
-        .map_err(|_| timeout_error("bridge connection"))
+        .map_err(|_| timeout_error("bridge connection", REMOTE_CONNECT_TIMEOUT))
         .and_then(|result| result);
 
         match result {
@@ -140,13 +144,17 @@ impl RemoteState {
             arguments: Some(arguments),
             task: None,
         });
-        let result = match tokio::time::timeout(REMOTE_TIMEOUT, request).await {
+        let result = match tokio::time::timeout(REMOTE_OPERATION_TIMEOUT, request).await {
             Ok(result) => result.map_err(|error| {
                 self.record_error(error.to_string());
                 CommandError::Core(format!("Atlas bridge error: {error}"))
             })?,
             Err(_) => {
-                let error = timeout_error(&format!("MCP tool {tool}"));
+                let mut error =
+                    timeout_error(&format!("MCP tool {tool}"), REMOTE_OPERATION_TIMEOUT);
+                if is_mutating_tool(tool) {
+                    error.push_str("; its outcome is unknown, so check the memory before retrying");
+                }
                 self.record_error(error.clone());
                 self.shutdown();
                 return Err(CommandError::Core(error));
@@ -157,25 +165,10 @@ impl RemoteState {
     }
 
     pub async fn status(&self) -> ConnectionStatus {
-        let connected = if let Some(peer) = self.peer.as_ref() {
-            match tokio::time::timeout(REMOTE_TIMEOUT, peer.list_tools(None)).await {
-                Ok(Ok(_)) => {
-                    self.connected.store(true, Ordering::Release);
-                    true
-                }
-                Ok(Err(error)) => {
-                    self.record_error(error.to_string());
-                    false
-                }
-                Err(_) => {
-                    self.record_error(timeout_error("status check"));
-                    self.shutdown();
-                    false
-                }
-            }
-        } else {
-            false
-        };
+        // Status is transport state, not a health probe. Sending a tool call
+        // here would queue behind a long capture and could cancel an in-flight
+        // write when the probe times out.
+        let connected = self.connected.load(Ordering::Acquire);
 
         ConnectionStatus {
             backend: "remote".into(),
@@ -224,10 +217,26 @@ pub struct ConnectionStatus {
     pub detail: Option<String>,
 }
 
-fn timeout_error(operation: &str) -> String {
+fn timeout_error(operation: &str, timeout: Duration) -> String {
     format!(
         "Atlas {operation} timed out after {} seconds",
-        REMOTE_TIMEOUT.as_secs()
+        timeout.as_secs()
+    )
+}
+
+fn is_mutating_tool(tool: &str) -> bool {
+    matches!(
+        tool,
+        "memory_remember"
+            | "memory_update"
+            | "memory_link"
+            | "memory_archive"
+            | "memory_unarchive"
+            | "memory_delete"
+            | "memory_move"
+            | "memory_capture"
+            | "memory_inbox"
+            | "memory_cache_clear"
     )
 }
 
@@ -261,7 +270,15 @@ mod tests {
 
     use rmcp::model::{CallToolResult, Content};
 
-    use super::{RemoteConfig, RemoteState, decode_tool_result};
+    use super::{RemoteConfig, RemoteState, decode_tool_result, is_mutating_tool};
+
+    #[test]
+    fn classifies_unknown_outcome_tool_timeouts() {
+        assert!(is_mutating_tool("memory_remember"));
+        assert!(is_mutating_tool("memory_capture"));
+        assert!(!is_mutating_tool("memory_recall"));
+        assert!(!is_mutating_tool("memory_stats"));
+    }
 
     #[test]
     fn decodes_json_and_surfaces_tool_errors() {

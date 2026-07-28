@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted } from "vue";
+import { onMounted, onUnmounted } from "vue";
 import { SAmbientBlobs } from "@stuntrocket/ui";
 import AppBar from "./components/AppBar.vue";
 import SidePanel from "./components/SidePanel.vue";
@@ -13,6 +13,11 @@ import { useMemoryStore } from "@/stores/memories";
 import { useKeyboard } from "@/composables/useKeyboard";
 
 const store = useMemoryStore();
+let statusInterval: ReturnType<typeof setInterval> | null = null;
+
+function refreshConnectionStatus() {
+  store.loadConnectionStatus();
+}
 
 function navigateDown() {
   if (store.drawerOpen || store.paletteOpen) return;
@@ -81,8 +86,15 @@ useKeyboard({
 });
 
 onMounted(() => {
-  store.loadConnectionStatus();
+  refreshConnectionStatus();
   store.fetchNamespaces();
+  statusInterval = setInterval(refreshConnectionStatus, 15_000);
+  window.addEventListener("focus", refreshConnectionStatus);
+});
+
+onUnmounted(() => {
+  if (statusInterval) clearInterval(statusInterval);
+  window.removeEventListener("focus", refreshConnectionStatus);
 });
 </script>
 

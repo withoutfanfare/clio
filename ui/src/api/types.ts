@@ -91,8 +91,52 @@ export interface RememberInput {
   confidence?: number;
   importance?: number;
   metadata?: Record<string, unknown>;
+  valid_from?: string;
+  valid_until?: string;
   upsert?: boolean;
 }
+
+export interface MemoryPatch {
+  namespace?: string;
+  kind?: string;
+  title?: string | null;
+  summary?: string | null;
+  content?: string;
+  tags?: string[];
+  source?: string | null;
+  source_ref?: string | null;
+  confidence?: number | null;
+  importance?: number;
+  metadata?: Record<string, unknown>;
+  valid_from?: string | null;
+  valid_until?: string | null;
+}
+
+export interface UpdateInput extends MemoryPatch {
+  expected_updated_at: string;
+}
+
+export interface ReviewItem {
+  id: string;
+  content: string;
+  suggested_namespace: string;
+  suggested_kind: string;
+  suggested_title: string | null;
+  suggested_summary: string | null;
+  suggested_tags: string[];
+  suggested_importance: number;
+  suggested_confidence: number | null;
+  source_route: string | null;
+  source_ref: string | null;
+  metadata: Record<string, unknown>;
+  status: string;
+  created_at: string;
+  reviewed_at: string | null;
+}
+
+export type CaptureResult =
+  | ({ outcome: "Stored" } & Memory)
+  | ({ outcome: "Queued" } & ReviewItem);
 
 export interface SuggestionResult {
   memory: Memory;

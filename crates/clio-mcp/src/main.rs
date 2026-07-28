@@ -19,7 +19,7 @@ use serde::Deserialize;
 
 use clio_core::error::ClioError;
 use clio_core::models::{
-    LinkInput, Memory, RecallItem, RecallQuery, RecallResult, RememberInput, SortOrder,
+    LinkInput, Memory, RecallItem, RecallQuery, RecallResult, RememberInput, SortOrder, UpdateInput,
 };
 
 // ---------------------------------------------------------------------------
@@ -98,8 +98,57 @@ struct UpdateParams {
     /// Memory ID to update in place.
     memory_id: String,
 
-    #[serde(flatten)]
-    memory: RememberParams,
+    /// Reject the write if the memory has changed since this timestamp.
+    expected_updated_at: String,
+
+    #[serde(default)]
+    namespace: Option<String>,
+
+    #[serde(default)]
+    kind: Option<String>,
+
+    #[serde(default, deserialize_with = "deserialize_nullable_patch")]
+    title: Option<Option<String>>,
+
+    #[serde(default, deserialize_with = "deserialize_nullable_patch")]
+    summary: Option<Option<String>>,
+
+    #[serde(default)]
+    content: Option<String>,
+
+    #[serde(default)]
+    tags: Option<Vec<String>>,
+
+    #[serde(default, deserialize_with = "deserialize_nullable_patch")]
+    source: Option<Option<String>>,
+
+    #[serde(default, deserialize_with = "deserialize_nullable_patch")]
+    source_ref: Option<Option<String>>,
+
+    #[serde(default, deserialize_with = "deserialize_nullable_patch")]
+    confidence: Option<Option<f64>>,
+
+    #[serde(default)]
+    importance: Option<i32>,
+
+    #[serde(default)]
+    metadata: Option<serde_json::Value>,
+
+    #[serde(default, deserialize_with = "deserialize_nullable_patch")]
+    valid_from: Option<Option<String>>,
+
+    #[serde(default, deserialize_with = "deserialize_nullable_patch")]
+    valid_until: Option<Option<String>>,
+}
+
+fn deserialize_nullable_patch<'de, D, T>(
+    deserializer: D,
+) -> std::result::Result<Option<Option<T>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::Deserialize<'de>,
+{
+    Option::<T>::deserialize(deserializer).map(Some)
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -541,6 +590,29 @@ fn validate_memory_payload(params: &RememberParams) -> Result<(), String> {
     Ok(())
 }
 
+fn validate_update_payload(params: &UpdateParams) -> Result<(), String> {
+    if params.expected_updated_at.trim().is_empty() {
+        return Err("expected_updated_at must not be empty.".into());
+    }
+    if let Some(content) = params.content.as_deref() {
+        if content.trim().is_empty() {
+            return Err("content must not be empty.".into());
+        }
+        if content.len() > 1_048_576 {
+            return Err("content must not exceed 1 MiB.".into());
+        }
+    }
+    if params.tags.as_ref().is_some_and(|tags| tags.len() > 50) {
+        return Err("at most 50 tags are allowed.".into());
+    }
+    if params.metadata.as_ref().is_some_and(|metadata| {
+        serde_json::to_string(metadata).is_ok_and(|value| value.len() > 65_536)
+    }) {
+        return Err("metadata must not exceed 64 KiB when serialised.".into());
+    }
+    Ok(())
+}
+
 fn remember_input(params: RememberParams, namespace: String, upsert: bool) -> RememberInput {
     RememberInput {
         namespace,
@@ -562,7 +634,9 @@ fn remember_input(params: RememberParams, namespace: String, upsert: bool) -> Re
 
 #[cfg(test)]
 mod namespace_tests {
-    use super::resolve_mcp_namespace;
+    use clio_core::models::UpdateInput;
+
+    use super::{UpdateParams, resolve_mcp_namespace};
 
     #[test]
     fn local_detected_namespace_respects_precedence_and_setting() {
@@ -583,6 +657,40 @@ mod namespace_tests {
                 expected
             );
         }
+    }
+
+    #[test]
+    fn update_distinguishes_omitted_nullable_fields_from_clear() {
+        let omitted: UpdateParams = serde_json::from_value(serde_json::json!({
+            "memory_id": "memory-id",
+            "expected_updated_at": "2026-07-28T12:00:00Z"
+        }))
+        .unwrap();
+        let cleared: UpdateParams = serde_json::from_value(serde_json::json!({
+            "memory_id": "memory-id",
+            "expected_updated_at": "2026-07-28T12:00:00Z",
+            "title": null
+        }))
+        .unwrap();
+
+        assert!(omitted.title.is_none());
+        assert!(matches!(cleared.title, Some(None)));
+
+        let wire_patch = serde_json::to_value(UpdateInput {
+            title: Some(None),
+            ..UpdateInput::default()
+        })
+        .unwrap();
+        assert!(wire_patch.get("title").is_some_and(|value| value.is_null()));
+        assert!(wire_patch.get("summary").is_none());
+
+        assert!(
+            serde_json::from_value::<UpdateParams>(serde_json::json!({
+                "memory_id": "memory-id",
+                "title": "unguarded"
+            }))
+            .is_err()
+        );
     }
 }
 
@@ -663,7 +771,13 @@ impl ClioServer {
             return Ok(cache.settings.clone());
         }
         match clio_core::settings::load(&self.db_path) {
-            Ok(s) => {
+            Ok(mut s) => {
+                if s.embeddings != cache.settings.embeddings {
+                    tracing::warn!(
+                        "embedding settings changed; restart this MCP process to load the new backend"
+                    );
+                    s.embeddings = cache.settings.embeddings.clone();
+                }
                 cache.settings = s.clone();
                 cache.loaded_at = std::time::Instant::now();
                 Ok(s)
@@ -1145,30 +1259,41 @@ impl ClioServer {
         .map_err(|e| format!("Internal error: task failed: {e}"))?
     }
 
-    /// Update a memory in place by ID.
-    #[tool(description = "Update a memory in place by ID without creating a duplicate.")]
+    /// Patch a memory in place by ID.
+    #[tool(
+        description = "Patch only the supplied fields of a memory without creating a duplicate. expected_updated_at is required and rejects stale writes."
+    )]
     async fn memory_update(
         &self,
         Parameters(params): Parameters<UpdateParams>,
     ) -> Result<String, String> {
         validate_memory_id(&params.memory_id, "memory_id")?;
-        validate_memory_payload(&params.memory)?;
+        validate_update_payload(&params)?;
+        let memory_id = params.memory_id;
+        let input = UpdateInput {
+            namespace: params.namespace,
+            kind: params.kind,
+            title: params.title,
+            summary: params.summary,
+            content: params.content,
+            tags: params.tags,
+            source: params.source,
+            source_ref: params.source_ref,
+            confidence: params.confidence,
+            importance: params.importance,
+            metadata: params.metadata,
+            valid_from: params.valid_from,
+            valid_until: params.valid_until,
+            expected_updated_at: Some(params.expected_updated_at),
+        };
         let conn = self.conn.clone();
         let cache = self.cache.clone();
         let settings = self.settings()?;
         let backend = self.embedding_backend.clone();
         tokio::task::spawn_blocking(move || {
             let conn = conn.lock().map_err(|e| format!("lock error: {e}"))?;
-            let cwd_path = params.memory.cwd.as_deref().map(std::path::Path::new);
-            let namespace = resolve_mcp_namespace(
-                params.memory.namespace.as_deref(),
-                params.memory.clio_namespace.as_deref(),
-                cwd_path,
-                settings.context.auto_detect,
-            );
-            let input = remember_input(params.memory, namespace, false);
             let memory = cache
-                .update(&conn, &params.memory_id, &input, &settings)
+                .update(&conn, &memory_id, &input, &settings)
                 .map_err(|e| format_clio_error(&e))?;
 
             if settings.auto_embed {
@@ -1555,6 +1680,7 @@ impl ClioServer {
                     &conn,
                     &params.query,
                     &query_embedding,
+                    be.model_name(),
                     None,
                     params.include_archived,
                     false,
@@ -1566,6 +1692,7 @@ impl ClioServer {
                     &conn,
                     &params.query,
                     &query_embedding,
+                    be.model_name(),
                     Some(&detected_ns),
                     params.include_archived,
                     false,
@@ -1577,6 +1704,7 @@ impl ClioServer {
                     &conn,
                     &params.query,
                     &query_embedding,
+                    be.model_name(),
                     &detected_ns,
                     params.include_archived,
                     false,
@@ -1844,9 +1972,9 @@ impl ClioServer {
         .map_err(|e| format!("Internal error: task failed: {e}"))?
     }
 
-    /// Clear all in-memory caches.
+    /// Clear all in-memory caches. Individual record reads are always fresh.
     #[tool(
-        description = "Clear all in-memory caches (memory, recall, namespace, embedding). Returns counts of entries cleared."
+        description = "Clear bounded recall and namespace caches. Individual memory and embedding reads are not cached. Returns counts of entries cleared."
     )]
     async fn memory_cache_clear(
         &self,

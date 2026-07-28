@@ -2,7 +2,7 @@
 
 ## Purpose
 
-This document defines the storage contract for Clio, the Rust shared memory system. It exists so any coding agent can implement the core, CLI, MCP server, or later Tauri app without inventing its own database rules.
+This document defines the storage contract for Clio, the Rust shared memory system. It exists so any coding agent can implement the core, CLI, MCP server, or Tauri app without inventing its own database rules.
 
 This schema is the canonical persistence contract for phase one.
 
@@ -254,6 +254,8 @@ CREATE TABLE memory_embeddings (
 - the row is deleted automatically when the parent memory is deleted (`ON DELETE CASCADE`)
 - a missing row means the memory has not been embedded yet; this is not an error
 - the active backend is controlled by `clio-settings.json` alongside the database file
+- semantic search and link suggestions compare only rows whose `model` and `dimensions` match the active backend
+- after changing provider or model, restart MCP clients and run `clio embed backfill`; stale rows are ignored until replaced
 
 ### Semantic search query contract
 
@@ -263,7 +265,9 @@ Cosine similarity is computed in application code (no SQLite extension required)
 SELECT e.memory_id, e.embedding
 FROM memory_embeddings e
 JOIN memories m ON m.id = e.memory_id
-WHERE m.archived_at IS NULL
+WHERE e.model = :active_model
+  AND e.dimensions = :active_dimensions
+  AND m.archived_at IS NULL
   -- optionally: AND m.namespace = :namespace
 ;
 ```
@@ -272,7 +276,7 @@ All candidate rows are fetched and ranked in Rust. Results are sorted by cosine 
 
 ## `review_queue`
 
-Holds captures awaiting human review before becoming durable memories. Added by migration `003_review_queue`.
+Holds captures awaiting human review before becoming durable memories. Added by migration `003_review_queue`; migration `008_review_source_ref` adds provenance-safe approval.
 
 ```sql
 CREATE TABLE IF NOT EXISTS review_queue (
@@ -286,6 +290,7 @@ CREATE TABLE IF NOT EXISTS review_queue (
     suggested_importance INTEGER NOT NULL DEFAULT 3,
     suggested_confidence REAL,
     source_route TEXT,
+    source_ref TEXT,
     metadata_json TEXT NOT NULL DEFAULT '{}',
     status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'approved', 'rejected', 'edited')),
     created_at TEXT NOT NULL,
@@ -307,7 +312,8 @@ CREATE INDEX IF NOT EXISTS idx_review_queue_status ON review_queue(status);
 | `suggested_tags` | space-separated suggested tags | default empty |
 | `suggested_importance` | LLM-suggested importance | 1–5, default 3 |
 | `suggested_confidence` | LLM classification confidence | nullable 0.0–1.0 |
-| `source_route` | capture route identifier | optional (e.g. `inbox-watcher`, `voice`) |
+| `source_route` | source preserved for the approved memory | optional (e.g. `capture`, `claude-code-session`) |
+| `source_ref` | source reference preserved for approval | optional idempotency key |
 | `metadata_json` | extension payload | JSON object |
 | `status` | review state | `pending`, `approved`, `rejected`, `edited` |
 | `created_at` | when the item was queued | ISO-8601 UTC |
@@ -316,7 +322,9 @@ CREATE INDEX IF NOT EXISTS idx_review_queue_status ON review_queue(status);
 ### Review queue workflow
 
 - Items enter the queue when capture confidence is below `review_threshold` in settings
-- `approve` converts the item to a memory via `repository::remember()` and sets status to `approved`
+- `approve` atomically converts the item to a memory via `repository::remember()` and sets status to `approved`
+- approval preserves `source_route` as the memory's `source`, plus `source_ref` and metadata; it uses an upsert when both provenance fields are present
+- approved memories are embedded when `auto_embed` is enabled
 - `reject` sets status to `rejected` — the item remains in the table but is not converted
 - `edit` updates suggested fields and sets status to `edited` — still requires approval
 - `review_threshold` is an optional float in `CaptureConfig`; when `None`, all captures bypass the queue
@@ -511,8 +519,8 @@ WHERE t.tag IN (:tag1, :tag2);
 
 When both `source` and `source_ref` are present and the caller requests upsert:
 
-- search for an existing row with the same `source` and `source_ref`
-- if found, update that row in place
+- use `idx_memories_source_ref` and SQLite conflict handling inside one write transaction
+- if the key already exists, update that row in place
 - preserve the original `id` and `created_at`
 - replace tags and FTS state
 - refresh `updated_at`
@@ -619,6 +627,10 @@ The export format should be easy for:
 | `002_embeddings` | `memory_embeddings` table for vector embedding storage |
 | `003_review_queue` | `review_queue` table for capture review workflow, `idx_review_queue_status` index |
 | `004_access_tracking` | `last_accessed_at` and `access_count` columns on `memories`, partial index on `last_accessed_at` |
+| `005_composite_indexes` | partial indexes for active namespace and kind filters |
+| `006_scoped_recall_indexes` | active namespace/kind and review queue creation-time indexes |
+| `007_content_dedup_index` | exact-content duplicate probe index |
+| `008_review_source_ref` | `source_ref` column on `review_queue` |
 
 ## Invariants For Implementers
 
@@ -626,7 +638,7 @@ Any implementation is incorrect if it violates these rules:
 
 - archived records appear in default recall
 - tags and `tags_text` drift permanently out of sync
-- CLI, MCP, and future Tauri write different row shapes
+- CLI, MCP, and Tauri write different row shapes
 - upsert creates duplicates when `source + source_ref` should match
 - business logic lives outside the core and diverges by interface
 
@@ -662,7 +674,7 @@ The schema is ready for coding agents when:
 - it can be implemented directly as SQL migrations
 - the core CRUD and recall flows are fully expressible
 - the MCP contract can map to the stored entities without inventing new fields
-- the future Tauri app can browse and edit records using the same tables
+- the Tauri app can browse and edit records using the same tables
 
 ---
 

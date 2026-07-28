@@ -77,10 +77,10 @@ Explicit scope for organising memories. Free-form strings with conventions:
 Effective namespace for any write or read operation is resolved in this order (highest priority first):
 
 1. **Explicit `--namespace` flag or `namespace` field** — caller-supplied value; always wins
-2. **Auto-detected from `cwd`** — when `context.auto_detect` is `true` in settings, the directory tree is walked upward from `cwd` to find the first project marker:
-   - `.clio-namespace` file — reads the file content as the full namespace string (e.g. `project:clio`)
-   - `.git` directory — derives `project:<slugified-dir-name>`
-   - `Cargo.toml` or `package.json` — derives `project:<slugified-dir-name>`
+2. **Auto-detected from `cwd`** — when `context.auto_detect` is `true` in settings, the directory tree is walked upward from `cwd`:
+   - First search every ancestor for `.clio-namespace`; the nearest valid file supplies the full namespace string (e.g. `project:clio`). An explicit repository-level file therefore overrides nested package manifests.
+   - If no `.clio-namespace` exists, use the nearest `.git` marker and derive `project:<slugified-dir-name>`.
+   - If neither exists, use the nearest `Cargo.toml` or `package.json` and derive `project:<slugified-dir-name>`.
 3. **`global`** — final fallback when no explicit namespace and no project marker found
 
 Auto-detection is controlled by `context.auto_detect` in `clio-settings.json` (default `true`). When `false`, step 2 is skipped.
@@ -113,9 +113,9 @@ When auto-detection falls back to `global`, default recall is global-only; calle
 ### Remember (Write)
 
 1. Validate input (content required, namespace/kind not empty, tags deduplicated/lowercased, metadata is object, importance 1–5, confidence null or 0.0–1.0)
-2. If `upsert: true` and both `source` and `source_ref` present, search for existing match
-3. If match found: update in place, preserve `id` and `created_at`, replace tags, refresh `updated_at`
-4. If no match or not upsert: insert new row with UUIDv7 id
+2. If `upsert: true` and both `source` and `source_ref` are present, use the database unique constraint to insert or update atomically
+3. On conflict: update in place, preserve `id` and `created_at`, replace tags, refresh `updated_at`
+4. If there is no conflict, or the write is not an upsert, insert a row with a UUIDv7 id
 5. Sync `tags_text` with `memory_tags`
 6. Return stored memory record
 
@@ -163,13 +163,15 @@ The capture pipeline accepts unstructured text and produces a structured memory 
    - `confidence`: clamped to 0.0–1.0; missing defaults to `0.5`
    - Markdown fences in the LLM response are stripped before JSON parsing
 6. If `namespace` was explicitly supplied by the caller, it overrides the LLM's suggestion
-7. Store the memory via the normal remember path with `source = "capture"`, `source_ref = null`, `upsert = false`
-8. Auto-embed if `auto_embed` is enabled in settings
+7. If confidence is below `capture.review_threshold`, return `CaptureResult::Queued` and preserve the capture source, `source_ref`, metadata, and suggested fields in `review_queue`
+8. Otherwise store via the normal remember path and return `CaptureResult::Stored`
+9. On approval, promote the queued item atomically, preserving its source, `source_ref`, metadata, and suggested fields; auto-embed when enabled
 
 **Classification invariants:**
 - Unknown kinds must be normalised to `note`, never stored as-is
 - Tags must be normalised exactly as in the remember path (lowercase, hyphenated, deduplicated)
-- Captured memories always have `source = "capture"`
+- Single-item captures use `source = "capture"`; distilled captures retain their caller-supplied source and per-item `source_ref`
+- Capture returns an explicit `Stored` or `Queued` outcome; a queued outcome is not yet a memory
 - The raw input text is always stored as `content` unchanged
 
 ### Migration (Cross-Tool Import)
@@ -261,9 +263,9 @@ The graph features support traversal and discovery of relationships between memo
 - missing linked memories (due to orphaned links) are silently skipped
 
 `suggest_links(conn, memory_id, backend, threshold, limit)`:
-- retrieves the stored embedding for `memory_id`, or generates and stores it on-the-fly if absent
+- retrieves the stored embedding for `memory_id` only when its model and dimensions match the active backend, otherwise generates and stores a replacement
 - builds an exclusion set: the target memory itself, plus all memories already linked in either direction (via `memory_links` WHERE `from_memory_id = memory_id` UNION WHERE `to_memory_id = memory_id`)
-- scans all non-archived memories with stored embeddings, computing cosine similarity
+- scans non-archived memories whose embedding model and dimensions match the active backend, computing cosine similarity
 - returns candidates with similarity ≥ `threshold`, sorted by similarity descending, up to `limit`
 - orphaned linked memories (those in the exclusion set but since deleted) are handled gracefully
 
@@ -271,6 +273,7 @@ The graph features support traversal and discovery of relationships between memo
 - link graph traversal must be bidirectional — following only outgoing links is incorrect
 - `suggest_links` must exclude both directions of existing links, not just outgoing
 - `suggest_links` must exclude the target memory itself from candidates
+- Embeddings from different model spaces must never be compared
 
 ### Export
 
@@ -301,7 +304,7 @@ The daemon runs a periodic background task that finds semantically similar memor
 
 - Links are created with relationship `auto:relates_to`
 - **Watermark-based:** processes memories updated since the last pass
-- Generates embeddings for memories that lack them
+- Generates embeddings for memories that lack one in the active model and dimensionality
 
 **Auto-intelligence invariants:**
 - Access tracking must be fire-and-forget — never fail the parent operation

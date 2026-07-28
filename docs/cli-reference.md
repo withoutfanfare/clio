@@ -37,9 +37,10 @@ must support non-interactive key authentication. Explicit namespaces and
 global requests are preserved; scoped recall still combines the detected
 project namespace with `global` memories.
 
-This command shares MCP memory operations. Other CLI commands, the daemon,
-session hooks, and the desktop app remain local. Configure embeddings and
-capture on the remote server if you need those features there. See
+This command shares MCP memory operations. The desktop app can use the same
+bridge when remote mode is configured; other CLI commands, the daemon, and
+session hooks remain local. Configure embeddings and capture on the remote
+server if you need those features there. See
 [MCP Agent Setup](mcp-agent-setup.md#shared-memory-over-ssh) for Codex and JSON
 client configuration.
 
@@ -169,6 +170,9 @@ clio capture --text "We decided to use Redis for caching" --dry-run
 clio capture --text "We decided to use Redis for caching"
 ```
 
+Capture reports either `Stored` with the memory or `Queued` with a review item
+when confidence is below the configured threshold.
+
 ### Distil (transcript → durable memories)
 
 `distill` sends a long body of text — typically a whole session transcript — to
@@ -215,7 +219,10 @@ clio context
 clio namespaces
 ```
 
-Detection order: `.clio-namespace` file > `.git` dir > `Cargo.toml`/`package.json` > `global`
+Detection order: search all ancestors for the nearest `.clio-namespace` first,
+then use the nearest `.git` marker, then the nearest `Cargo.toml` or
+`package.json`, then `global`. An ancestor `.clio-namespace` therefore overrides
+a nested package manifest.
 
 ### Cleanup (stale namespaces)
 
@@ -337,11 +344,14 @@ clio migrate --source claude --file conversations.json --classify --dry-run
 ## Embeddings
 
 ```sh
-# Backfill all unembedded memories
-clio embed --all
+# Show embedding coverage
+clio embed status
 
-# Embed a specific memory
-clio embed --id <id>
+# Backfill missing embeddings and replace vectors from an old model
+clio embed backfill
+
+# Process more than the default 100 memories
+clio embed backfill --batch-size 1000
 ```
 
 ---
@@ -353,16 +363,15 @@ clio embed --id <id>
 clio settings show
 
 # Embedding providers
-clio settings use-local-embeddings                    # default, no API key needed
-clio settings use-openai-embeddings --api-key sk-...  # higher quality, needs key
-
-# Auto-embed toggle
-clio settings auto-embed --enable
-clio settings auto-embed --disable
+clio settings use-local                    # default, no API key needed
+clio settings use-openai --api-key sk-...  # higher quality, needs key
 
 # Capture pipeline
 clio settings use-capture --api-key sk-... --model gpt-4o-mini
 ```
+
+After changing the embedding provider or model, restart MCP clients and run
+`clio embed backfill` until all stale vectors have been replaced.
 
 ---
 

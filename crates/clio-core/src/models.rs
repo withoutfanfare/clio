@@ -50,6 +50,81 @@ pub struct RememberInput {
     pub upsert: bool,
 }
 
+/// Fields to change on an existing memory.
+///
+/// Outer `None` means leave the field unchanged. For nullable fields,
+/// `Some(None)` clears the stored value.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct UpdateInput {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub namespace: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_nullable_patch"
+    )]
+    pub title: Option<Option<String>>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_nullable_patch"
+    )]
+    pub summary: Option<Option<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tags: Option<Vec<String>>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_nullable_patch"
+    )]
+    pub source: Option<Option<String>>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_nullable_patch"
+    )]
+    pub source_ref: Option<Option<String>>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_nullable_patch"
+    )]
+    pub confidence: Option<Option<f64>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub importance: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<serde_json::Value>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_nullable_patch"
+    )]
+    pub valid_from: Option<Option<String>>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_nullable_patch"
+    )]
+    pub valid_until: Option<Option<String>>,
+    /// Reject the update if the record changed after this timestamp was read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_updated_at: Option<String>,
+}
+
+fn deserialize_nullable_patch<'de, D, T>(
+    deserializer: D,
+) -> std::result::Result<Option<Option<T>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(deserializer).map(Some)
+}
+
 fn default_namespace() -> String {
     "global".into()
 }

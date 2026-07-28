@@ -44,10 +44,9 @@ impl std::fmt::Display for DetectionSource {
 /// Walk up from `cwd` looking for project markers and return the detected
 /// namespace, or `None` if no project context is found.
 pub fn detect_namespace(cwd: &Path) -> Option<DetectedContext> {
-    let mut dir = cwd.to_path_buf();
-
-    loop {
-        // Priority 1: explicit .clio-namespace file
+    // Explicit namespace files are repository-level overrides, so search the
+    // complete ancestor chain before accepting a nearer package manifest.
+    for dir in cwd.ancestors() {
         let ns_file = dir.join(".clio-namespace");
         if ns_file.is_file() {
             if let Ok(content) = std::fs::read_to_string(&ns_file) {
@@ -64,7 +63,9 @@ pub fn detect_namespace(cwd: &Path) -> Option<DetectedContext> {
                 }
             }
         }
+    }
 
+    for dir in cwd.ancestors() {
         // Priority 2: .git directory — derive project:<repo-name>
         let git_dir = dir.join(".git");
         if git_dir.exists() {
@@ -95,11 +96,6 @@ pub fn detect_namespace(cwd: &Path) -> Option<DetectedContext> {
                     }
                 }
             }
-        }
-
-        // Move up one level.
-        if !dir.pop() {
-            break;
         }
     }
 
@@ -256,6 +252,21 @@ mod tests {
         let ctx = detect_namespace(&root).expect("should detect namespace");
         assert_eq!(ctx.namespace, "tool:custom");
         assert!(matches!(ctx.source, DetectionSource::ClioNamespaceFile));
+    }
+
+    #[test]
+    fn ancestor_clio_namespace_file_takes_priority_over_nested_manifest() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().join("my-repo");
+        let package = root.join("ui");
+        std::fs::create_dir_all(&package).unwrap();
+        std::fs::write(root.join(".clio-namespace"), "project:my-repo\n").unwrap();
+        std::fs::write(package.join("package.json"), "{}").unwrap();
+
+        let ctx = detect_namespace(&package).expect("should detect root namespace");
+        assert_eq!(ctx.namespace, "project:my-repo");
+        assert!(matches!(ctx.source, DetectionSource::ClioNamespaceFile));
+        assert_eq!(ctx.marker_path, root.display().to_string());
     }
 
     #[test]

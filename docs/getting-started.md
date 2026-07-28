@@ -82,12 +82,12 @@ Namespaces scope your memories by project, tool, or topic. Clio detects the righ
 
 ### How detection works
 
-When you run a command, Clio walks up the directory tree from your current working directory, looking for the first matching marker:
+When you run a command, Clio searches the directory tree from your current working directory:
 
-1. `.clio-namespace` file — reads the file content as the full namespace string (e.g. `project:clio`)
-2. `.git` directory — derives `project:<repo-name>` from the directory name
-3. `Cargo.toml` or `package.json` — derives `project:<dir-name>` from the directory name
-4. Falls back to `global` if no marker is found
+1. It checks every ancestor for `.clio-namespace`; the nearest valid file supplies the full namespace string (e.g. `project:clio`). This explicit marker wins over nested package manifests.
+2. If no `.clio-namespace` exists, the nearest `.git` marker derives `project:<repo-name>`.
+3. Otherwise the nearest `Cargo.toml` or `package.json` derives `project:<dir-name>`.
+4. If no marker exists, Clio falls back to `global`.
 
 ### The `.clio-namespace` file
 
@@ -428,7 +428,7 @@ Each command prints ready-to-paste configuration for that client. The generic ou
 
 ### Available MCP tools
 
-Once connected, AI clients have access to 21 tools. For full connection instructions covering 10+ agents, see [MCP Agent Setup](mcp-agent-setup.md). The core tools:
+Once connected, AI clients have access to Clio's MCP tools. For full connection instructions covering 10+ agents, see [MCP Agent Setup](mcp-agent-setup.md). The core tools:
 
 | Tool | Purpose |
 |---|---|
@@ -476,7 +476,7 @@ Current limits:
 
 - SSH must use non-interactive key authentication; password prompts are not supported.
 - A live SSH connection is required. There is no offline cache or synchronisation yet.
-- Only MCP tool calls use the remote database. CLI commands, the daemon, hooks, and the desktop app remain local.
+- MCP tool calls use the remote database. The desktop app can use the same bridge when remote mode is configured; other CLI commands, the daemon, and hooks remain local.
 - Embeddings and capture run on the server, so configure their providers there.
 - Remote client configuration is manual; `clio setup` still generates local MCP configuration.
 
@@ -527,23 +527,23 @@ clio settings show
 **Local (default)** — uses fastembed, `all-MiniLM-L6-v2`, 384 dimensions. No API key required.
 
 ```sh
-clio settings use-local-embeddings
+clio settings use-local
 ```
 
 **OpenAI** — uses `text-embedding-3-small`, 1536 dimensions.
 
 ```sh
-clio settings use-openai-embeddings --api-key sk-...
+clio settings use-openai --api-key sk-...
 ```
 
 ### Auto-embed toggle
 
-```sh
-clio settings auto-embed --enable
-clio settings auto-embed --disable
-```
+Set `auto_embed` in `clio-settings.json`. When it is `false`, memories are
+stored without embeddings. Run `clio embed backfill` later to backfill.
 
-When disabled, memories are stored without embeddings. Run `clio embed --all` later to backfill.
+After changing the embedding provider or model, restart each MCP client and run
+`clio embed backfill`. Search and link suggestions ignore vectors from another
+model or dimensionality until backfill replaces them.
 
 ### Capture settings
 
@@ -571,11 +571,14 @@ clio import --input memories.jsonl
 ### Manage embeddings
 
 ```sh
-# Embed all memories that do not yet have embeddings
-clio embed --all
+# Show embedding coverage
+clio embed status
 
-# Embed a specific memory
-clio embed --id <id>
+# Embed missing memories and refresh vectors from an old model
+clio embed backfill
+
+# Process a larger batch
+clio embed backfill --batch-size 1000
 ```
 
 ### Inspect the database
@@ -614,7 +617,7 @@ clio namespaces
 | `migrate` | Import from Claude or ChatGPT | `--source`, `--file`, `--classify` |
 | `export` | Export to JSONL | `--output`, `--namespace` |
 | `import` | Import from JSONL | `--input` |
-| `embed` | Manage embeddings | `--all`, `--id` |
+| `embed` | Inspect or backfill embeddings | `status`, `backfill`, `--batch-size` |
 | `settings` | View or update settings | subcommands |
 | `serve` | Start MCP server | |
 | `remote-mcp` | Proxy MCP to a private server over SSH | `<ssh-alias>`, `--remote-binary`, `--db-path` |
@@ -648,21 +651,24 @@ Solution: Close other connections or wait a few seconds and retry.
 
 **"embeddings are disabled"**
 
-Run `clio settings auto-embed --enable` to re-enable auto-embedding.
+Choose a provider with `clio settings use-local` or `clio settings use-openai`,
+then set `auto_embed` to `true` in `clio-settings.json` if new writes should be
+embedded automatically.
 
 **"embedding backend not available"**
 
-The `fastembed` feature flag is not enabled. Build with:
+Local embeddings were not compiled in. Build with the default features, or
+enable `local-embeddings` explicitly:
 ```sh
-cargo install --path crates/clio-cli --features fastembed
-cargo install --path crates/clio-mcp --features fastembed
+cargo install --path crates/clio-cli --features local-embeddings
+cargo install --path crates/clio-mcp --features local-embeddings
 ```
 
 **"OpenAI API key required"**
 
 You've selected OpenAI embeddings but not configured an API key:
 ```sh
-clio settings use-openai-embeddings --api-key sk-...
+clio settings use-openai --api-key sk-...
 ```
 
 ### Capture errors

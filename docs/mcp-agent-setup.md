@@ -65,11 +65,13 @@ clio --db-path /remote/memory.db remote-mcp <ssh-alias> \
 - `clio-mcp` and the SQLite database on the remote server
 - an SSH alias with non-interactive key authentication configured locally
 
-The bridge uses `BatchMode=yes`, so password prompts are not supported. The
-database and MCP server remain private behind SSH; neither needs a public
-network listener. Each client connection starts its own remote `clio-mcp`
-process, which exits when the client disconnects; no long-running server is
-required.
+The bridge uses `BatchMode=yes`, so password prompts are not supported. It also
+sets `ServerAliveInterval=15`, `ServerAliveCountMax=3`, and
+`ClearAllForwardings=yes` to detect dead connections and prevent inherited SSH
+forwarding configuration. The database and MCP server remain private behind
+SSH; neither needs a public network listener. Each client connection starts its
+own remote `clio-mcp` process, which exits when the client disconnects; no
+long-running server is required.
 
 For a headless Linux server, build without local embeddings from the repository
 root so the project SQLite configuration is applied:
@@ -171,8 +173,13 @@ CLIO_REMOTE_COMMAND=/Users/dannyharding/.cargo/bin/clio \
 local mode. The app bar identifies the active backend and reports whether the
 bridge is connected. A broken remote configuration is reported as disconnected;
 the app does not silently open a local database. Restart the app to reconnect
-after the bridge process or SSH connection exits. Connection setup, status
-checks and tool calls time out after 10 seconds; a timed-out bridge is stopped.
+after the bridge process or SSH connection exits. Connection setup times out
+after 10 seconds; MCP operations have a 60-second timeout. Connection status is
+the passive transport/service state, not an MCP health probe, so UI polling
+cannot queue behind or cancel an in-flight operation. If a mutating operation
+times out, its outcome is unknown, so check the memory before retrying. A
+timed-out bridge is stopped. Desktop edits send partial patches guarded by the
+record's last observed `updated_at` value.
 
 Remote configuration is currently manual. `clio setup` still creates local MCP
 configurations.
@@ -522,14 +529,15 @@ Once connected, AI agents have access to Clio's MCP tools. Each read or list too
 | Tool | Purpose | Key parameters |
 |---|---|---|
 | `memory_remember` | Store or upsert a memory | `content` (required), `kind`, `title`, `summary`, `tags`, `namespace`, `cwd`, `importance`, `upsert`, `source`, `source_ref` |
-| `memory_capture` | Send unstructured text to an LLM for automatic classification, then store | `text` (required), `namespace`, `cwd` |
+| `memory_update` | Patch a known memory while rejecting stale edits | `memory_id`, `expected_updated_at`, changed fields |
+| `memory_capture` | Classify text, then return a `Stored` or `Queued` outcome | `text` (required), `namespace`, `cwd` |
 | `memory_link` | Create a typed directional link between two memories | `from_memory_id`, `to_memory_id`, `relationship` |
 | `memory_archive` | Soft-archive a memory (reversible) | `memory_id` |
 | `memory_unarchive` | Restore an archived memory | `memory_id` |
 | `memory_delete` | Permanently delete a memory | `memory_id` |
-| `memory_inbox_approve` | Approve a captured memory from the inbox | `memory_id` |
-| `memory_inbox_reject` | Reject a captured memory from the inbox | `memory_id` |
-| `memory_inbox_edit` | Edit a captured memory in the inbox before approval | `memory_id`, `content`, `kind`, `title`, `tags` |
+| `memory_move` | Move a memory to another namespace | `memory_id`, `namespace` |
+| `memory_inbox` | List, approve, reject, or edit queued captures | `action`, `review_id` for mutations |
+| `memory_cache_clear` | Clear this process's namespace-list cache | — |
 
 ### Read tools
 
@@ -545,16 +553,22 @@ Once connected, AI agents have access to Clio's MCP tools. Each read or list too
 | `memory_stats` | Aggregate statistics (counts, breakdowns, coverage) | `namespace` |
 | `memory_activity` | Recent activity feed (creates, updates, archives) | `namespace`, `limit` |
 | `memory_context` | Get namespace context for a working directory | `cwd` |
-| `memory_inbox_list` | List memories awaiting review in the inbox | `namespace`, `limit` |
+
+Individual-memory, recall, recent and embedding reads go directly to SQLite so
+separate MCP processes observe committed changes. Only the namespace list is
+cached, with a 30-second TTL; `memory_cache_clear` clears that entry only in the
+current process.
 
 ### Namespace auto-detection
 
-Four tools accept a `cwd` (working directory) parameter: `memory_remember`, `memory_recall`, `memory_capture`, `memory_search`. When `cwd` is provided and `namespace` is omitted, the server walks up the directory tree looking for:
+Five tools accept a `cwd` (working directory) parameter: `memory_remember`,
+`memory_recall`, `memory_capture`, `memory_search`, and `memory_context`. When
+`cwd` is provided and `namespace` is omitted, the server:
 
-1. `.clio-namespace` file (highest priority — contains the full namespace string)
-2. `.git` directory (derives `project:<repo-name>`)
-3. `Cargo.toml` or `package.json` (derives `project:<dir-name>`)
-4. Falls back to `global`
+1. Searches every ancestor for `.clio-namespace`; the nearest valid file wins, including over a nested package manifest.
+2. Otherwise uses the nearest `.git` marker to derive `project:<repo-name>`.
+3. Otherwise uses the nearest `Cargo.toml` or `package.json` to derive `project:<dir-name>`.
+4. Falls back to `global`.
 
 Most AI agents pass `cwd` automatically, so memories are scoped to the right project without any explicit configuration.
 
@@ -641,6 +655,12 @@ When a user dumps unstructured text, notes, or stream-of-consciousness into a se
 ```
 
 The capture pipeline requires an OpenAI-compatible API key configured via `clio settings use-capture`.
+
+The response includes `outcome: "Stored"` with a full memory, or
+`outcome: "Queued"` with a pending review item when confidence is below the
+configured threshold. Approving a queued item preserves its capture source,
+`source_ref`, and metadata, then embeds the memory when auto-embedding is
+enabled.
 
 ---
 
@@ -738,6 +758,26 @@ Use the Clio MCP server for persistent memory:
   "upsert": "false. When true, updates if source+source_ref match."
 }
 ```
+
+### memory_update
+
+```json
+{
+  "memory_id": "Required. The memory to patch.",
+  "title": "Optional changed value; null clears it.",
+  "content": "Optional changed value.",
+  "tags": ["optional", "replacement", "set"],
+  "metadata": {},
+  "expected_updated_at": "Required and non-empty. Copy the record's last observed updated_at value."
+}
+```
+
+Omitted fields remain unchanged. JSON `null` clears nullable fields (`title`,
+`summary`, `source`, `source_ref`, `confidence`, `valid_from`, and
+`valid_until`). Send `{}` to clear metadata. Updates do not use `cwd` or
+namespace auto-detection; omit `namespace` to preserve it. Every public update
+requires `expected_updated_at`; a stale value returns a conflict without
+changing the record.
 
 ### memory_recall
 
@@ -875,35 +915,26 @@ The `handoff` preset assembles a ticket-pickup brief: Directly Relevant
 Constraints, and Recent Receipts matching the query or ticket tag. See
 `reference/mcp-contract.md` for the full contract.
 
-### memory_inbox_list
+### memory_inbox
 
 ```json
 {
-  "namespace": "Optional.",
-  "limit": "20.",
-  "response_format": "markdown | json."
+  "action": "list | approve | reject | edit. Required.",
+  "review_id": "Required for approve, reject, and edit.",
+  "limit": "20. List only.",
+  "response_format": "markdown | json. List only.",
+  "namespace": "Optional edit override.",
+  "kind": "Optional edit override.",
+  "title": "Optional edit override.",
+  "summary": "Optional edit override.",
+  "tags": ["optional", "edit", "override"],
+  "importance": "Optional edit override, 1-5.",
+  "confidence": "Optional edit override, 0.0-1.0."
 }
 ```
 
-### memory_inbox_approve / memory_inbox_reject
-
-```json
-{
-  "memory_id": "Required."
-}
-```
-
-### memory_inbox_edit
-
-```json
-{
-  "memory_id": "Required.",
-  "content": "Optional.",
-  "kind": "Optional.",
-  "title": "Optional.",
-  "tags": ["optional", "array"]
-}
-```
+Approval preserves the queued item's source, `source_ref`, and metadata. It
+auto-embeds the promoted memory when enabled.
 
 ---
 

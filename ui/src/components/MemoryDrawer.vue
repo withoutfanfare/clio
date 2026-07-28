@@ -94,7 +94,7 @@ function onTitleChange() {
   if (!store.drawerMemory) return;
   scheduleAutoSave(store.drawerMemory, {
     content: editContent.value,
-    title: editTitle.value || undefined,
+    title: editTitle.value || null,
   });
 }
 
@@ -102,7 +102,7 @@ function onMetaChange() {
   if (!store.drawerMemory) return;
   scheduleAutoSave(store.drawerMemory, {
     content: editContent.value,
-    title: editTitle.value || undefined,
+    title: editTitle.value || null,
     kind: editKind.value,
     namespace: editNamespace.value,
     tags: editTags.value,

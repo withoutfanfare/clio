@@ -51,3 +51,79 @@ fn apply_pragmas(conn: &Connection) -> Result<()> {
     )?;
     Ok(())
 }
+
+/// Commit an owned transaction or release a nested savepoint.
+///
+/// SQLite can leave the transaction open when the commit itself fails, so
+/// always unwind it before returning the original error.
+pub(crate) fn finish_transaction(
+    conn: &Connection,
+    owns_transaction: bool,
+    savepoint: &str,
+) -> Result<()> {
+    let result = if owns_transaction {
+        conn.execute_batch("COMMIT")
+    } else {
+        conn.execute_batch(&format!("RELEASE {savepoint}"))
+    };
+    if let Err(error) = result {
+        rollback_transaction(conn, owns_transaction, savepoint);
+        return Err(error.into());
+    }
+    Ok(())
+}
+
+pub(crate) fn rollback_transaction(conn: &Connection, owns_transaction: bool, savepoint: &str) {
+    if owns_transaction {
+        let _ = conn.execute_batch("ROLLBACK");
+    } else {
+        let _ = conn.execute_batch(&format!("ROLLBACK TO {savepoint}; RELEASE {savepoint};"));
+    }
+}
+
+pub(crate) fn with_savepoint<T>(
+    conn: &Connection,
+    savepoint: &str,
+    operation: impl FnOnce() -> Result<T>,
+) -> Result<T> {
+    conn.execute_batch(&format!("SAVEPOINT {savepoint}"))?;
+    match operation() {
+        Ok(value) => {
+            finish_transaction(conn, false, savepoint)?;
+            Ok(value)
+        }
+        Err(error) => {
+            rollback_transaction(conn, false, savepoint);
+            Err(error)
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::finish_transaction;
+
+    #[test]
+    fn failed_commit_does_not_leave_the_connection_in_a_transaction() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "PRAGMA foreign_keys = ON;
+             CREATE TABLE parents (id INTEGER PRIMARY KEY);
+             CREATE TABLE children (
+                 parent_id INTEGER,
+                 FOREIGN KEY (parent_id) REFERENCES parents(id)
+                     DEFERRABLE INITIALLY DEFERRED
+             );
+             BEGIN IMMEDIATE;
+             INSERT INTO children (parent_id) VALUES (1);",
+        )
+        .unwrap();
+
+        assert!(finish_transaction(&conn, true, "").is_err());
+        assert!(conn.is_autocommit());
+        let count: u32 = conn
+            .query_row("SELECT COUNT(*) FROM children", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 0);
+    }
+}

@@ -19,7 +19,7 @@ use crate::models::{Memory, RecallItem};
 // ---------------------------------------------------------------------------
 
 /// Which embedding backend to use.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "provider", rename_all = "snake_case")]
 pub enum EmbeddingConfig {
     /// Fully local ONNX-based embeddings (default).
@@ -407,6 +407,12 @@ pub fn store_embedding(
     dimensions: usize,
     embedding: &[f32],
 ) -> Result<()> {
+    if dimensions == 0 || embedding.len() != dimensions {
+        return Err(ClioError::Validation(format!(
+            "embedding dimensions declared as {dimensions}, but vector contains {} values",
+            embedding.len()
+        )));
+    }
     let blob = encode_embedding(embedding);
     let now = crate::models::now_utc();
 
@@ -451,7 +457,15 @@ pub struct SemanticResult {
     pub similarity: f64,
 }
 
-fn cosine_similarity(a: &[f32], b: &[f32]) -> f64 {
+fn cosine_similarity(a: &[f32], b: &[f32]) -> Result<f64> {
+    if a.len() != b.len() {
+        return Err(ClioError::Validation(format!(
+            "cannot compare embeddings with different dimensions ({} and {})",
+            a.len(),
+            b.len()
+        )));
+    }
+
     let mut dot = 0.0f64;
     let mut norm_a = 0.0f64;
     let mut norm_b = 0.0f64;
@@ -465,7 +479,7 @@ fn cosine_similarity(a: &[f32], b: &[f32]) -> f64 {
     }
 
     let denom = norm_a.sqrt() * norm_b.sqrt();
-    if denom == 0.0 { 0.0 } else { dot / denom }
+    Ok(if denom == 0.0 { 0.0 } else { dot / denom })
 }
 
 /// Wrapper for BinaryHeap that orders by similarity ascending (min-heap).
@@ -505,6 +519,7 @@ enum NamespaceFilter<'a> {
 pub fn semantic_search(
     conn: &Connection,
     query_embedding: &[f32],
+    model_name: &str,
     namespace: Option<&str>,
     include_archived: bool,
     exclude_expired: bool,
@@ -514,6 +529,7 @@ pub fn semantic_search(
     semantic_search_filtered(
         conn,
         query_embedding,
+        model_name,
         filter,
         include_archived,
         exclude_expired,
@@ -524,6 +540,7 @@ pub fn semantic_search(
 fn semantic_search_filtered(
     conn: &Connection,
     query_embedding: &[f32],
+    model_name: &str,
     namespace: NamespaceFilter<'_>,
     include_archived: bool,
     exclude_expired: bool,
@@ -533,10 +550,13 @@ fn semantic_search_filtered(
         "SELECT e.memory_id, e.embedding
          FROM memory_embeddings e
          JOIN memories m ON m.id = e.memory_id
-         WHERE 1=1",
+         WHERE e.model = ?1 AND e.dimensions = ?2",
     );
 
-    let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+    let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> = vec![
+        Box::new(model_name.to_string()),
+        Box::new(query_embedding.len() as i64),
+    ];
 
     if !include_archived {
         sql.push_str(" AND m.archived_at IS NULL");
@@ -572,7 +592,7 @@ fn semantic_search_filtered(
     for row_result in rows {
         let (memory_id, blob) = row_result?;
         let embedding = decode_embedding(&blob)?;
-        let similarity = cosine_similarity(query_embedding, &embedding);
+        let similarity = cosine_similarity(query_embedding, &embedding)?;
 
         heap.push(ScoredEntry {
             memory_id,
@@ -607,6 +627,7 @@ pub fn semantic_recall(
     conn: &Connection,
     query_text: &str,
     query_embedding: &[f32],
+    model_name: &str,
     namespace: Option<&str>,
     include_archived: bool,
     exclude_expired: bool,
@@ -618,6 +639,7 @@ pub fn semantic_recall(
     let results = semantic_search(
         conn,
         query_embedding,
+        model_name,
         namespace,
         include_archived,
         exclude_expired,
@@ -713,6 +735,7 @@ pub fn semantic_recall_scoped(
     conn: &Connection,
     query_text: &str,
     query_embedding: &[f32],
+    model_name: &str,
     detected_namespace: &str,
     include_archived: bool,
     exclude_expired: bool,
@@ -724,6 +747,7 @@ pub fn semantic_recall_scoped(
             conn,
             query_text,
             query_embedding,
+            model_name,
             Some("global"),
             include_archived,
             exclude_expired,
@@ -736,6 +760,7 @@ pub fn semantic_recall_scoped(
         conn,
         query_text,
         query_embedding,
+        model_name,
         Some(detected_namespace),
         include_archived,
         exclude_expired,
@@ -749,6 +774,7 @@ pub fn semantic_recall_scoped(
             conn,
             query_text,
             query_embedding,
+            model_name,
             Some("global"),
             include_archived,
             exclude_expired,
@@ -833,23 +859,24 @@ pub fn suggest_links(
     limit: u32,
 ) -> Result<Vec<(Memory, f64)>> {
     // Get the embedding for the target memory (generate if needed).
-    let target_embedding = match get_stored_embedding(conn, memory_id)? {
-        Some(emb) => emb,
-        None => {
-            // Generate it on-the-fly.
-            let memory = crate::repository::get(conn, memory_id)?;
-            let passage = build_passage(&memory);
-            let emb = backend.embed_one(&passage)?;
-            store_embedding(
-                conn,
-                memory_id,
-                backend.model_name(),
-                backend.dimensions(),
-                &emb,
-            )?;
-            emb
-        }
-    };
+    let target_embedding =
+        match get_stored_embedding(conn, memory_id, backend.model_name(), backend.dimensions())? {
+            Some(emb) => emb,
+            None => {
+                // Generate it on-the-fly.
+                let memory = crate::repository::get(conn, memory_id)?;
+                let passage = build_passage(&memory);
+                let emb = backend.embed_one(&passage)?;
+                store_embedding(
+                    conn,
+                    memory_id,
+                    backend.model_name(),
+                    backend.dimensions(),
+                    &emb,
+                )?;
+                emb
+            }
+        };
 
     // Find similar memories, excluding the source memory and any already linked
     // (in either direction). Filtering at the SQL level avoids pulling linked
@@ -860,23 +887,28 @@ pub fn suggest_links(
          JOIN memories m ON m.id = e.memory_id
          WHERE m.archived_at IS NULL
            AND e.memory_id != ?1
+           AND e.model = ?2
+           AND e.dimensions = ?3
            AND e.memory_id NOT IN (
                SELECT to_memory_id FROM memory_links WHERE from_memory_id = ?1
                UNION
                SELECT from_memory_id FROM memory_links WHERE to_memory_id = ?1
            )",
     )?;
-    let rows = stmt.query_map(params![memory_id], |row| {
-        let mid: String = row.get(0)?;
-        let blob: Vec<u8> = row.get(1)?;
-        Ok((mid, blob))
-    })?;
+    let rows = stmt.query_map(
+        params![memory_id, backend.model_name(), backend.dimensions() as i64],
+        |row| {
+            let mid: String = row.get(0)?;
+            let blob: Vec<u8> = row.get(1)?;
+            Ok((mid, blob))
+        },
+    )?;
 
     let mut candidates: Vec<(String, f64)> = Vec::new();
     for row_result in rows {
         let (mid, blob) = row_result?;
         let embedding = decode_embedding(&blob)?;
-        let similarity = cosine_similarity(&target_embedding, &embedding);
+        let similarity = cosine_similarity(&target_embedding, &embedding)?;
         if similarity >= threshold {
             candidates.push((mid, similarity));
         }
@@ -962,9 +994,11 @@ pub fn auto_link_batch(
     // Collect IDs that lack embeddings.
     let unembedded_ids: Vec<String> = candidates
         .iter()
-        .filter_map(|(id, _)| match has_embedding(conn, id) {
-            Ok(false) => Some(id.clone()),
-            _ => None,
+        .filter_map(|(id, _)| {
+            match has_embedding_for_space(conn, id, backend.model_name(), backend.dimensions()) {
+                Ok(false) => Some(id.clone()),
+                _ => None,
+            }
         })
         .collect();
 
@@ -1018,7 +1052,9 @@ pub fn auto_link_batch(
 
     for (memory_id, updated_at) in &candidates {
         // Skip if embedding is still missing (e.g. both batch and fallback failed).
-        if !has_embedding(conn, memory_id).unwrap_or(false) {
+        if !has_embedding_for_space(conn, memory_id, backend.model_name(), backend.dimensions())
+            .unwrap_or(false)
+        {
             tracing::warn!(memory_id, "auto-link: skipping — no embedding available");
             last_watermark = Some(updated_at.clone());
             continue;
@@ -1076,11 +1112,17 @@ pub fn auto_link_batch(
 }
 
 /// Retrieve the stored embedding for a memory, if it exists.
-pub(crate) fn get_stored_embedding(conn: &Connection, memory_id: &str) -> Result<Option<Vec<f32>>> {
+fn get_stored_embedding(
+    conn: &Connection,
+    memory_id: &str,
+    model_name: &str,
+    dimensions: usize,
+) -> Result<Option<Vec<f32>>> {
     let blob: Option<Vec<u8>> = conn
         .query_row(
-            "SELECT embedding FROM memory_embeddings WHERE memory_id = ?1",
-            params![memory_id],
+            "SELECT embedding FROM memory_embeddings
+             WHERE memory_id = ?1 AND model = ?2 AND dimensions = ?3",
+            params![memory_id, model_name, dimensions as i64],
             |row| row.get(0),
         )
         .optional()?;
@@ -1089,6 +1131,23 @@ pub(crate) fn get_stored_embedding(conn: &Connection, memory_id: &str) -> Result
         Some(b) => Ok(Some(decode_embedding(&b)?)),
         None => Ok(None),
     }
+}
+
+fn has_embedding_for_space(
+    conn: &Connection,
+    memory_id: &str,
+    model_name: &str,
+    dimensions: usize,
+) -> Result<bool> {
+    let exists: Option<i32> = conn
+        .query_row(
+            "SELECT 1 FROM memory_embeddings
+             WHERE memory_id = ?1 AND model = ?2 AND dimensions = ?3",
+            params![memory_id, model_name, dimensions as i64],
+            |row| row.get(0),
+        )
+        .optional()?;
+    Ok(exists.is_some())
 }
 
 // ---------------------------------------------------------------------------
@@ -1140,6 +1199,30 @@ pub fn list_unembedded(conn: &Connection, limit: u32) -> Result<Vec<String>> {
     Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
 }
 
+/// Return IDs whose embedding is missing or belongs to a different model
+/// space. Backfill uses this after a provider/model change to replace stale
+/// vectors rather than treating any stored vector as current.
+pub fn list_embeddings_needing_refresh(
+    conn: &Connection,
+    model_name: &str,
+    dimensions: usize,
+    limit: u32,
+) -> Result<Vec<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT m.id FROM memories m
+         WHERE NOT EXISTS (
+             SELECT 1 FROM memory_embeddings e
+             WHERE e.memory_id = m.id AND e.model = ?1 AND e.dimensions = ?2
+         )
+         ORDER BY m.updated_at DESC
+         LIMIT ?3",
+    )?;
+    let rows = stmt.query_map(params![model_name, dimensions as i64, limit], |row| {
+        row.get(0)
+    })?;
+    Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1161,7 +1244,7 @@ mod tests {
     #[test]
     fn cosine_similarity_identical_vectors() {
         let a = vec![1.0, 0.0, 0.0];
-        let similarity = cosine_similarity(&a, &a);
+        let similarity = cosine_similarity(&a, &a).unwrap();
         assert!((similarity - 1.0).abs() < 1e-6);
     }
 
@@ -1169,7 +1252,7 @@ mod tests {
     fn cosine_similarity_orthogonal_vectors() {
         let a = vec![1.0, 0.0, 0.0];
         let b = vec![0.0, 1.0, 0.0];
-        let similarity = cosine_similarity(&a, &b);
+        let similarity = cosine_similarity(&a, &b).unwrap();
         assert!(similarity.abs() < 1e-6);
     }
 
@@ -1177,8 +1260,14 @@ mod tests {
     fn cosine_similarity_opposite_vectors() {
         let a = vec![1.0, 0.0, 0.0];
         let b = vec![-1.0, 0.0, 0.0];
-        let similarity = cosine_similarity(&a, &b);
+        let similarity = cosine_similarity(&a, &b).unwrap();
         assert!((similarity + 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn cosine_similarity_rejects_dimension_mismatch() {
+        let error = cosine_similarity(&[1.0, 0.0], &[1.0]).unwrap_err();
+        assert!(error.to_string().contains("different dimensions"));
     }
 
     #[test]
