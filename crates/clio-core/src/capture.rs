@@ -108,6 +108,7 @@ Importance scale (do not inflate — most items are 3):
 Rules:
 - Tags must be lowercase, no spaces, use hyphens if needed.
 - The namespace slug should be short and descriptive.
+- Use "global" only for information explicitly intended to apply across projects; when one project is named, prefer its project namespace.
 - If the text is ambiguous, prefer "note" as kind and lower confidence.
 - Output ONLY valid JSON, no markdown fences, no extra text."#;
 
@@ -138,6 +139,8 @@ Respond ONLY with a JSON object of the form {"memories": [...]} (the array possi
 - "namespace": "global", or "project:<slug>", or "topic:<slug>"
 - "importance": integer 1 to 5, calibrated strictly (see scale below)
 - "confidence": float 0.0 to 1.0 — how certain you are this is durable knowledge worth keeping
+
+Use "global" only for information explicitly intended to apply across projects. Project decisions, implementation details and receipts must use that project's namespace when the project is identifiable.
 
 Importance scale (do not inflate — if everything is a 4, the scale is useless; most items are 3):
 - 5: an invariant, security/data-loss risk, or something that breaks things if forgotten
