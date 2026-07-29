@@ -9,6 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+**Dependable Workflow Memory (2026-07-29)**
+- Exact-once session checkpoints (`clio checkpoint`, MCP `memory_session_checkpoint`, migration `009_session_checkpoints`): a session delta commits atomically under `source + session + cursor`; retries replay the stored result instead of duplicating atoms, and an empty extraction is a successful checkpoint.
+- Follow-up attention lifecycle (`clio action`, MCP `memory_action`, migration `010_attention_and_events`): open/snoozed/resolved/cancelled items with due/reminder/trigger/waiting context, machine-readable eligibility reasons, evidence-backed completion via `resolved_by` links, and an append-only `memory_events` ledger with idempotency keys.
+- Open-loop extraction in checkpoints: explicit user commitments open attention automatically; assistant suggestions always queue for review (approval creates memory + attention in one transaction); explicit stable-ID resolutions complete their target with the storing memory as evidence; deterministic `ticket:<id>` tags and branch metadata.
+- Evidence-backed resume briefs (`clio resume`, MCP `memory_resume`): open work first with the reason each item surfaces now, blocked items, constraints (with a modest global prior), recent decisions, prompt-relevant knowledge and recent activity — untracked reads, once-per-session surfacing, budget with critical-section reservations.
+- Directional, typed graph recall: linked recall follows edges in both directions and preserves every edge's relationship and metadata (`link_context`); `memory_get_links` gained a `direction` parameter; link suggestions stay in the source memory's namespace and skip archived/expired candidates.
+- Source occurrences and cited consolidation (migration `011_occurrences_and_namespace_state`): repeated exact evidence strengthens one canonical memory with append-only sightings; consolidation output is structured and must cite current source IDs (invalid candidates rejected), watermarked by a per-namespace mutation generation so staleness is provable.
+- Verified external delivery outbox (core, migration `012_delivery_outbox`): stable delivery keys, attempt history, read-back-proved confirmation, retryable failure and stable-ID completion mirroring. Live Things/Linear adapters remain gated on proving their create + read-back contracts.
+- Desktop "Needs attention" view (`/attention`): eligible follow-ups with reasons, Complete/Snooze/Cancel, review depth, client capture-queue health and consolidation freshness; link rows show direction, relationship and titles.
+- Event-backed effectiveness reporting (`clio effectiveness`, `stats::effectiveness`): capture, attention, surfacing, contradiction, delivery and corruption measures from untracked reads only.
+- Hook package (clio-hooks skill): durable redacted capture queue (`capture_queue.py`) with atomic 0600/0700 spool, serial per-session cursors, backoff and dead-letter state; queue-backed Claude/Codex Stop hooks (ordered non-overlapping deltas, non-git sessions captured, late Codex rollouts retried); resume-led SessionStart and first-substantive-prompt recall (`prompt_recall.py`) with per-session/topic dedup.
+
+### Fixed
+
+- Linked recall (`include_links`) reapplies the parent query's archive/expiry eligibility, so hidden memories can no longer re-enter results through graph expansion.
+- Chat output limits per model family: GPT-5-family title requests get reasoning-token headroom (previously truncated to empty), and unknown OpenAI-compatible models get a bounded `max_tokens` instead of no limit.
+- Automatic context injection no longer trains recall ranking: resume reads, attention creation and internal lookups are untracked; deliberate recall still counts.
+
 - **Remote MCP bridge** - `clio remote-mcp` connects MCP clients to a private Clio database over SSH while detecting project namespaces on the client computer.
 
 **Handoff Briefs & Receipts**
