@@ -247,6 +247,62 @@ impl Default for ConsolidateConfig {
     }
 }
 
+/// Shared Atlas connection used by local adapters.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct RemoteConfig {
+    /// SSH host alias.
+    pub host: String,
+
+    /// Database path on the remote host.
+    pub db_path: String,
+
+    /// MCP server binary on the remote host.
+    pub mcp_binary: String,
+
+    /// CLI binary on the remote host.
+    pub cli_binary: String,
+
+    /// Local Clio binary used as the MCP SSH bridge.
+    pub bridge_command: String,
+}
+
+impl RemoteConfig {
+    /// Validate a route before any adapter starts SSH.
+    pub fn validate(&self) -> Result<()> {
+        for (name, value) in [
+            ("host", self.host.as_str()),
+            ("db_path", self.db_path.as_str()),
+            ("mcp_binary", self.mcp_binary.as_str()),
+            ("cli_binary", self.cli_binary.as_str()),
+            ("bridge_command", self.bridge_command.as_str()),
+        ] {
+            if value.trim().is_empty() || value.chars().any(char::is_control) {
+                return Err(ClioError::Config(format!(
+                    "remote {name} must be non-empty and contain no control characters"
+                )));
+            }
+        }
+        if self.host.chars().any(char::is_whitespace) {
+            return Err(ClioError::Config(
+                "remote host must not contain whitespace".into(),
+            ));
+        }
+        for (name, value) in [
+            ("db_path", self.db_path.as_str()),
+            ("mcp_binary", self.mcp_binary.as_str()),
+            ("cli_binary", self.cli_binary.as_str()),
+            ("bridge_command", self.bridge_command.as_str()),
+        ] {
+            if !Path::new(value).is_absolute() {
+                return Err(ClioError::Config(format!(
+                    "remote {name} must be an absolute path"
+                )));
+            }
+        }
+        Ok(())
+    }
+}
+
 /// All configurable Clio settings.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Settings {
@@ -285,6 +341,10 @@ pub struct Settings {
     /// Memory consolidation configuration.
     #[serde(default)]
     pub consolidate: ConsolidateConfig,
+
+    /// Optional shared Atlas route for CLI, hooks and Tauri.
+    #[serde(default)]
+    pub remote: Option<RemoteConfig>,
 }
 
 fn default_true() -> bool {
@@ -303,6 +363,7 @@ impl Default for Settings {
             daemon: DaemonConfig::default(),
             cleanup: CleanupConfig::default(),
             consolidate: ConsolidateConfig::default(),
+            remote: None,
         }
     }
 }
@@ -419,4 +480,44 @@ pub fn save(db_path: &Path, settings: &Settings) -> Result<()> {
 
     tracing::debug!(path = %path.display(), "saved settings");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn older_settings_default_to_local_mode() {
+        let settings: Settings = serde_json::from_str("{}").unwrap();
+        assert!(settings.remote.is_none());
+    }
+
+    #[test]
+    fn remote_settings_round_trip() {
+        let mut settings = Settings::default();
+        settings.remote = Some(RemoteConfig {
+            host: "atlas".into(),
+            db_path: "/srv/clio/memory.db".into(),
+            mcp_binary: "/srv/clio/clio-mcp".into(),
+            cli_binary: "/srv/clio/clio".into(),
+            bridge_command: "/Users/example/.cargo/bin/clio".into(),
+        });
+
+        let encoded = serde_json::to_string(&settings).unwrap();
+        let decoded: Settings = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded.remote, settings.remote);
+        decoded.remote.unwrap().validate().unwrap();
+    }
+
+    #[test]
+    fn remote_settings_reject_relative_paths() {
+        let remote = RemoteConfig {
+            host: "atlas".into(),
+            db_path: "memory.db".into(),
+            mcp_binary: "/srv/clio/clio-mcp".into(),
+            cli_binary: "/srv/clio/clio".into(),
+            bridge_command: "/usr/local/bin/clio".into(),
+        };
+        assert!(remote.validate().is_err());
+    }
 }

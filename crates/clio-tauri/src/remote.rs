@@ -39,6 +39,16 @@ impl RemoteConfig {
             command: std::env::var(REMOTE_COMMAND_ENV).unwrap_or_else(|_| "clio".into()),
         })
     }
+
+    pub fn from_settings(config: &clio_core::settings::RemoteConfig) -> Result<Self, String> {
+        config.validate().map_err(|error| error.to_string())?;
+        Ok(Self {
+            host: config.host.clone(),
+            db_path: config.db_path.clone(),
+            remote_binary: config.mcp_binary.clone(),
+            command: config.bridge_command.clone(),
+        })
+    }
 }
 
 fn required_env(name: &str) -> Result<String, String> {
@@ -295,6 +305,20 @@ mod tests {
             )]))
             .unwrap_err();
         assert_eq!(error.to_string(), "remote failure");
+    }
+
+    #[test]
+    fn builds_remote_config_from_persisted_settings() {
+        let persisted = clio_core::settings::RemoteConfig {
+            host: "atlas".into(),
+            db_path: "/srv/memory.db".into(),
+            mcp_binary: "/srv/clio-mcp".into(),
+            cli_binary: "/srv/clio".into(),
+            bridge_command: "/usr/local/bin/clio".into(),
+        };
+        let config = RemoteConfig::from_settings(&persisted).unwrap();
+        assert_eq!(config.host, "atlas");
+        assert_eq!(config.command, "/usr/local/bin/clio");
     }
 
     #[cfg(unix)]

@@ -18,6 +18,7 @@ CLIO_PENDING_MIGRATIONS=false
 CLIO_MCP_GATED=false
 CLIO_MIGRATION_STARTED=false
 CLIO_RELEASE_ACTIVATED=false
+CLIO_GATE_CANDIDATE="$CLIO_INSTALL_ROOT/gated-candidate"
 
 usage() {
   cat <<'EOF'
@@ -51,7 +52,7 @@ cleanup() {
     rmdir "$CLIO_TEMP_LINK_DIR" 2>/dev/null || true
   fi
   if [[ -n "$CLIO_TEMP_PROBE" && -d "$CLIO_TEMP_PROBE" ]]; then
-    for path in memory.db memory.db-wal memory.db-shm memory.db-journal; do
+    for path in memory.db memory.db-wal memory.db-shm memory.db-journal clio-settings.json; do
       [[ ! -e "$CLIO_TEMP_PROBE/$path" ]] || unlink "$CLIO_TEMP_PROBE/$path"
     done
     rmdir "$CLIO_TEMP_PROBE" 2>/dev/null || true
@@ -194,12 +195,17 @@ ensure_stable_links() {
 }
 
 gate_mcp() {
+  local sha="$1" candidate_tmp="$CLIO_GATE_CANDIDATE.$$"
+  printf '%s\n' "$sha" > "$candidate_tmp"
+  chmod 600 "$candidate_tmp"
+  mv -f "$candidate_tmp" "$CLIO_GATE_CANDIDATE"
   CLIO_MCP_GATED=true
   atomic_link "$CLIO_BIN_DIR/clio-mcp" /usr/bin/false
 }
 
 ungate_mcp() {
   atomic_link "$CLIO_BIN_DIR/clio-mcp" "$CLIO_INSTALL_ROOT/current/bin/clio-mcp"
+  [[ ! -e "$CLIO_GATE_CANDIDATE" ]] || unlink "$CLIO_GATE_CANDIDATE"
   CLIO_MCP_GATED=false
 }
 
@@ -208,12 +214,21 @@ mcp_is_gated() {
 }
 
 detect_existing_gate() {
+  local sha="$1" candidate=""
   if mcp_is_gated; then
     [[ -L "$CLIO_INSTALL_ROOT/current" ]] || fail "The MCP entry point is gated but no current release exists."
+    [[ -f "$CLIO_GATE_CANDIDATE" ]] || fail "The MCP entry point is gated but its candidate SHA is missing; inspect the live migration state before continuing."
+    candidate="$(<"$CLIO_GATE_CANDIDATE")"
+    [[ "$candidate" == "$sha" ]] || fail "The MCP entry point is gated for $candidate, not $sha; resume the exact candidate or inspect the live migration state."
     CLIO_MCP_GATED=true
     CLIO_MIGRATION_STARTED=true
-    printf 'Resuming a previously gated deployment; the old MCP release will not be re-exposed.\n'
+    printf 'Resuming the previously gated deployment for %s; the old MCP release will not be re-exposed.\n' "$sha"
   fi
+}
+
+acquire_migration_lock() {
+  exec 8>"$CLIO_DB_PATH.maintenance.lock"
+  flock -n 8
 }
 
 activate_release() {
@@ -248,6 +263,9 @@ probe_migrations() {
   local candidate="$1" before after path
   CLIO_TEMP_PROBE="$(mktemp -d "$CLIO_INSTALL_ROOT/.migration-probe.XXXXXX")"
   cp "$CLIO_LAST_BACKUP/memory.db" "$CLIO_TEMP_PROBE/memory.db"
+  if [[ -f "$CLIO_LAST_BACKUP/clio-settings.json" ]]; then
+    cp "$CLIO_LAST_BACKUP/clio-settings.json" "$CLIO_TEMP_PROBE/clio-settings.json"
+  fi
   before="$(migration_versions "$CLIO_TEMP_PROBE/memory.db")"
   "$candidate" --db-path "$CLIO_TEMP_PROBE/memory.db" --json stats >/dev/null
   "$candidate" --db-path "$CLIO_TEMP_PROBE/memory.db" --json recall \
@@ -262,7 +280,7 @@ probe_migrations() {
     printf 'Migration probe found pending migrations.\n'
   fi
 
-  for path in memory.db memory.db-wal memory.db-shm memory.db-journal; do
+  for path in memory.db memory.db-wal memory.db-shm memory.db-journal clio-settings.json; do
     [[ ! -e "$CLIO_TEMP_PROBE/$path" ]] || unlink "$CLIO_TEMP_PROBE/$path"
   done
   rmdir "$CLIO_TEMP_PROBE"
@@ -276,7 +294,7 @@ deploy() {
   require_tool flock
   acquire_deploy_lock
   preflight "$sha"
-  detect_existing_gate
+  detect_existing_gate "$sha"
   (cd "$CLIO_REPO_DIR" && cargo build --locked --release \
     --no-default-features --features local-embeddings-dynamic -p clio-cli --bin clio)
   (cd "$CLIO_REPO_DIR" && cargo build --locked --release \
@@ -296,12 +314,17 @@ deploy() {
       preserve_current_release
       if [[ -L "$CLIO_INSTALL_ROOT/current" ]]; then
         ensure_stable_links
-        gate_mcp
+        gate_mcp "$sha"
       fi
     fi
     running="$(pgrep -cx clio-mcp 2>/dev/null || true)"
-    if [[ "$running" -gt 0 && "${CLIO_ALLOW_LIVE_MIGRATION:-0}" != 1 ]]; then
-      fail "$running MCP sessions are active and this release adds a migration; disconnect them or set CLIO_ALLOW_LIVE_MIGRATION=1 after confirming backwards compatibility"
+    if ! acquire_migration_lock; then
+      if [[ "${CLIO_ALLOW_LIVE_MIGRATION:-0}" != 1 ]]; then
+        fail "An MCP session holds the database maintenance lock; disconnect it or set CLIO_ALLOW_LIVE_MIGRATION=1 after confirming backwards compatibility"
+      fi
+      printf 'Database maintenance lock is held; live compatibility override accepted.\n'
+    elif [[ "$running" -gt 0 && "${CLIO_ALLOW_LIVE_MIGRATION:-0}" != 1 ]]; then
+      fail "$running pre-lock MCP sessions are active and this release adds a migration; disconnect them or set CLIO_ALLOW_LIVE_MIGRATION=1 after confirming backwards compatibility"
     fi
     if [[ "$running" -gt 0 ]]; then
       printf 'New MCP sessions are gated; live compatibility override accepted for %s existing sessions.\n' "$running"

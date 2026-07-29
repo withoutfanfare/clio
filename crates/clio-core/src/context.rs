@@ -65,8 +65,9 @@ pub fn detect_namespace(cwd: &Path) -> Option<DetectedContext> {
         }
     }
 
+    // A repository marker outranks every manifest, including a nearer nested
+    // package, so search the complete ancestor chain first.
     for dir in cwd.ancestors() {
-        // Priority 2: .git directory — derive project:<repo-name>
         let git_dir = dir.join(".git");
         if git_dir.exists() {
             if let Some(name) = dir.file_name().and_then(|n| n.to_str()) {
@@ -80,8 +81,9 @@ pub fn detect_namespace(cwd: &Path) -> Option<DetectedContext> {
                 }
             }
         }
+    }
 
-        // Priority 3: project manifest files — derive project:<dir-name>
+    for dir in cwd.ancestors() {
         let manifests = ["Cargo.toml", "package.json"];
         for manifest in manifests {
             if dir.join(manifest).is_file() {
@@ -266,6 +268,21 @@ mod tests {
         let ctx = detect_namespace(&package).expect("should detect root namespace");
         assert_eq!(ctx.namespace, "project:my-repo");
         assert!(matches!(ctx.source, DetectionSource::ClioNamespaceFile));
+        assert_eq!(ctx.marker_path, root.display().to_string());
+    }
+
+    #[test]
+    fn ancestor_git_directory_takes_priority_over_nested_manifest() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().join("my-repo");
+        let package = root.join("ui");
+        std::fs::create_dir_all(root.join(".git")).unwrap();
+        std::fs::create_dir_all(&package).unwrap();
+        std::fs::write(package.join("package.json"), "{}").unwrap();
+
+        let ctx = detect_namespace(&package).expect("should detect root namespace");
+        assert_eq!(ctx.namespace, "project:my-repo");
+        assert!(matches!(ctx.source, DetectionSource::GitDirectory));
         assert_eq!(ctx.marker_path, root.display().to_string());
     }
 

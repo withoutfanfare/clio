@@ -37,10 +37,21 @@ must support non-interactive key authentication. Explicit namespaces and
 global requests are preserved; scoped recall still combines the detected
 project namespace with `global` memories.
 
-This command shares MCP memory operations. The desktop app can use the same
-bridge when remote mode is configured; other CLI commands, the daemon, and
-session hooks remain local. Configure embeddings and capture on the remote
-server if you need those features there. See
+Persist the bridge once to route normal CLI commands, session hooks, generated
+MCP client configurations and the desktop app through the same remote database:
+
+```sh
+clio settings use-remote \
+  --host <ssh-alias> \
+  --remote-db-path /remote/memory.db \
+  --mcp-binary /remote/clio-mcp \
+  --cli-binary /remote/clio \
+  --bridge-command /absolute/local/path/to/clio
+```
+
+The daemon remains local and should stay disabled on a shared-memory client.
+Configure embeddings and capture on the remote server if you need those
+features there. See
 [MCP Agent Setup](mcp-agent-setup.md#shared-memory-over-ssh) for Codex and JSON
 client configuration.
 
@@ -368,6 +379,17 @@ clio settings use-openai --api-key sk-...  # higher quality, needs key
 
 # Capture pipeline
 clio settings use-capture --api-key sk-... --model gpt-4o-mini
+
+# Route shared operations through an SSH host
+clio settings use-remote \
+  --host atlas \
+  --remote-db-path /home/ubuntu/.local/share/clio/memory.db \
+  --mcp-binary /home/ubuntu/.local/bin/clio-mcp \
+  --cli-binary /home/ubuntu/.local/bin/clio \
+  --bridge-command /absolute/local/path/to/clio
+
+# Return to local-only storage
+clio settings disable-remote
 ```
 
 After changing the embedding provider or model, restart MCP clients and run
@@ -381,6 +403,7 @@ After changing the embedding provider or model, restart MCP clients and run
 |---|---|
 | `--db-path <path>` | Override database location |
 | `--json` | JSON output |
+| `--local` | Bypass a configured shared route for deliberate local maintenance |
 
 Default DB: `~/Library/Application Support/clio/memory.db` (macOS)
 

@@ -1,5 +1,6 @@
 mod remote_mcp;
 
+use std::ffi::OsString;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::process;
@@ -39,6 +40,10 @@ struct Cli {
     /// Output as JSON instead of human-readable text.
     #[arg(long, global = true)]
     json: bool,
+
+    /// Bypass a configured shared Atlas route and use local storage.
+    #[arg(long, global = true)]
+    local: bool,
 
     #[command(subcommand)]
     command: Command,
@@ -697,6 +702,32 @@ enum SettingsSubcommand {
 
     /// Disable the capture pipeline.
     DisableCapture,
+
+    /// Route shared CLI, hook, MCP and Tauri operations through Atlas.
+    UseRemote {
+        /// SSH host alias.
+        #[arg(long)]
+        host: String,
+
+        /// Database path on the remote host.
+        #[arg(long)]
+        remote_db_path: String,
+
+        /// MCP server binary on the remote host.
+        #[arg(long)]
+        mcp_binary: String,
+
+        /// CLI binary on the remote host.
+        #[arg(long)]
+        cli_binary: String,
+
+        /// Local Clio binary used as the MCP SSH bridge.
+        #[arg(long)]
+        bridge_command: String,
+    },
+
+    /// Stop routing local adapters through Atlas.
+    DisableRemote,
 }
 
 #[derive(Parser)]
@@ -714,6 +745,10 @@ struct SetupArgs {
     /// Preview the configuration without writing it.
     #[arg(long, global = true)]
     dry_run: bool,
+
+    /// Replace an existing JSON client entry.
+    #[arg(long, global = true)]
+    force: bool,
 }
 
 #[derive(Parser)]
@@ -728,8 +763,11 @@ struct RemoteMcpArgs {
 
 #[derive(Subcommand)]
 enum SetupClient {
-    /// Install MCP config for Claude Code / Claude Desktop.
+    /// Install MCP config for Claude Code.
     ClaudeCode,
+
+    /// Install MCP config for Claude Desktop.
+    ClaudeDesktop,
 
     /// Install MCP config for Cursor.
     Cursor,
@@ -834,13 +872,41 @@ fn main() {
         .with_writer(io::stderr)
         .init();
 
-    let cli = Cli::parse();
+    let raw_args: Vec<OsString> = std::env::args_os().collect();
+    let cli = Cli::parse_from(&raw_args);
 
-    if let Err(err) = run(cli) {
+    if let Err(err) = run_with_routing(cli, &raw_args[1..]) {
         error!("{err}");
         eprintln!("Error: {err}");
         process::exit(1);
     }
+}
+
+fn run_with_routing(cli: Cli, raw_args: &[OsString]) -> Result<(), Box<dyn std::error::Error>> {
+    if !cli.local && cli.db_path.is_none() && command_uses_shared_storage(&cli.command) {
+        let local_db = resolve_db_path(None)?;
+        let local_settings = settings::load(&local_db)?;
+        if let Some(remote) = local_settings.remote.as_ref() {
+            remote.validate()?;
+            let namespace = current_namespace();
+            return remote_mcp::run_cli(remote, raw_args, namespace.as_deref());
+        }
+    }
+    run(cli)
+}
+
+fn command_uses_shared_storage(command: &Command) -> bool {
+    !matches!(
+        command,
+        Command::Init(_)
+            | Command::Context
+            | Command::Settings(_)
+            | Command::Serve
+            | Command::RemoteMcp(_)
+            | Command::Setup(_)
+            | Command::Daemon { .. }
+            | Command::Cache { .. }
+    )
 }
 
 fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
@@ -906,6 +972,41 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
 // ---------------------------------------------------------------------------
 // Helper: open the database
 // ---------------------------------------------------------------------------
+
+const FORWARDED_NAMESPACE_ENV: &str = "CLIO_CONTEXT_NAMESPACE";
+const FORWARDED_CWD_ENV: &str = "CLIO_CONTEXT_CWD";
+
+fn current_namespace() -> Option<String> {
+    std::env::var(FORWARDED_NAMESPACE_ENV)
+        .ok()
+        .filter(|namespace| {
+            !namespace.is_empty()
+                && namespace.len() <= 120
+                && !namespace.chars().any(char::is_control)
+        })
+        .or_else(|| {
+            std::env::current_dir()
+                .ok()
+                .as_deref()
+                .and_then(context::detect_namespace)
+                .map(|detected| detected.namespace)
+        })
+}
+
+fn resolve_command_namespace(explicit: Option<&str>, auto_detect: bool) -> String {
+    explicit
+        .map(str::to_owned)
+        .or_else(|| auto_detect.then(current_namespace).flatten())
+        .unwrap_or_else(|| "global".into())
+}
+
+fn current_context_cwd() -> Option<String> {
+    std::env::var(FORWARDED_CWD_ENV).ok().or_else(|| {
+        std::env::current_dir()
+            .ok()
+            .map(|path| path.display().to_string())
+    })
+}
 
 fn open_db(explicit: Option<&str>) -> Result<rusqlite::Connection, Box<dyn std::error::Error>> {
     let path = resolve_db_path(explicit)?;
@@ -985,12 +1086,7 @@ fn cmd_remember(
     let conn = db::open(&path)?;
     let s = settings::load(&path)?;
 
-    let cwd = std::env::current_dir().ok();
-    let namespace = context::resolve_namespace(
-        args.namespace.as_deref(),
-        cwd.as_deref(),
-        s.context.auto_detect,
-    );
+    let namespace = resolve_command_namespace(args.namespace.as_deref(), s.context.auto_detect);
 
     let content = if args.content == "-" {
         let mut buf = String::new();
@@ -1063,12 +1159,7 @@ fn cmd_recall(
     let conn = db::open(&path)?;
     let s = settings::load(&path)?;
 
-    let cwd = std::env::current_dir().ok();
-    let detected_ns = context::resolve_namespace(
-        args.namespace.as_deref(),
-        cwd.as_deref(),
-        s.context.auto_detect,
-    );
+    let detected_ns = resolve_command_namespace(args.namespace.as_deref(), s.context.auto_detect);
 
     let tags: Vec<String> = args
         .tags
@@ -1381,12 +1472,7 @@ fn cmd_consolidate(
     } else {
         let ns = match args.namespace {
             Some(ns) => ns,
-            None => std::env::current_dir()
-                .ok()
-                .as_deref()
-                .and_then(context::detect_namespace)
-                .map(|ctx| ctx.namespace)
-                .unwrap_or_else(|| "global".into()),
+            None => current_namespace().unwrap_or_else(|| "global".into()),
         };
         vec![ns]
     };
@@ -1605,17 +1691,44 @@ fn cmd_search(
     let backend = embeddings::create_backend(&s.embeddings)?;
     let query_embedding = backend.embed_one(&args.query)?;
 
-    let items = embeddings::semantic_recall(
-        &conn,
-        &args.query,
-        &query_embedding,
-        backend.model_name(),
-        args.namespace.as_deref(),
-        args.include_archived,
-        false,
-        Some(&s.scoring),
-        args.limit,
-    )?;
+    let items = if args.global {
+        embeddings::semantic_recall(
+            &conn,
+            &args.query,
+            &query_embedding,
+            backend.model_name(),
+            None,
+            args.include_archived,
+            false,
+            Some(&s.scoring),
+            args.limit,
+        )?
+    } else if let Some(namespace) = args.namespace.as_deref() {
+        embeddings::semantic_recall(
+            &conn,
+            &args.query,
+            &query_embedding,
+            backend.model_name(),
+            Some(namespace),
+            args.include_archived,
+            false,
+            Some(&s.scoring),
+            args.limit,
+        )?
+    } else {
+        let namespace = resolve_command_namespace(None, s.context.auto_detect);
+        embeddings::semantic_recall_scoped(
+            &conn,
+            &args.query,
+            &query_embedding,
+            backend.model_name(),
+            &namespace,
+            args.include_archived,
+            false,
+            Some(&s.scoring),
+            args.limit,
+        )?
+    };
 
     let result = RecallResult {
         items: items.clone(),
@@ -1673,11 +1786,14 @@ fn cmd_capture(
         return Ok(());
     }
 
+    let namespace = args
+        .namespace
+        .or_else(|| s.context.auto_detect.then(current_namespace).flatten());
     let result = clio_core::capture::capture_with_classification(
         &conn,
         &text,
         &classification,
-        args.namespace.as_deref(),
+        namespace.as_deref(),
         &s,
     )?;
 
@@ -1738,9 +1854,7 @@ fn cmd_distill(
     // Record the working directory so namespaces can later be matched to a real
     // path for reliable "folder gone" cleanup.
     let cwd = if s.cleanup.record_cwd {
-        std::env::current_dir()
-            .ok()
-            .map(|p| p.display().to_string())
+        current_context_cwd()
     } else {
         None
     };
@@ -1749,10 +1863,7 @@ fn cmd_distill(
     // memories land in the right project, instead of trusting the LLM's guess.
     // An explicit `--namespace` still wins, and the LLM may still promote a
     // fact to "global".
-    let default_namespace = std::env::current_dir()
-        .ok()
-        .and_then(|p| context::detect_namespace(&p))
-        .map(|ctx| ctx.namespace);
+    let default_namespace = s.context.auto_detect.then(current_namespace).flatten();
 
     let results = clio_core::capture::distill_and_store(
         &conn,
@@ -2057,6 +2168,12 @@ fn cmd_settings(
                     if s.capture.enabled { "on" } else { "off" }
                 );
                 eprintln!("  Capture model: {}", s.capture.model);
+                match &s.remote {
+                    Some(remote) => {
+                        eprintln!("  Shared backend: {} ({})", remote.host, remote.db_path)
+                    }
+                    None => eprintln!("  Shared backend: local"),
+                }
             }
         }
         SettingsSubcommand::UseLocal => {
@@ -2116,6 +2233,33 @@ fn cmd_settings(
             settings::save(&path, &s)?;
             eprintln!("Capture pipeline disabled.");
         }
+        SettingsSubcommand::UseRemote {
+            host,
+            remote_db_path,
+            mcp_binary,
+            cli_binary,
+            bridge_command,
+        } => {
+            let remote = settings::RemoteConfig {
+                host,
+                db_path: remote_db_path,
+                mcp_binary,
+                cli_binary,
+                bridge_command,
+            };
+            remote.validate()?;
+            let mut s = settings::load(&path)?;
+            s.remote = Some(remote);
+            settings::save(&path, &s)?;
+            eprintln!("Shared Atlas routing enabled.");
+            eprintln!("Restart MCP clients and the desktop app to use it.");
+        }
+        SettingsSubcommand::DisableRemote => {
+            let mut s = settings::load(&path)?;
+            s.remote = None;
+            settings::save(&path, &s)?;
+            eprintln!("Shared Atlas routing disabled; local storage will be used.");
+        }
     }
 
     Ok(())
@@ -2168,12 +2312,9 @@ fn cmd_brief(
     let namespace = match &args.namespace {
         Some(ns) => Some(ns.clone()),
         None => {
-            let cwd = std::env::current_dir().ok();
             let stgs = settings::load(&path).ok().unwrap_or_default();
             if stgs.context.auto_detect {
-                cwd.as_deref()
-                    .and_then(context::detect_namespace)
-                    .map(|ctx| ctx.namespace)
+                current_namespace()
             } else {
                 None
             }
@@ -3182,26 +3323,54 @@ fn cmd_setup(
     json_output: bool,
     args: SetupArgs,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let mcp_binary = find_mcp_binary()?;
     let db_path = resolve_db_path(explicit_db)?;
-    let binary_str = mcp_binary.display().to_string();
-    let db_str = db_path.display().to_string();
+    let local_settings = settings::load(&db_path)?;
+    let remote = local_settings.remote.as_ref();
+    let (binary_str, db_str, bridge_args) = if let Some(remote) = remote {
+        remote.validate()?;
+        (
+            remote.bridge_command.clone(),
+            remote.db_path.clone(),
+            vec![
+                "--db-path".into(),
+                remote.db_path.clone(),
+                "remote-mcp".into(),
+                remote.host.clone(),
+                "--remote-binary".into(),
+                remote.mcp_binary.clone(),
+            ],
+        )
+    } else {
+        let mcp_binary = find_mcp_binary()?;
+        let _conn = clio_core::db::open(&db_path)?;
+        let _inbox = clio_core::config::ensure_inbox_dir(&db_path)?;
+        (
+            mcp_binary.display().to_string(),
+            db_path.display().to_string(),
+            Vec::new(),
+        )
+    };
     let dry_run = args.dry_run;
-
-    // Ensure DB and inbox exist (idempotent — safe to re-run).
-    let _conn = clio_core::db::open(&db_path)?;
-    let _inbox = clio_core::config::ensure_inbox_dir(&db_path)?;
 
     let home = std::env::var("HOME")
         .map_err(|_| "HOME environment variable is not set; cannot locate config directories")?;
 
     // The clio server entry for standard mcpServers JSON.
-    let clio_server = serde_json::json!({
-        "command": binary_str,
-        "env": {
-            "CLIO_DB_PATH": db_str
-        }
-    });
+    let clio_server = if remote.is_some() {
+        serde_json::json!({
+            "command": binary_str.clone(),
+            "args": bridge_args.clone(),
+            "env": {}
+        })
+    } else {
+        serde_json::json!({
+            "command": binary_str.clone(),
+            "args": [],
+            "env": {
+                "CLIO_DB_PATH": db_str.clone()
+            }
+        })
+    };
 
     // Each client has a config file path and a strategy for merging.
     match args.client {
@@ -3222,10 +3391,17 @@ fn cmd_setup(
         SetupClient::Codex => {
             // Codex uses TOML — append to ~/.codex/config.toml.
             let config_path = PathBuf::from(&home).join(".codex").join("config.toml");
-            let toml_block = format!(
-                "\n[mcp_servers.clio]\ncommand = \"{binary_str}\"\n\n\
-                 [mcp_servers.clio.env]\nCLIO_DB_PATH = \"{db_str}\"\n"
-            );
+            let toml_block = if remote.is_some() {
+                format!(
+                    "\n[mcp_servers.clio]\ncommand = \"{binary_str}\"\nargs = {}\n",
+                    serde_json::to_string(&bridge_args)?
+                )
+            } else {
+                format!(
+                    "\n[mcp_servers.clio]\ncommand = \"{binary_str}\"\nargs = []\n\n\
+                     [mcp_servers.clio.env]\nCLIO_DB_PATH = \"{db_str}\"\n"
+                )
+            };
 
             if dry_run || json_output {
                 if json_output {
@@ -3265,13 +3441,24 @@ fn cmd_setup(
                 .join(".config")
                 .join("opencode")
                 .join("opencode.json");
-            let clio_entry = serde_json::json!({
-                "type": "local",
-                "command": [binary_str],
-                "environment": {
-                    "CLIO_DB_PATH": db_str
-                }
-            });
+            let command = std::iter::once(binary_str.clone())
+                .chain(bridge_args.clone())
+                .collect::<Vec<_>>();
+            let clio_entry = if remote.is_some() {
+                serde_json::json!({
+                    "type": "local",
+                    "command": command,
+                    "environment": {}
+                })
+            } else {
+                serde_json::json!({
+                    "type": "local",
+                    "command": command,
+                    "environment": {
+                        "CLIO_DB_PATH": db_str
+                    }
+                })
+            };
             setup_json_merge(&SetupMergeParams {
                 config_path: &config_path,
                 root_key: "mcp",
@@ -3281,13 +3468,24 @@ fn cmd_setup(
                 json_output,
                 binary_str: &binary_str,
                 db_str: &db_str,
+                force: args.force,
             })?;
         }
 
         // All remaining clients use standard mcpServers JSON.
         client => {
+            let mut server_value = clio_server.clone();
+            if matches!(client, SetupClient::Copilot) {
+                server_value["type"] = serde_json::Value::String("stdio".into());
+                server_value["tools"] = serde_json::json!(["*"]);
+            }
             let config_path = match client {
                 SetupClient::ClaudeCode => PathBuf::from(&home).join(".claude.json"),
+                SetupClient::ClaudeDesktop => PathBuf::from(&home)
+                    .join("Library")
+                    .join("Application Support")
+                    .join("Claude")
+                    .join("claude_desktop_config.json"),
                 SetupClient::Cursor => PathBuf::from(&home).join(".cursor").join("mcp.json"),
                 SetupClient::Windsurf => PathBuf::from(&home).join(".windsurf").join("mcp.json"),
                 SetupClient::Kilo => PathBuf::from(&home).join(".kilocode").join("mcp.json"),
@@ -3302,11 +3500,12 @@ fn cmd_setup(
                 config_path: &config_path,
                 root_key: "mcpServers",
                 server_name: "clio",
-                server_value: &clio_server,
+                server_value: &server_value,
                 dry_run,
                 json_output,
                 binary_str: &binary_str,
                 db_str: &db_str,
+                force: args.force,
             })?;
         }
     }
@@ -3324,6 +3523,7 @@ struct SetupMergeParams<'a> {
     json_output: bool,
     binary_str: &'a str,
     db_str: &'a str,
+    force: bool,
 }
 
 /// Merge a server entry into a JSON config file under the given top-level key.
@@ -3354,6 +3554,7 @@ fn setup_json_merge(p: &SetupMergeParams<'_>) -> Result<(), Box<dyn std::error::
         .get(root_key)
         .and_then(|v: &serde_json::Value| v.get(server_name))
         .is_some()
+        && !p.force
         && !p.dry_run
         && !p.json_output
     {

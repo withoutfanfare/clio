@@ -65,13 +65,14 @@ The server owns `clio-mcp`, its settings, and the single SQLite database. SSH
 uses non-interactive key authentication, so Clio does not expose a network
 listener or database port.
 
-This topology shares MCP operations only and requires a live SSH connection.
-The desktop app can opt into the same bridge for its normal memory, archive,
-link, namespace, statistics, and semantic-search workflows. Its bulk,
-import/export, database maintenance, deduplication, and namespace administration
-operations remain local only. Direct CLI commands, the daemon, and session hooks
-still use local storage. Embeddings and capture run on the server and must be
-configured there. There is no offline cache or synchronisation.
+This topology requires a live SSH connection. A persisted remote route forwards
+normal CLI commands and session hooks to the server, supplies bridge
+configuration to MCP clients, and lets the desktop app connect when opened from
+Finder. The desktop app's bulk, import/export, database maintenance,
+deduplication, and namespace administration operations remain local only. The
+daemon is local-only and should stay disabled on shared-memory clients.
+Embeddings and capture run on the server. There is no offline cache or
+synchronisation.
 
 For a headless server, both binaries can be built with `--no-default-features`.
 This omits local fastembed support while retaining storage, keyword recall,
@@ -131,7 +132,7 @@ Modules:
 - `search.rs` — FTS5 recall, BM25 ranking
 - `export.rs` — JSONL import/export
 - `embeddings.rs` — pluggable embedding backends (local fastembed, OpenAI), cosine similarity, semantic recall, `auto_link_batch`
-- `settings.rs` — load/save `clio-settings.json` for embedding backend, auto-embed toggle, capture config (incl. `review_threshold`), context detection config, daemon config, `ScoringConfig`, and `AutoLinkConfig`
+- `settings.rs` — load/save `clio-settings.json` for embedding backend, auto-embed toggle, capture config (incl. `review_threshold`), context detection config, daemon config, shared SSH route, `ScoringConfig`, and `AutoLinkConfig`
 - `capture.rs` — LLM-based capture pipeline: `classify()`, `parse_classification()`, `capture()`; gated behind the `capture` feature flag
 - `migrate.rs` — cross-tool memory importers for Claude and ChatGPT exports; deterministic content-hash `source_ref` for idempotent re-import; optional `--classify` path via capture pipeline
 - `context.rs` — automatic namespace detection from cwd: walks up the directory tree checking `.clio-namespace` file → `.git` → `Cargo.toml`/`package.json`; `detect_namespace()`, `resolve_namespace()`, `resolve_namespace_with_context()`, `init_namespace()`
@@ -147,7 +148,7 @@ Must NOT depend on: Tauri UI code, MCP-specific types, CLI formatting.
 
 Thin binary wrapper. Argument parsing (clap), text/JSON rendering, exit codes.
 
-Notable commands beyond CRUD: `clio serve` (locates `clio-mcp` binary adjacent to itself or on PATH, verifies the database is initialised, then execs it with stdio inherited and `CLIO_DB_PATH` set); `clio remote-mcp` (proxies stdio MCP over SSH while resolving namespaces on the client); `clio setup <client>` (generates ready-to-paste MCP client configuration for `claude-code`, `cursor`, `windsurf`, or `generic` — resolves the binary path and database path automatically); `clio daemon` subcommand group (`run`, `start`, `stop`, `restart`, `status`, `logs`, `install`, `uninstall`, `doctor`); `clio inbox` subcommand group (`list`, `approve`, `reject`, `edit`, `stats`); `clio brief` (context assembly with `--preset`, `--namespace`, `--query`).
+Notable commands beyond CRUD: `clio serve` (locates `clio-mcp` binary adjacent to itself or on PATH, verifies the database is initialised, then execs it with stdio inherited and `CLIO_DB_PATH` set); `clio remote-mcp` (proxies stdio MCP over SSH while resolving namespaces on the client); `clio settings use-remote` (persists an Atlas route used by the CLI, hooks, MCP setup and Tauri); `clio setup <client>` (installs local or remote MCP client configuration); `clio daemon` subcommand group (`run`, `start`, `stop`, `restart`, `status`, `logs`, `install`, `uninstall`, `doctor`); `clio inbox` subcommand group (`list`, `approve`, `reject`, `edit`, `stats`); `clio brief` (context assembly with `--preset`, `--namespace`, `--query`).
 
 Must NOT: open ad hoc SQL queries, implement its own validation rules.
 
@@ -176,7 +177,7 @@ Must NOT: become the only way to use Clio, expose network listeners outside loca
 
 ### `clio-tauri`
 
-Desktop UI crate. Vue 3 frontend with Tauri 2 backend for browse/edit/archive/inspect workflows. It opens `clio-core` directly in local mode or uses the existing SSH/MCP bridge when `CLIO_REMOTE_HOST` is set. Remote misconfiguration is surfaced as disconnected and never falls back to local storage.
+Desktop UI crate. Vue 3 frontend with Tauri 2 backend for browse/edit/archive/inspect workflows. It opens `clio-core` directly in local mode or uses the existing SSH/MCP bridge when a remote route is persisted or `CLIO_REMOTE_HOST` is set. Environment variables override persisted settings. Remote misconfiguration is surfaced as disconnected and never falls back to local storage.
 
 **Backend commands** (in `src/commands/`):
 - `memory.rs` — CRUD, archive, unarchive, recall, recent, update

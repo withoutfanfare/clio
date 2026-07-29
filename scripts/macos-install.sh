@@ -10,6 +10,11 @@ CLIO_REMOTE_REF="${CLIO_REMOTE_REF:-origin/develop}"
 CLIO_BACKUP_ROOT="$HOME/Library/Application Support/Clio Deploy Backups"
 CLIO_TEMP_FILE=""
 CLIO_MOVED_APP=""
+CLIO_APP_INSTALL_PENDING=false
+CLIO_APP_BACKUP_DIR=""
+CLIO_CLI_ROLLBACK_PENDING=false
+CLIO_CLI_BACKUP=""
+CLIO_CLI_DESTINATION=""
 CLIO_DAEMON_ROLLBACK_PENDING=false
 CLIO_DAEMON_BACKUP=""
 CLIO_DAEMON_DESTINATION=""
@@ -28,6 +33,18 @@ cleanup() {
   local exit_status=$? interrupted_app
   set +e
   [[ -z "$CLIO_TEMP_FILE" || ! -e "$CLIO_TEMP_FILE" ]] || unlink "$CLIO_TEMP_FILE"
+  if [[ "$CLIO_CLI_ROLLBACK_PENDING" == true ]]; then
+    if [[ -n "$CLIO_CLI_BACKUP" && -f "$CLIO_CLI_BACKUP" ]]; then
+      if atomic_install "$CLIO_CLI_BACKUP" "$CLIO_CLI_DESTINATION"; then
+        printf 'Restored the previous Clio CLI after an interrupted installation.\n' >&2
+      else
+        printf 'ERROR: Could not restore the previous Clio CLI from %s\n' "$CLIO_CLI_BACKUP" >&2
+      fi
+    else
+      [[ ! -e "$CLIO_CLI_DESTINATION" ]] || unlink "$CLIO_CLI_DESTINATION"
+    fi
+    CLIO_CLI_ROLLBACK_PENDING=false
+  fi
   if [[ "$CLIO_DAEMON_ROLLBACK_PENDING" == true ]]; then
     if restore_daemon "$CLIO_DAEMON_BACKUP" "$CLIO_DAEMON_DESTINATION" \
       "$CLIO_DAEMON_DOMAIN" "$CLIO_DAEMON_DATABASE"; then
@@ -37,12 +54,16 @@ cleanup() {
     fi
     CLIO_DAEMON_ROLLBACK_PENDING=false
   fi
-  if [[ -n "$CLIO_MOVED_APP" && -d "$CLIO_MOVED_APP" ]]; then
+  if [[ "$CLIO_APP_INSTALL_PENDING" == true ]]; then
     if [[ -e "$CLIO_APP_PATH" ]]; then
-      interrupted_app="$(dirname "$CLIO_MOVED_APP")/Clio.interrupted.$$.app"
+      install -d -m 700 "$CLIO_APP_BACKUP_DIR"
+      interrupted_app="$CLIO_APP_BACKUP_DIR/Clio.interrupted.$$.app"
       mv "$CLIO_APP_PATH" "$interrupted_app" || printf 'ERROR: Could not preserve the interrupted app at %s\n' "$interrupted_app" >&2
     fi
-    mv "$CLIO_MOVED_APP" "$CLIO_APP_PATH" || printf 'ERROR: Could not restore the previous Clio app from %s\n' "$CLIO_MOVED_APP" >&2
+    if [[ -n "$CLIO_MOVED_APP" && -d "$CLIO_MOVED_APP" ]]; then
+      mv "$CLIO_MOVED_APP" "$CLIO_APP_PATH" || printf 'ERROR: Could not restore the previous Clio app from %s\n' "$CLIO_MOVED_APP" >&2
+    fi
+    CLIO_APP_INSTALL_PENDING=false
   fi
   return "$exit_status"
 }
@@ -210,18 +231,19 @@ install_app() {
   codesign --verify --deep --strict "$built_app"
   install -d -m 700 "$backup_dir"
   dmg="$(latest_dmg "$target_dir/release/bundle/dmg")"
-  if [[ -n "$dmg" ]]; then
-    dmg_destination="$backup_dir/$(basename "$dmg")"
-    [[ ! -e "$dmg_destination" ]] || dmg_destination="$backup_dir/$(date -u +%Y%m%dT%H%M%SZ)-$(basename "$dmg")"
-    cp -p "$dmg" "$dmg_destination"
-  fi
+  [[ -n "$dmg" && -f "$dmg" ]] || fail "Built DMG not found in $target_dir/release/bundle/dmg"
+  dmg_destination="$backup_dir/$(basename "$dmg")"
+  [[ ! -e "$dmg_destination" ]] || dmg_destination="$backup_dir/$(date -u +%Y%m%dT%H%M%SZ)-$(basename "$dmg")"
+  cp -p "$dmg" "$dmg_destination"
   app_is_running && fail "Clio was opened during the build; quit it before installing."
-  install -d -m 755 "$(dirname "$CLIO_APP_PATH")"
+  [[ -d "$(dirname "$CLIO_APP_PATH")" ]] || install -d -m 755 "$(dirname "$CLIO_APP_PATH")"
   if [[ -d "$CLIO_APP_PATH" ]]; then
     app_backup="$backup_dir/Clio.$(date -u +%Y%m%dT%H%M%SZ).$$.app"
     mv "$CLIO_APP_PATH" "$app_backup"
     CLIO_MOVED_APP="$app_backup"
   fi
+  CLIO_APP_BACKUP_DIR="$backup_dir"
+  CLIO_APP_INSTALL_PENDING=true
   if ! ditto "$built_app" "$CLIO_APP_PATH" || ! codesign --verify --deep --strict "$CLIO_APP_PATH"; then
     if [[ -d "$CLIO_APP_PATH" ]]; then
       failed_app="$backup_dir/Clio.failed.$(date -u +%Y%m%dT%H%M%SZ).$$.app"
@@ -229,9 +251,11 @@ install_app() {
     fi
     [[ -z "$CLIO_MOVED_APP" ]] || mv "$CLIO_MOVED_APP" "$CLIO_APP_PATH"
     CLIO_MOVED_APP=""
+    CLIO_APP_INSTALL_PENDING=false
     fail "Desktop application installation failed; the previous app was restored."
   fi
   CLIO_MOVED_APP=""
+  CLIO_APP_INSTALL_PENDING=false
   printf 'Desktop app installed at %s; build DMG retained in %s.\n' "$CLIO_APP_PATH" "$backup_dir"
 }
 
@@ -265,9 +289,13 @@ install_command() {
   check_checkout "$sha"
   backup_dir="$CLIO_BACKUP_ROOT/$sha"
   backup_file "$CLIO_BIN_DIR/clio" clio "$backup_dir"
+  CLIO_CLI_BACKUP="$CLIO_LAST_BACKUP"
+  CLIO_CLI_DESTINATION="$CLIO_BIN_DIR/clio"
+  CLIO_CLI_ROLLBACK_PENDING=true
   atomic_install "$CLIO_REPO_DIR/target/release/clio" "$CLIO_BIN_DIR/clio"
   "$CLIO_BIN_DIR/clio" --version
   "$CLIO_BIN_DIR/clio" remote-mcp --help >/dev/null
+  CLIO_CLI_ROLLBACK_PENDING=false
   [[ "$with_daemon" != true ]] || install_daemon "$backup_dir"
   [[ "$with_app" != true ]] || install_app "$sha" "$backup_dir"
   printf 'Installed Clio from %s.\n' "$sha"

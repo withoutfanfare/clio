@@ -32,6 +32,13 @@ Clio is a local-first shared memory system for AI tooling. The repository is a R
 - Follow existing crate and module boundaries.
 - Update documentation when behaviour, commands, or contracts change.
 
+## Operational Roadmap
+
+- Treat `docs/operations/roadmap.md` as the canonical operational backlog.
+- Review it before deployment or infrastructure work, and update its status and
+  evidence in the same change that progresses an item.
+- Refresh the corresponding Clio project memory whenever the roadmap changes.
+
 ## Build And Test
 
 - Build all crates with `./build.sh`.

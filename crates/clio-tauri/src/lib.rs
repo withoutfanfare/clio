@@ -138,10 +138,33 @@ pub fn run() {
             }
         })
         .setup(|app| {
-            if std::env::var_os("CLIO_REMOTE_HOST").is_some() {
-                let host = std::env::var("CLIO_REMOTE_HOST").unwrap_or_else(|_| "remote".into());
-                let db_path = std::env::var("CLIO_REMOTE_DB_PATH").unwrap_or_default();
-                let remote = match remote::RemoteConfig::from_env() {
+            let local_db_path = resolve_db_path();
+            let persisted_remote = clio_core::settings::load(&local_db_path)
+                .map_err(|error| format!("failed to load Clio settings: {error}"))?
+                .remote;
+            if std::env::var_os("CLIO_REMOTE_HOST").is_some() || persisted_remote.is_some() {
+                let host = std::env::var("CLIO_REMOTE_HOST")
+                    .ok()
+                    .or_else(|| persisted_remote.as_ref().map(|config| config.host.clone()))
+                    .unwrap_or_else(|| "remote".into());
+                let db_path = std::env::var("CLIO_REMOTE_DB_PATH")
+                    .ok()
+                    .or_else(|| {
+                        persisted_remote
+                            .as_ref()
+                            .map(|config| config.db_path.clone())
+                    })
+                    .unwrap_or_default();
+                let config = if std::env::var_os("CLIO_REMOTE_HOST").is_some() {
+                    remote::RemoteConfig::from_env()
+                } else {
+                    remote::RemoteConfig::from_settings(
+                        persisted_remote
+                            .as_ref()
+                            .expect("remote settings should exist"),
+                    )
+                };
+                let remote = match config {
                     Ok(config) => {
                         tauri::async_runtime::block_on(remote::RemoteState::connect(config))
                     }
@@ -149,7 +172,7 @@ pub fn run() {
                 };
                 app.manage(AppState::Remote(remote));
             } else {
-                let db_path = resolve_db_path();
+                let db_path = local_db_path;
                 let conn = clio_core::db::open(&db_path)
                     .map_err(|e| format!("failed to open Clio database: {e}"))?;
 

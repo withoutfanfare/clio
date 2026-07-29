@@ -6,6 +6,11 @@
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
+#[cfg(unix)]
+use std::fs::{File, OpenOptions};
+#[cfg(unix)]
+use std::os::fd::AsRawFd;
+
 use rmcp::handler::server::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{
@@ -2152,6 +2157,23 @@ impl ServerHandler for ClioServer {
 // Main
 // ---------------------------------------------------------------------------
 
+#[cfg(unix)]
+fn acquire_database_lease(db_path: &std::path::Path) -> std::io::Result<File> {
+    let mut lock_path = db_path.as_os_str().to_os_string();
+    lock_path.push(".maintenance.lock");
+    let file = OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .open(lock_path)?;
+    // SAFETY: flock only reads the valid file descriptor and the File keeps it
+    // open for the lifetime of the server.
+    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_SH) } == -1 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(file)
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Logging to stderr only -- stdout is the MCP transport.
@@ -2166,6 +2188,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Resolve the database path (supports CLIO_DB_PATH env var and platform defaults).
     let db_path = clio_core::config::resolve_db_path(None).map_err(|e| {
         tracing::error!("Failed to resolve database path: {e}");
+        e
+    })?;
+
+    #[cfg(unix)]
+    let _database_lease = acquire_database_lease(&db_path).map_err(|e| {
+        tracing::error!("Failed to acquire database maintenance lease: {e}");
         e
     })?;
 
@@ -2210,4 +2238,42 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     tracing::info!("Clio MCP server shut down");
     Ok(())
+}
+
+#[cfg(all(test, unix))]
+mod maintenance_lock_tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn database_lease_blocks_exclusive_maintenance() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let db_path =
+            std::env::temp_dir().join(format!("clio-mcp-lock-{}-{unique}.db", std::process::id()));
+        let lease = acquire_database_lease(&db_path).unwrap();
+        let mut lock_path = db_path.as_os_str().to_os_string();
+        lock_path.push(".maintenance.lock");
+        let maintenance = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&lock_path)
+            .unwrap();
+
+        // SAFETY: maintenance is open for the duration of each flock call.
+        assert_eq!(
+            unsafe { libc::flock(maintenance.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB,) },
+            -1
+        );
+        drop(lease);
+        // SAFETY: maintenance remains open and now owns the exclusive lock.
+        assert_eq!(
+            unsafe { libc::flock(maintenance.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB,) },
+            0
+        );
+        drop(maintenance);
+        std::fs::remove_file(lock_path).unwrap();
+    }
 }

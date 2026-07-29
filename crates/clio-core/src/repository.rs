@@ -287,6 +287,22 @@ pub fn update(
                 "memory {id} changed after it was read; fetch the latest record and retry"
             )));
         }
+        if patch.namespace.is_none()
+            && patch.kind.is_none()
+            && patch.title.is_none()
+            && patch.summary.is_none()
+            && patch.content.is_none()
+            && patch.tags.is_none()
+            && patch.source.is_none()
+            && patch.source_ref.is_none()
+            && patch.confidence.is_none()
+            && patch.importance.is_none()
+            && patch.metadata.is_none()
+            && patch.valid_from.is_none()
+            && patch.valid_until.is_none()
+        {
+            return Ok(existing);
+        }
 
         let input = RememberInput {
             namespace: patch

@@ -190,17 +190,18 @@ deleted executable.
 
 ### Migration gate
 
-After taking the online backup, deploy copies that snapshot to a disposable
-database and lets the candidate CLI apply its migrations there. It also runs
-keyword-recall and semantic-search smoke checks, exercising both the repository
-SQLite maths configuration and the dynamically loaded ONNX Runtime. The live
-database is touched only after the probe succeeds, and its resulting migration
-set must match the probe.
+After taking the online backup, deploy copies that snapshot and its settings to
+a disposable directory and lets the candidate CLI apply its migrations there.
+It also runs keyword-recall and semantic-search smoke checks, exercising the
+live embedding configuration, repository SQLite maths configuration and
+dynamically loaded ONNX Runtime. The live database is touched only after the
+probe succeeds, and its resulting migration set must match the probe.
 
-If the probe finds pending migrations, deploy temporarily gates the stable MCP
-entry point before counting active sessions. New connections fail fast during
-this short maintenance window, so a reconnect cannot start another old process
-between the compatibility check and migration. Existing processes are not
+If the probe finds pending migrations, deploy records the candidate SHA and
+temporarily gates the stable MCP entry point. Every MCP process holds a shared
+database maintenance lease before opening SQLite; deploy must acquire the
+exclusive lease before migration. This closes the startup race between gating
+the entry point and detecting an old process. Existing processes are not
 killed. If any remain, deploy stops before changing the live database or active
 release. The normal response is to disconnect the clients, deploy, then
 reconnect them.
@@ -219,9 +220,10 @@ persistent environment setting. The override applies to a specific, reviewed
 migration; it is not a general deployment convenience. If live migration may
 have started but activation fails, the script deliberately leaves new MCP
 sessions gated so an incompatible old binary cannot reopen the database.
-Re-running the same deployment recognises that gate and switches `current` to
-the candidate before admitting new sessions; roll forward before reconnecting
-clients.
+Re-running the exact candidate SHA recognises that gate and switches `current`
+to the candidate before admitting new sessions. A different SHA is rejected;
+inspect the live migration state and roll the recorded candidate forward before
+reconnecting clients.
 
 After activation, restart the MCP integration in every AI client. A symlink
 change affects new processes only.
@@ -298,8 +300,8 @@ Before replacement, existing binaries and apps are retained under
 ### Optional daemon
 
 Install the daemon only on a Mac that needs local inbox watching, local
-auto-linking or local maintenance. It does not make direct CLI commands or
-hooks use Atlas.
+auto-linking or local maintenance. A daemon always uses local storage; keep it
+disabled on a Mac whose normal tooling should use Atlas.
 
 With `--with-daemon`, the installer reads an existing LaunchAgent to preserve
 its executable and database paths. It uses `launchctl bootout` before
@@ -343,6 +345,13 @@ default, and retains the DMG with the deployment backups. It runs locked
 installation fails or is interrupted after the previous app is moved aside,
 the installer restores that previous version.
 
+The current lockfile resolves the private `@stuntrocket/ui` package through the
+developer Mac's local Verdaccio registry. Start that existing registry before a
+`--with-app` build and stop it afterwards. A clean Mac or CI runner cannot yet
+reproduce the app build without access to the same package archive; this is
+tracked as `CLIO-REL-002` in the operational roadmap. CLI-only installs do not
+need the npm registry.
+
 For personal Macs, ad-hoc signing identifies the bundle consistently without
 requiring an Apple Developer certificate:
 
@@ -358,13 +367,22 @@ Developer ID assessment. A public release needs a Developer ID Application
 certificate, hardened runtime, notarisation and stapling. Signing certificates
 and notarisation credentials must stay outside Git.
 
-Remote Tauri configuration currently comes from `CLIO_REMOTE_HOST`,
+Configure the shared route before opening the app:
+
+```sh
+clio settings use-remote \
+  --host atlas \
+  --remote-db-path /home/ubuntu/.local/share/clio/memory.db \
+  --mcp-binary /home/ubuntu/.local/bin/clio-mcp \
+  --cli-binary /home/ubuntu/.local/bin/clio \
+  --bridge-command /absolute/local/path/to/clio
+```
+
+Finder-launched Tauri reads this persisted route. `CLIO_REMOTE_HOST`,
 `CLIO_REMOTE_DB_PATH`, `CLIO_REMOTE_BINARY` and optionally
-`CLIO_REMOTE_COMMAND`. Finder does not inherit variables exported by a shell,
-and the app does not yet persist these settings. A Finder-launched app therefore
-cannot be relied on to connect to Atlas. Until persistent remote configuration
-is implemented, launch the app from a configured terminal or use the MCP
-clients for shared memory.
+`CLIO_REMOTE_COMMAND` override it for development. A broken remote
+configuration is reported as disconnected and never falls back to local
+storage.
 
 ## macOS rollback boundary
 
@@ -394,6 +412,9 @@ Complete this after an Atlas or client release:
 - [ ] A remote keyword recall succeeds from each Mac.
 - [ ] A memory written from one Mac can be recalled from another.
 - [ ] Project namespace detection is correct on both machines.
+- [ ] Direct CLI commands and session-start hooks use Atlas on shared clients.
+- [ ] Generated MCP entries point to the Atlas SSH bridge.
+- [ ] A Finder-launched Tauri app reports the Atlas backend as connected.
 - [ ] Semantic search and capture are checked only if their server-side
       providers are configured.
 - [ ] The optional daemon, if installed, reports healthy after reload.
@@ -424,16 +445,9 @@ and keep Atlas database migration as an explicit operator step rather than an
 unattended auto-update. Until then, native builds avoid a signing and
 cross-compilation pipeline without weakening the database gate.
 
-## Deferred work register
+## Deferred work
 
-These items are deliberately outside the current release. Revisit them at the
-stated trigger instead of adding more machinery to the private deployment now.
-
-| Priority | Work | Trigger | Finished when |
-|---|---|---|---|
-| 1 | Off-host Atlas backups | Before relying on Atlas for disaster recovery | Encrypted standalone snapshots leave Atlas automatically, failures alert, retention is enforced and a restore drill passes. |
-| 1 | Remaining Mac installations | When the Mac mini and MacBook Pro are online and reachable by SSH | Each machine checks out the same pushed SHA, runs `macos-install.sh`, reconnects its AI clients, and passes cross-machine write and recall checks. |
-| 1 | Persistent Tauri remote settings | When the desktop app must connect to Atlas when opened from Finder | Atlas connection settings persist securely, can be tested in the app, and no shell environment is required. |
-| 2 | Atlas infrastructure as code | Before rebuilding Atlas or adding another server | A private Ansible setup recreates the user, packages, Rust toolchain, SSH/firewall policy, ONNX Runtime and backup job without committing secrets. |
-| 2 | Release artefacts | When releases become frequent or more than a few Macs need updates | CI publishes checksummed Linux and native Mac builds; the Mac app is Developer ID signed, notarised and stapled. |
-| 2 | Operational monitoring | Before Clio becomes business-critical | Disk capacity, backup age, SQLite integrity and deployment failures are monitored with actionable alerts. |
+The canonical register for unfinished deployment and infrastructure work is the
+[operational roadmap](roadmap.md). Review it after every Atlas deployment and
+on the first working day of each month. Keep status and completion evidence in
+that one file so the runbook and roadmap cannot drift apart.
