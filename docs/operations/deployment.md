@@ -298,8 +298,8 @@ Before replacement, existing binaries and apps are retained under
 ### Optional daemon
 
 Install the daemon only on a Mac that needs local inbox watching, local
-auto-linking or local maintenance. It does not make direct CLI commands or
-hooks use Atlas.
+auto-linking or local maintenance. A daemon always uses local storage; keep it
+disabled on a Mac whose normal tooling should use Atlas.
 
 With `--with-daemon`, the installer reads an existing LaunchAgent to preserve
 its executable and database paths. It uses `launchctl bootout` before
@@ -358,13 +358,22 @@ Developer ID assessment. A public release needs a Developer ID Application
 certificate, hardened runtime, notarisation and stapling. Signing certificates
 and notarisation credentials must stay outside Git.
 
-Remote Tauri configuration currently comes from `CLIO_REMOTE_HOST`,
+Configure the shared route before opening the app:
+
+```sh
+clio settings use-remote \
+  --host atlas \
+  --remote-db-path /home/ubuntu/.local/share/clio/memory.db \
+  --mcp-binary /home/ubuntu/.local/bin/clio-mcp \
+  --cli-binary /home/ubuntu/.local/bin/clio \
+  --bridge-command /absolute/local/path/to/clio
+```
+
+Finder-launched Tauri reads this persisted route. `CLIO_REMOTE_HOST`,
 `CLIO_REMOTE_DB_PATH`, `CLIO_REMOTE_BINARY` and optionally
-`CLIO_REMOTE_COMMAND`. Finder does not inherit variables exported by a shell,
-and the app does not yet persist these settings. A Finder-launched app therefore
-cannot be relied on to connect to Atlas. Until persistent remote configuration
-is implemented, launch the app from a configured terminal or use the MCP
-clients for shared memory.
+`CLIO_REMOTE_COMMAND` override it for development. A broken remote
+configuration is reported as disconnected and never falls back to local
+storage.
 
 ## macOS rollback boundary
 
@@ -394,6 +403,9 @@ Complete this after an Atlas or client release:
 - [ ] A remote keyword recall succeeds from each Mac.
 - [ ] A memory written from one Mac can be recalled from another.
 - [ ] Project namespace detection is correct on both machines.
+- [ ] Direct CLI commands and session-start hooks use Atlas on shared clients.
+- [ ] Generated MCP entries point to the Atlas SSH bridge.
+- [ ] A Finder-launched Tauri app reports the Atlas backend as connected.
 - [ ] Semantic search and capture are checked only if their server-side
       providers are configured.
 - [ ] The optional daemon, if installed, reports healthy after reload.

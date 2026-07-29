@@ -30,6 +30,7 @@ Each command auto-installs Clio into the correct config file. No paths to copy, 
 
 ```sh
 clio setup claude-code   # → ~/.claude.json
+clio setup claude-desktop # → ~/Library/Application Support/Claude/claude_desktop_config.json
 clio setup codex         # → ~/.codex/config.toml
 clio setup opencode      # → ~/.config/opencode/opencode.json
 clio setup copilot       # → ~/.copilot/mcp-config.json
@@ -46,6 +47,8 @@ clio setup generic       # prints config snippet (no file write)
 - Safe to run multiple times — detects if Clio is already configured
 - Preview with `--dry-run` before writing
 - Use `--json` to get a raw config snippet instead of auto-installing
+- Use `--force` to replace an existing JSON Clio entry while preserving the
+  rest of the client configuration
 
 ---
 
@@ -143,6 +146,24 @@ forwards the request without that client path. Explicit namespaces and
 `global: true` still take precedence, and scoped recall still searches the
 project namespace before filling from `global`.
 
+To make Atlas the default for all supported adapters on a client computer,
+persist the route once:
+
+```sh
+clio settings use-remote \
+  --host atlas \
+  --remote-db-path /home/ubuntu/.local/share/clio/memory.db \
+  --mcp-binary /home/ubuntu/.local/bin/clio-mcp \
+  --cli-binary /home/ubuntu/.local/bin/clio \
+  --bridge-command /absolute/local/path/to/clio
+```
+
+Normal data commands then execute through the remote CLI, so session hooks that
+invoke `clio` use Atlas too. `clio setup <client>` generates the matching SSH
+bridge configuration, and Tauri reads the same route when opened from Finder.
+Use `clio --local ...` only for deliberate local maintenance. The daemon cannot
+use the SSH bridge and should remain disabled on shared-memory clients.
+
 #### Current capability boundary
 
 | Capability | Remote bridge status |
@@ -154,19 +175,21 @@ project namespace before filling from `global`.
 | LLM capture | Requires capture credentials and settings on the remote server |
 | Tauri desktop memory, archive, link, namespace, statistics and semantic-search workflows | Can use the same SSH/MCP bridge when remote mode is configured |
 | Tauri bulk operations, import/export, maintenance, deduplication and namespace administration | Remain local only and are hidden in remote mode |
-| Direct CLI commands, daemon and session hooks | Continue to use local storage |
+| Direct CLI commands and session hooks | Shared when `settings use-remote` is configured |
+| Daemon | Local only; keep disabled on shared-memory clients |
 | Offline use and later synchronisation | Not implemented |
 
 SQLite remains suitable for this topology because every database connection is
 opened on the remote server; the database file is never mounted across the
 network. PostgreSQL is therefore not required for multi-computer MCP access.
-Changing database engines alone would not make the direct CLI, daemon or hooks
-remote-aware; those interfaces need a shared transport or a later sync layer.
+Changing database engines is not required for the current topology.
 
 #### Tauri desktop remote mode
 
 The desktop app reuses the bridge instead of mounting the remote SQLite file.
-Set these environment variables before starting it:
+Configure the persistent route with `clio settings use-remote`; the app then
+connects to Atlas when opened from Finder. Environment variables can still
+override the persisted route for development:
 
 ```sh
 CLIO_REMOTE_HOST=atlas \
@@ -188,9 +211,6 @@ cannot queue behind or cancel an in-flight operation. If a mutating operation
 times out, its outcome is unknown, so check the memory before retrying. A
 timed-out bridge is stopped. Desktop edits send partial patches guarded by the
 record's last observed `updated_at` value.
-
-Remote configuration is currently manual. `clio setup` still creates local MCP
-configurations.
 
 #### Temporary bridge diagnostics
 

@@ -1,8 +1,10 @@
 use std::borrow::Cow;
+use std::ffi::OsString;
 use std::io::{self, BufRead, Write};
 use std::path::Path;
 use std::process::{Command, Stdio};
 
+use clio_core::settings::RemoteConfig;
 use serde_json::Value;
 
 pub(crate) fn run(
@@ -17,22 +19,7 @@ pub(crate) fn run(
         remote_db_override = remote_db.is_some(),
         "starting SSH bridge"
     );
-    let mut child = Command::new("ssh")
-        .args([
-            "-T",
-            "-o",
-            "BatchMode=yes",
-            "-o",
-            "ConnectTimeout=10",
-            "-o",
-            "ServerAliveInterval=15",
-            "-o",
-            "ServerAliveCountMax=3",
-            "-o",
-            "ClearAllForwardings=yes",
-            "--",
-        ])
-        .arg(host)
+    let mut child = ssh_command(host)
         .arg(remote_command(remote_binary, remote_db))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -78,6 +65,46 @@ pub(crate) fn run(
     }
 
     Ok(())
+}
+
+pub(crate) fn run_cli(
+    config: &RemoteConfig,
+    args: &[OsString],
+    namespace: Option<&str>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let status = ssh_command(&config.host)
+        .arg(remote_cli_command(config, args, namespace))
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .status()
+        .map_err(|err| format!("failed to run Clio CLI on {}: {err}", config.host))?;
+
+    if !status.success() {
+        return Err(format!("Clio CLI on {} exited with {status}", config.host).into());
+    }
+    Ok(())
+}
+
+fn ssh_command(host: &str) -> Command {
+    let mut command = Command::new("ssh");
+    command
+        .args([
+            "-T",
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            "ConnectTimeout=10",
+            "-o",
+            "ServerAliveInterval=15",
+            "-o",
+            "ServerAliveCountMax=3",
+            "-o",
+            "ClearAllForwardings=yes",
+            "--",
+        ])
+        .arg(host);
+    command
 }
 
 fn forward_requests<R: BufRead, W: Write>(mut reader: R, writer: &mut W) -> io::Result<()> {
@@ -174,6 +201,28 @@ fn remote_command(remote_binary: &str, remote_db: Option<&str>) -> String {
         ),
         None => shell_quote(remote_binary),
     }
+}
+
+fn remote_cli_command(config: &RemoteConfig, args: &[OsString], namespace: Option<&str>) -> String {
+    let mut parts = vec![
+        "env".to_string(),
+        format!("CLIO_DB_PATH={}", shell_quote(&config.db_path)),
+    ];
+    if let Some(namespace) = namespace {
+        parts.push(format!("CLIO_CONTEXT_NAMESPACE={}", shell_quote(namespace)));
+    }
+    if let Ok(cwd) = std::env::current_dir() {
+        parts.push(format!(
+            "CLIO_CONTEXT_CWD={}",
+            shell_quote(&cwd.to_string_lossy())
+        ));
+    }
+    parts.push(shell_quote(&config.cli_binary));
+    parts.extend(
+        args.iter()
+            .map(|argument| shell_quote(&argument.to_string_lossy())),
+    );
+    parts.join(" ")
 }
 
 fn shell_quote(value: &str) -> String {
@@ -293,5 +342,29 @@ mod tests {
             "env CLIO_DB_PATH='/srv/memory db' '/srv/clio'\\''s bin'"
         );
         assert_eq!(remote_command("/srv/clio-mcp", None), "'/srv/clio-mcp'");
+    }
+
+    #[test]
+    fn quotes_remote_cli_arguments_and_namespace() {
+        let config = RemoteConfig {
+            host: "atlas".into(),
+            db_path: "/srv/memory db".into(),
+            mcp_binary: "/srv/clio-mcp".into(),
+            cli_binary: "/srv/clio's bin".into(),
+            bridge_command: "/usr/local/bin/clio".into(),
+        };
+        let args = [
+            OsString::from("recall"),
+            OsString::from("--query"),
+            OsString::from("Danny's notes"),
+        ];
+
+        assert_eq!(
+            remote_cli_command(&config, &args, Some("project:clio")),
+            format!(
+                "env CLIO_DB_PATH='/srv/memory db' CLIO_CONTEXT_NAMESPACE='project:clio' CLIO_CONTEXT_CWD={} '/srv/clio'\\''s bin' 'recall' '--query' 'Danny'\\''s notes'",
+                shell_quote(&std::env::current_dir().unwrap().to_string_lossy())
+            )
+        );
     }
 }

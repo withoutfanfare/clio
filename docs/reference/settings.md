@@ -12,6 +12,7 @@ All configuration keys in `clio-settings.json`. The file lives alongside the dat
 | `context` | object | see below | Namespace auto-detection |
 | `scoring` | object | see below | Temporal relevance scoring |
 | `daemon` | object | see below | Always-on daemon |
+| `remote` | object? | `null` | Optional shared SSH route used by local adapters |
 
 ## embeddings
 
@@ -107,6 +108,20 @@ not run here; it is triggered per session by the session-stop hook.)
 | `backup_max_backups` | int | `7` | Timestamped backups to retain |
 | `integrity_interval_secs` | int | `0` | Seconds between integrity checks, log-only (`0` = off) |
 
+## remote
+
+Set with `clio settings use-remote`. When present, normal CLI data commands,
+session hooks, generated MCP client configurations and Tauri use the remote
+database. `clio --local` bypasses the route. The daemon remains local-only.
+
+| Key | Type | Description |
+|-----|------|-------------|
+| `host` | string | SSH host or alias |
+| `db_path` | string | Absolute database path on the remote host |
+| `mcp_binary` | string | Absolute `clio-mcp` path on the remote host |
+| `cli_binary` | string | Absolute `clio` path on the remote host |
+| `bridge_command` | string | Absolute local `clio` path used by MCP and Tauri |
+
 ## cleanup
 
 | Key | Type | Default | Description |
@@ -145,7 +160,8 @@ not run here; it is triggered per session by the session-stop hook.)
       "interval_secs": 3600,
       "batch_size": 50
     }
-  }
+  },
+  "remote": null
 }
 ```
 
