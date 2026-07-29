@@ -60,6 +60,8 @@ For AI agents using Clio via MCP:
 | [Settings Reference](reference/settings.md) | All configuration keys and defaults |
 | [Desktop App (Tauri)](tauri-app.md) | Tauri commands, frontend architecture, design system |
 | [Security Review](security-review.md) | Codebase security audit findings |
+| [Deployment Runbook](operations/deployment.md) | Releasing Atlas and installing native Mac components |
+| [Operational Roadmap](operations/roadmap.md) | Prioritised deployment and infrastructure work still to complete |
 
 ### Project Context
 
@@ -86,6 +88,7 @@ For AI agents using Clio via MCP:
 | Configure Clio | [Settings Reference](reference/settings.md) |
 | Understand the database schema | [Schema Reference](reference/schema.md) |
 | Build the desktop app | [Desktop App (Tauri)](tauri-app.md) |
+| Review remaining operational work | [Operational Roadmap](operations/roadmap.md) |
 | Understand the architecture | [Architecture](../context/ARCHITECTURE.md) |
 | Contribute to the codebase | [Architecture](../context/ARCHITECTURE.md) + [Schema Reference](reference/schema.md) |
 
@@ -108,6 +111,9 @@ docs/
 │   ├── schema.md          ← Database schema
 │   ├── mcp-contract.md    ← MCP tool definitions
 │   └── settings.md        ← Configuration keys
+├── operations/
+│   ├── deployment.md      ← Atlas and Mac deployment runbook
+│   └── roadmap.md         ← Remaining operational work
 ├── guides/
 │   └── moving-project.md  ← Project migration guide
 └── plan/
