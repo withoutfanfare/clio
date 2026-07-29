@@ -185,6 +185,16 @@ A checkpoint commits the distillation of one session delta exactly once, keyed b
 5. An empty extraction is a successful checkpoint and is never redistilled
 6. Auto-embedding runs best-effort after commit and can never fail the checkpoint
 
+**Open-loop extraction (within a checkpoint):**
+
+- Distilled atoms may carry optional `attention` data (explicitness, owner, due/remind, trigger, waiting-on, completion condition) and an optional `resolves` identifier
+- Only `explicitness: "explicit"` — a clear user commitment or requested reminder — opens attention automatically, atomically with the stored memory; unknown explicitness values are normalised to `suggested`
+- Suggested/inferred open loops always queue for review regardless of confidence; approving the review item creates the memory and its attention in one transaction (the attention payload rides in the review item's metadata)
+- "Could", "might" and assistant suggestions are never explicit; completed routine steps and externally tracked work are not open loops
+- A `resolves` identifier auto-completes its target only when it is a stable Clio reference to an open/snoozed attention item and the transcript is explicit; the storing memory becomes the `resolved_by` evidence. Unknown, fuzzy or terminal targets leave state unchanged — a failed resolution never fails the checkpoint
+- Branch and ticket context is applied deterministically after model parsing: `ticket:<id>` tags (lowercase) and branch metadata come from the checkpoint request, never from the model
+- Immediate explicit capture through `memory_remember`/`memory_action` remains the primary path; checkpoint extraction is the asynchronous safety net
+
 **Checkpoint invariants:**
 - A capture attempt ends in exactly one visible state: durable success (checkpoint row), pending retry (no row) or a surfaced error — never silent loss
 - A repeated or concurrent delivery of the same key replays the original result; no duplicate atoms

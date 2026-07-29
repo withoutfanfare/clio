@@ -204,13 +204,23 @@ pub fn approve_review(
         // Provenance-backed items must reach remember() so source/source_ref
         // idempotency is preserved. Unprovenanced duplicates can reuse the
         // existing memory without creating a second row.
+        // Attention data queued with the item (e.g. an inferred follow-up from
+        // a checkpoint) opens attention atomically with the approval.
+        let attention_data = item
+            .metadata
+            .get("attention")
+            .filter(|value| value.is_object())
+            .cloned();
+
         if !upsert {
             if let Some(existing_id) = crate::repository::find_content_duplicate(
                 conn,
                 &item.suggested_namespace,
                 &item.content,
             )? {
-                return crate::repository::get(conn, &existing_id);
+                let memory = crate::repository::get(conn, &existing_id)?;
+                open_attention_from_metadata(conn, &memory, attention_data.as_ref())?;
+                return Ok(memory);
             }
         }
 
@@ -231,7 +241,9 @@ pub fn approve_review(
             upsert,
         };
 
-        crate::repository::remember(conn, &input, settings)
+        let memory = crate::repository::remember(conn, &input, settings)?;
+        open_attention_from_metadata(conn, &memory, attention_data.as_ref())?;
+        Ok(memory)
     })();
 
     let memory = match result {
@@ -254,6 +266,34 @@ pub fn approve_review(
     }
 
     Ok(memory)
+}
+
+/// Open attention on an approved memory when the review item's metadata
+/// carries an `attention` object. Shares the approval transaction.
+fn open_attention_from_metadata(
+    conn: &Connection,
+    memory: &Memory,
+    attention: Option<&serde_json::Value>,
+) -> Result<()> {
+    let Some(value) = attention else {
+        return Ok(());
+    };
+    let parsed: crate::capture::DistilledAttention =
+        serde_json::from_value(value.clone()).unwrap_or_default();
+    crate::attention::create_attention(
+        conn,
+        &crate::attention::AttentionInput {
+            memory_id: memory.id.clone(),
+            owner: parsed.owner,
+            due_at: parsed.due_at,
+            remind_at: parsed.remind_at,
+            trigger: parsed.trigger,
+            waiting_on: parsed.waiting_on,
+            completion_condition: parsed.completion_condition,
+            actor: Some("review".into()),
+        },
+    )?;
+    Ok(())
 }
 
 /// Reject a review item.

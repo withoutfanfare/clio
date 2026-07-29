@@ -2489,3 +2489,134 @@ fn attention_lifecycle_preserves_content_and_history() {
     let types: Vec<&str> = history.iter().map(|e| e.event_type.as_str()).collect();
     assert_eq!(types, vec!["attention_opened", "snoozed", "resolved"]);
 }
+
+// ---------------------------------------------------------------------------
+// Session-attention fixture runner (payload -> operational outcome)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn session_attention_cases_route_to_the_annotated_outcome() {
+    use clio_core::attention;
+    use clio_core::checkpoint::{self, CheckpointRequest};
+
+    let fixture: serde_json::Value =
+        serde_json::from_str(include_str!("fixtures/session_attention_cases.json")).unwrap();
+
+    for (index, case) in fixture["cases"].as_array().unwrap().iter().enumerate() {
+        let name = case["name"].as_str().unwrap();
+        let conn = test_db();
+        let settings = Settings::default();
+
+        // A resolution case needs a pre-existing open loop to complete.
+        let target_id = {
+            let target = remember_simple(&conn, "Open loop: verify the deployment");
+            attention::create_attention(
+                &conn,
+                &attention::AttentionInput {
+                    memory_id: target.id.clone(),
+                    ..attention::AttentionInput::default()
+                },
+            )
+            .unwrap();
+            target.id
+        };
+
+        let payload = serde_json::to_string(&serde_json::json!({
+            "memories": [case["payload"]]
+        }))
+        .unwrap()
+        .replace("__TARGET_MEMORY_ID__", &target_id);
+        let memories = clio_core::capture::parse_distillation(&payload).unwrap();
+        assert_eq!(memories.len(), 1, "case {name}: payload must parse");
+
+        let result = checkpoint::store_checkpoint(
+            &conn,
+            &CheckpointRequest {
+                source: "claude-session".into(),
+                session_id: format!("fixture-{index}"),
+                cursor: 1,
+                namespace_override: None,
+                default_namespace: Some("project:clio".into()),
+                cwd: None,
+                branch: Some("develop".into()),
+                ticket: Some("CLIO-42".into()),
+            },
+            &memories,
+            &settings,
+        )
+        .unwrap();
+
+        let expect = &case["expect"];
+        let stored_new: Vec<&String> = result
+            .stored_memory_ids
+            .iter()
+            .filter(|id| **id != target_id)
+            .collect();
+        assert_eq!(
+            !stored_new.is_empty(),
+            expect["stored"].as_bool().unwrap(),
+            "case {name}: stored expectation"
+        );
+        assert_eq!(
+            result.queued_review_ids.len() == 1,
+            expect["review_queued"].as_bool().unwrap(),
+            "case {name}: review expectation"
+        );
+
+        if expect["attention_open"].as_bool().unwrap() {
+            let memory_id = stored_new[0];
+            let item = attention::get_by_memory(&conn, memory_id).unwrap().unwrap();
+            assert_eq!(item.status, "open", "case {name}: attention open");
+            // Deterministic ticket tagging survives into the stored memory.
+            let stored = repository::get(&conn, memory_id).unwrap();
+            assert!(
+                stored.tags.iter().any(|t| t == "ticket:clio-42"),
+                "case {name}: ticket tag applied, got {:?}",
+                stored.tags
+            );
+        } else if expect["stored"].as_bool().unwrap() {
+            let memory_id = stored_new[0];
+            assert!(
+                attention::get_by_memory(&conn, memory_id)
+                    .unwrap()
+                    .is_none(),
+                "case {name}: no attention expected"
+            );
+        }
+
+        // A queued suggestion must carry enough metadata for approval to
+        // open attention atomically.
+        if expect["review_queued"].as_bool().unwrap() {
+            let review_id = &result.queued_review_ids[0];
+            let item = clio_core::review::get_review(&conn, review_id).unwrap();
+            assert!(
+                item.metadata.get("attention").is_some(),
+                "case {name}: queued item keeps attention metadata"
+            );
+            let memory = clio_core::review::approve_review(&conn, review_id, &settings).unwrap();
+            let opened = attention::get_by_memory(&conn, &memory.id).unwrap();
+            assert!(
+                opened.is_some(),
+                "case {name}: approval opens attention atomically"
+            );
+        }
+
+        // Resolution expectations against the pre-created open loop.
+        let target_state = attention::get_by_memory(&conn, &target_id)
+            .unwrap()
+            .unwrap();
+        if expect["resolves_target"].as_bool().unwrap_or(false) {
+            assert_eq!(
+                target_state.status, "resolved",
+                "case {name}: target resolved"
+            );
+            let links = repository::get_links(&conn, &target_state.memory_id).unwrap();
+            assert!(
+                links.iter().any(|l| l.relationship == "resolved_by"),
+                "case {name}: resolution evidence linked"
+            );
+        } else {
+            assert_eq!(target_state.status, "open", "case {name}: target untouched");
+        }
+    }
+}

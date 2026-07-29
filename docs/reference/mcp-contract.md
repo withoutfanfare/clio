@@ -838,6 +838,9 @@ Stop-hook capture retries after a lost response, a provider 429 or an outage. Wi
 5. An empty extraction commits an empty checkpoint: success, never redistilled
 6. Auto-embedding runs best-effort after commit and cannot fail the checkpoint
 7. Namespace resolution per memory matches `clio distill`: explicit `namespace` → LLM `global` promotion → `cwd`-detected default → LLM suggestion
+8. Atoms carrying explicit open-loop data (`attention.explicitness = "explicit"`) open attention atomically with the stored memory; suggested/inferred open loops queue for review whatever their confidence, and approval creates memory + attention in one transaction
+9. An atom's `resolves` identifier completes its target only when it is a stable reference to an open/snoozed attention item; anything fuzzy leaves state unchanged
+10. `ticket` becomes a deterministic lowercase `ticket:<id>` tag and `branch` is recorded in memory metadata — the model never invents session identifiers
 
 ### Response
 

@@ -2464,9 +2464,11 @@ impl ServerHandler for ClioServer {
                  - memory_session_checkpoint: distil a session delta exactly once, keyed by \
                  source + session_id + cursor. Retries replay the stored result; an empty \
                  extraction is a successful checkpoint. Requires a configured capture model.\n\
-                 - memory_action: follow-up attention on memories (open loops). Open attention \
-                 for explicit user commitments immediately with action:add; complete with \
-                 evidence when done. action:eligible reports what needs attention now and why.\n\n\
+                 - memory_action: follow-up attention on memories (open loops). When the user \
+                 states an explicit decision or commitment, store it IMMEDIATELY with \
+                 memory_remember or memory_action(add) — do not wait for end-of-session \
+                 distillation, which is only the safety net. Complete with evidence when done. \
+                 action:eligible reports what needs attention now and why.\n\n\
                  TICKET CONVENTION: when working a tracked issue, tag stored memories \
                  `ticket:<issue-id>` (lowercase). Tags are FTS-indexed, so a later handoff \
                  brief for that id finds them.\n\n\

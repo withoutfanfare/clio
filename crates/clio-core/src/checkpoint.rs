@@ -132,16 +132,11 @@ pub fn store_checkpoint(
             return Ok(existing);
         }
 
-        let metadata = match &req.cwd {
-            Some(c) => serde_json::json!({ "cwd": c }),
-            None => serde_json::json!({}),
-        };
-
         let mut stored_memory_ids = Vec::new();
         let mut queued_review_ids = Vec::new();
 
         for (index, memory) in memories.iter().enumerate() {
-            let classification = crate::capture::ClassificationResult {
+            let mut classification = crate::capture::ClassificationResult {
                 kind: memory.kind.clone(),
                 title: memory.title.clone(),
                 summary: memory.summary.clone(),
@@ -150,15 +145,73 @@ pub fn store_checkpoint(
                 importance: memory.importance,
                 confidence: memory.confidence,
             };
+            // Branch/ticket context is applied deterministically after model
+            // parsing — the model never invents session identifiers.
+            if let Some(ticket) = &req.ticket {
+                let tag = format!("ticket:{}", ticket.to_lowercase());
+                if !classification.tags.contains(&tag) {
+                    classification.tags.push(tag);
+                }
+            }
             let namespace = crate::capture::resolve_distill_namespace(
                 req.namespace_override.as_deref(),
                 &classification.namespace,
                 req.default_namespace.as_deref(),
             );
 
+            let mut meta = serde_json::Map::new();
+            if let Some(cwd) = &req.cwd {
+                meta.insert("cwd".into(), serde_json::json!(cwd));
+            }
+            if let Some(branch) = &req.branch {
+                meta.insert("branch".into(), serde_json::json!(branch));
+            }
+            if let Some(attention) = &memory.attention {
+                meta.insert("attention".into(), serde_json::to_value(attention)?);
+            }
+            let metadata = serde_json::Value::Object(meta);
+
             // Unique provenance per atom, sharing the checkpoint key as the
             // prefix so a session's memories stay traceable to their delta.
             let item_ref = format!("{}@{}-{index}", req.session_id, req.cursor);
+
+            // Inferred (non-explicit) open loops never become operational work
+            // automatically: they queue for review, whatever their confidence.
+            // Approval creates the memory and its attention in one transaction.
+            let inferred_loop = memory
+                .attention
+                .as_ref()
+                .is_some_and(|attention| !attention.is_explicit());
+            if inferred_loop {
+                if let Some(existing_id) =
+                    crate::repository::find_content_duplicate(conn, &namespace, &memory.content)?
+                {
+                    stored_memory_ids.push(existing_id);
+                    continue;
+                }
+                let review_item = crate::review::queue_for_review(
+                    conn,
+                    &crate::review::ReviewInput {
+                        content: memory.content.clone(),
+                        suggested_namespace: namespace,
+                        suggested_kind: classification.kind,
+                        suggested_title: Some(classification.title),
+                        suggested_summary: if classification.summary.is_empty() {
+                            None
+                        } else {
+                            Some(classification.summary)
+                        },
+                        suggested_tags: classification.tags,
+                        suggested_importance: classification.importance,
+                        suggested_confidence: Some(classification.confidence),
+                        source_route: Some(req.source.clone()),
+                        source_ref: Some(item_ref),
+                        metadata,
+                    },
+                )?;
+                queued_review_ids.push(review_item.id);
+                continue;
+            }
 
             let outcome = crate::capture::store_or_queue(
                 conn,
@@ -172,7 +225,31 @@ pub fn store_checkpoint(
                 false, // embed after commit, never inside the transaction
             )?;
             match outcome {
-                CaptureResult::Stored(m) => stored_memory_ids.push(m.id),
+                CaptureResult::Stored(m) => {
+                    // Explicit user commitments open attention atomically.
+                    if let Some(attention) = &memory.attention {
+                        crate::attention::create_attention(
+                            conn,
+                            &crate::attention::AttentionInput {
+                                memory_id: m.id.clone(),
+                                owner: attention.owner.clone().or_else(|| Some("user".into())),
+                                due_at: attention.due_at.clone(),
+                                remind_at: attention.remind_at.clone(),
+                                trigger: attention.trigger.clone(),
+                                waiting_on: attention.waiting_on.clone(),
+                                completion_condition: attention.completion_condition.clone(),
+                                actor: Some(format!("agent:{}", req.source)),
+                            },
+                        )?;
+                    }
+                    // An explicit, stable-ID resolution completes the target
+                    // with this memory as evidence. Unknown or terminal
+                    // targets leave state unchanged — never guess.
+                    if let Some(target) = &memory.resolves {
+                        resolve_stable_target(conn, target, &m.id, &req.source);
+                    }
+                    stored_memory_ids.push(m.id);
+                }
                 CaptureResult::Queued(item) => queued_review_ids.push(item.id),
             }
         }
@@ -219,6 +296,38 @@ pub fn store_checkpoint(
         Err(e) => {
             crate::db::rollback_transaction(conn, owns_transaction, "store_checkpoint");
             Err(e)
+        }
+    }
+}
+
+/// Attempt to complete a known open loop from an explicit transcript
+/// resolution. Only a stable identifier that resolves to an open or snoozed
+/// attention item may auto-complete; anything else leaves state unchanged.
+/// Never fails the checkpoint.
+fn resolve_stable_target(conn: &Connection, target: &str, evidence_id: &str, source: &str) {
+    match crate::attention::resolve_attention(conn, target) {
+        Ok(item)
+            if item.status == crate::attention::STATUS_OPEN
+                || item.status == crate::attention::STATUS_SNOOZED =>
+        {
+            if let Err(e) = crate::attention::complete(
+                conn,
+                &item.id,
+                Some(evidence_id),
+                Some("explicit transcript resolution"),
+                Some(&format!("agent:{source}")),
+            ) {
+                tracing::debug!("checkpoint resolution of {target} skipped: {e}");
+            }
+        }
+        Ok(item) => {
+            tracing::debug!(
+                "checkpoint resolution target {target} is already '{}'; leaving unchanged",
+                item.status
+            );
+        }
+        Err(_) => {
+            tracing::debug!("checkpoint resolution target {target} not found; leaving unchanged");
         }
     }
 }
@@ -308,6 +417,8 @@ mod tests {
             namespace: "project:checkpoint-test".into(),
             importance: 3,
             confidence: 1.0,
+            attention: None,
+            resolves: None,
         }
     }
 

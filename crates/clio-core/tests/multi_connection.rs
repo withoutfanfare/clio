@@ -453,6 +453,8 @@ fn checkpoint_atom(content: &str) -> clio_core::capture::DistilledMemory {
         namespace: "project:multi-machine".into(),
         importance: 3,
         confidence: 1.0,
+        attention: None,
+        resolves: None,
     }
 }
 
