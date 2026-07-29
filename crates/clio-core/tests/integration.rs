@@ -1631,6 +1631,7 @@ fn bulk_link_expansion_returns_linked_memories() {
             offset: 0,
             limit: 50,
             scoring: None,
+            skip_access_tracking: false,
         },
     )
     .unwrap();

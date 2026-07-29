@@ -156,6 +156,10 @@ enum Command {
     /// Build a context brief for agent consumption.
     Brief(BriefArgs),
 
+    /// Build a resume brief: open work, blockers, constraints and relevant
+    /// knowledge, each with the reason it appears now. Reads are untracked.
+    Resume(ResumeArgs),
+
     /// Start the MCP server (stdio transport).
     Serve,
 
@@ -550,6 +554,29 @@ struct ActivityArgs {
     /// Maximum number of activity entries to show.
     #[arg(long, default_value_t = 20)]
     limit: u32,
+}
+
+#[derive(Parser)]
+struct ResumeArgs {
+    /// Namespace scope. Auto-detected from cwd if omitted.
+    #[arg(long)]
+    namespace: Option<String>,
+
+    /// Prompt/task context for the relevant-knowledge section.
+    #[arg(long)]
+    query: Option<String>,
+
+    /// Session or topic scope for once-per-scope surfacing suppression.
+    #[arg(long)]
+    session: Option<String>,
+
+    /// Maximum items across all sections.
+    #[arg(long, default_value_t = 20)]
+    max_items: u32,
+
+    /// Character budget over the serialised items.
+    #[arg(long)]
+    char_budget: Option<u32>,
 }
 
 #[derive(Parser)]
@@ -1139,6 +1166,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         Command::Migrate(args) => cmd_migrate(cli.db_path.as_deref(), cli.json, args),
         Command::Settings(args) => cmd_settings(cli.db_path.as_deref(), cli.json, args),
         Command::Brief(args) => cmd_brief(cli.db_path.as_deref(), cli.json, args),
+        Command::Resume(args) => cmd_resume(cli.db_path.as_deref(), cli.json, args),
         Command::Serve => cmd_serve(cli.db_path.as_deref()),
         Command::RemoteMcp(args) => {
             remote_mcp::run(&args.host, &args.remote_binary, cli.db_path.as_deref())
@@ -1388,6 +1416,7 @@ fn cmd_recall(
             limit: args.limit,
             offset: args.offset,
             scoring,
+            skip_access_tracking: false,
         };
         repository::recall(&conn, &query)?
     } else if args.namespace.is_some() {
@@ -1406,6 +1435,7 @@ fn cmd_recall(
             limit: args.limit,
             offset: args.offset,
             scoring,
+            skip_access_tracking: false,
         };
         repository::recall(&conn, &query)?
     } else {
@@ -1424,6 +1454,7 @@ fn cmd_recall(
             limit: args.limit,
             offset: args.offset,
             scoring,
+            skip_access_tracking: false,
         };
         repository::recall_scoped(&conn, &query, &detected_ns)?
     };
@@ -2854,6 +2885,60 @@ fn cmd_activity(
         println!("{}", serde_json::to_string_pretty(&entries)?);
     } else {
         print_activity(&entries);
+    }
+
+    Ok(())
+}
+
+fn cmd_resume(
+    db_path: Option<&str>,
+    json: bool,
+    args: ResumeArgs,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let path = resolve_db_path(db_path)?;
+    let conn = db::open(&path)?;
+    let stgs = settings::load(&path).ok().unwrap_or_default();
+
+    let namespace = match &args.namespace {
+        Some(ns) => Some(ns.clone()),
+        None => {
+            if stgs.context.auto_detect {
+                current_namespace()
+            } else {
+                None
+            }
+        }
+    };
+
+    let request = clio_core::assembly::ResumeRequest {
+        namespace,
+        query: args.query,
+        session_id: args.session,
+        max_items: args.max_items,
+        char_budget: args.char_budget,
+        scoring: Some(stgs.scoring),
+        dormant_days: stgs.attention.dormant_days,
+        now: None,
+    };
+
+    let brief = clio_core::assembly::build_resume_brief(&conn, &request)?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&brief)?);
+    } else if brief.sections.is_empty() {
+        eprintln!("Nothing to resume — no open work or relevant context.");
+    } else {
+        eprintln!("# Resume — {}\n", brief.namespace);
+        for section in &brief.sections {
+            eprintln!("## {}\n", section.heading);
+            for item in &section.items {
+                let title = item.title.as_deref().unwrap_or("(untitled)");
+                eprintln!("  - [{}] {} ({})", item.kind, title, item.memory_id);
+                eprintln!("    why: {}", item.reason);
+                eprintln!("    {}", item.content);
+            }
+            eprintln!();
+        }
     }
 
     Ok(())

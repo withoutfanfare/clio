@@ -557,10 +557,13 @@ pub fn recall(conn: &Connection, query: &RecallQuery) -> Result<RecallResult> {
         append_linked_memories(conn, &mut result, query)?;
     }
 
-    // Fire-and-forget access tracking for all returned items.
-    let ids: Vec<&str> = result.items.iter().map(|i| i.memory.id.as_str()).collect();
-    if let Err(e) = touch_accessed(conn, &ids) {
-        tracing::warn!("access tracking failed in recall: {e}");
+    // Fire-and-forget access tracking for all returned items. Automatic
+    // surfacing (resume briefs) opts out so it cannot train its own ranking.
+    if !query.skip_access_tracking {
+        let ids: Vec<&str> = result.items.iter().map(|i| i.memory.id.as_str()).collect();
+        if let Err(e) = touch_accessed(conn, &ids) {
+            tracing::warn!("access tracking failed in recall: {e}");
+        }
     }
 
     Ok(result)

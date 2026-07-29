@@ -519,6 +519,451 @@ fn build_handoff(
 }
 
 // ---------------------------------------------------------------------------
+// Resume brief — evidence-backed "pick up where you left off" policy
+// ---------------------------------------------------------------------------
+
+/// Parameters for building a resume brief.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResumeRequest {
+    /// Project namespace scope.
+    #[serde(default)]
+    pub namespace: Option<String>,
+
+    /// Prompt/task context for the relevant-knowledge section. The knowledge
+    /// section abstains entirely when this is absent.
+    #[serde(default)]
+    pub query: Option<String>,
+
+    /// Session or topic scope: enables once-per-scope surfacing suppression
+    /// and `surfaced` event recording.
+    #[serde(default)]
+    pub session_id: Option<String>,
+
+    /// Maximum items across all sections.
+    #[serde(default = "default_max_items")]
+    pub max_items: u32,
+
+    /// Character budget over the serialised item content (title + content +
+    /// reason). At least one item is always kept.
+    #[serde(default)]
+    pub char_budget: Option<u32>,
+
+    /// Temporal relevance scoring for knowledge recall.
+    #[serde(skip)]
+    pub scoring: Option<ScoringConfig>,
+
+    /// Dormancy policy from `AttentionConfig`.
+    #[serde(default)]
+    pub dormant_days: u32,
+
+    /// Fixed evaluation time for tests; `None` means now.
+    #[serde(default)]
+    pub now: Option<String>,
+}
+
+impl Default for ResumeRequest {
+    fn default() -> Self {
+        Self {
+            namespace: None,
+            query: None,
+            session_id: None,
+            max_items: default_max_items(),
+            char_budget: None,
+            scoring: None,
+            dormant_days: 0,
+            now: None,
+        }
+    }
+}
+
+/// One resume entry: bounded content plus the evidence for why it appears now.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResumeItem {
+    pub memory_id: String,
+    pub kind: String,
+    pub title: Option<String>,
+    /// Bounded content: the summary when present, otherwise a truncated
+    /// excerpt. This is exactly what the budget counts.
+    pub content: String,
+    pub source: Option<String>,
+    pub created_at: String,
+    /// Attention status (`open`/`snoozed`) or `knowledge`/`activity`.
+    pub state: String,
+    /// Why this item appears now.
+    pub reason: String,
+}
+
+/// A labelled group of resume items. Empty sections are omitted entirely.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResumeSection {
+    pub heading: String,
+    pub items: Vec<ResumeItem>,
+}
+
+/// The assembled resume brief.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResumeBrief {
+    pub namespace: String,
+    pub sections: Vec<ResumeSection>,
+    pub total_items: u32,
+    pub generated_at: String,
+}
+
+/// Upper bound on a resume item's excerpt when no summary exists.
+const RESUME_EXCERPT_CHARS: usize = 400;
+
+fn resume_excerpt(memory: &Memory) -> String {
+    if let Some(summary) = memory.summary.as_deref() {
+        if !summary.is_empty() {
+            return summary.to_string();
+        }
+    }
+    let mut content = memory.content.clone();
+    if content.chars().count() > RESUME_EXCERPT_CHARS {
+        content = content
+            .chars()
+            .take(RESUME_EXCERPT_CHARS)
+            .collect::<String>()
+            + "…";
+    }
+    content
+}
+
+fn resume_item_from_memory(memory: &Memory, state: &str, reason: String) -> ResumeItem {
+    ResumeItem {
+        memory_id: memory.id.clone(),
+        kind: memory.kind.clone(),
+        title: memory.title.clone(),
+        content: resume_excerpt(memory),
+        source: memory.source.clone(),
+        created_at: memory.created_at.clone(),
+        state: state.to_string(),
+        reason,
+    }
+}
+
+/// Serialised weight of one item: exactly the fields the budget promises.
+fn resume_item_len(item: &ResumeItem) -> usize {
+    item.title.as_deref().map(str::len).unwrap_or(0) + item.content.len() + item.reason.len()
+}
+
+fn human_reason(item: &crate::attention::AttentionItem, reason: &str) -> String {
+    match reason {
+        "overdue" => match &item.due_at {
+            Some(due) => format!("overdue: was due {due}"),
+            None => "overdue".into(),
+        },
+        "reminder_due" => match &item.remind_at {
+            Some(remind) => format!("reminder due since {remind}"),
+            None => "reminder due".into(),
+        },
+        "project_session" => "you asked to be reminded at the next session in this project".into(),
+        "dormant" => format!("untouched since {}", item.updated_at),
+        other => other.to_string(),
+    }
+}
+
+/// Build a deterministic resume brief: eligible open work first, then blocked
+/// items, constraints (with a modest global prior), recent decisions,
+/// prompt-relevant knowledge and recent substantive activity.
+///
+/// Every item carries a `reason`. All reads are untracked — automatic
+/// delivery never changes `access_count` or ranking age. When `session_id` is
+/// set, included attention items record an idempotent `surfaced` event and are
+/// suppressed on repeat requests in the same scope unless their state changes.
+pub fn build_resume_brief(conn: &Connection, request: &ResumeRequest) -> Result<ResumeBrief> {
+    use crate::attention;
+
+    let now = request.now.clone().unwrap_or_else(now_utc);
+
+    // 1. Eligible open work (already once-per-scope suppressed by core).
+    let eligible = attention::eligible(
+        conn,
+        &attention::EligibilityContext {
+            namespace: request.namespace.clone(),
+            scope: request.session_id.clone(),
+            now: now.clone(),
+            dormant_days: request.dormant_days,
+        },
+    )?;
+
+    let mut surfaced: Vec<(crate::attention::AttentionItem, String)> = Vec::new();
+    let mut needs_attention = Vec::new();
+    for entry in eligible {
+        let Some(memory) = eligible_memory(conn, &entry.item.memory_id, &now)? else {
+            continue;
+        };
+        let reason = human_reason(&entry.item, entry.reason.as_str());
+        needs_attention.push(resume_item_from_memory(&memory, &entry.item.status, reason));
+        surfaced.push((entry.item, entry.reason.as_str().to_string()));
+    }
+
+    // 2. Blocked / waiting items (open, waiting_on set, not already included).
+    let mut waiting = Vec::new();
+    for item in attention::list_attention(
+        conn,
+        request.namespace.as_deref(),
+        Some(attention::STATUS_OPEN),
+        50,
+    )? {
+        let Some(waiting_on) = item.waiting_on.clone() else {
+            continue;
+        };
+        if let Some(scope) = &request.session_id {
+            if crate::events::event_exists(conn, &attention::surfaced_key(&item, scope, "waiting"))?
+            {
+                continue;
+            }
+        }
+        let Some(memory) = eligible_memory(conn, &item.memory_id, &now)? else {
+            continue;
+        };
+        waiting.push(resume_item_from_memory(
+            &memory,
+            &item.status,
+            format!("waiting on {waiting_on}"),
+        ));
+        surfaced.push((item, "waiting".into()));
+    }
+
+    // 3. Constraints: project first, plus a modest global prior.
+    let mut constraints = resume_recall(
+        conn,
+        request.namespace.as_deref(),
+        Some("constraint"),
+        None,
+        6,
+        &request.scoring,
+        "active constraint in this project",
+    )?;
+    if request
+        .namespace
+        .as_deref()
+        .is_some_and(|ns| ns != "global")
+    {
+        constraints.extend(resume_recall(
+            conn,
+            Some("global"),
+            Some("constraint"),
+            None,
+            2,
+            &request.scoring,
+            "global constraint",
+        )?);
+    }
+
+    // 4. Recent decisions.
+    let decisions = resume_recall(
+        conn,
+        request.namespace.as_deref(),
+        Some("decision"),
+        None,
+        5,
+        &request.scoring,
+        "recent decision in this project",
+    )?;
+
+    // 5. Prompt-relevant knowledge — abstains without a query.
+    let knowledge = match request
+        .query
+        .as_deref()
+        .map(str::trim)
+        .filter(|q| !q.is_empty())
+    {
+        Some(query) => {
+            let mut items = resume_recall(
+                conn,
+                request.namespace.as_deref(),
+                None,
+                Some(query),
+                10,
+                &request.scoring,
+                &format!("matches the current task ({query})"),
+            )?;
+            items.retain(|i| i.kind != "receipt");
+            items
+        }
+        None => Vec::new(),
+    };
+
+    // 6. Recent substantive activity (receipts).
+    let activity = resume_recall(
+        conn,
+        request.namespace.as_deref(),
+        Some("receipt"),
+        None,
+        3,
+        &request.scoring,
+        "recent session receipt",
+    )?
+    .into_iter()
+    .map(|mut item| {
+        item.state = "activity".into();
+        item
+    })
+    .collect::<Vec<_>>();
+
+    let ordered = vec![
+        ("Needs attention", needs_attention),
+        ("Waiting on", waiting),
+        ("Active constraints", constraints),
+        ("Recent decisions", decisions),
+        ("Relevant knowledge", knowledge),
+        ("Recent activity", activity),
+    ];
+
+    let sections = allocate_resume_budget(ordered, request.max_items, request.char_budget);
+
+    // Record surfaced events only for attention items that made the cut.
+    if let Some(scope) = &request.session_id {
+        let included: std::collections::HashSet<&str> = sections
+            .iter()
+            .flat_map(|s| s.items.iter().map(|i| i.memory_id.as_str()))
+            .collect();
+        for (item, reason) in &surfaced {
+            if included.contains(item.memory_id.as_str()) {
+                attention::record_surfaced(conn, item, scope, reason, Some("resume"));
+            }
+        }
+    }
+
+    let total_items: u32 = sections.iter().map(|s| s.items.len() as u32).sum();
+    Ok(ResumeBrief {
+        namespace: request
+            .namespace
+            .clone()
+            .unwrap_or_else(|| "global".to_string()),
+        sections,
+        total_items,
+        generated_at: now,
+    })
+}
+
+/// Load a memory for resume inclusion, applying archive/expiry eligibility.
+fn eligible_memory(conn: &Connection, memory_id: &str, now: &str) -> Result<Option<Memory>> {
+    let memory = match repository::get_raw(conn, memory_id) {
+        Ok(memory) => memory,
+        Err(ClioError::NotFound(_)) => return Ok(None),
+        Err(e) => return Err(e),
+    };
+    if memory.archived_at.is_some() {
+        return Ok(None);
+    }
+    if memory
+        .valid_until
+        .as_deref()
+        .is_some_and(|until| until <= now)
+    {
+        return Ok(None);
+    }
+    Ok(Some(memory))
+}
+
+/// Untracked recall wrapped into resume items with a shared reason.
+fn resume_recall(
+    conn: &Connection,
+    namespace: Option<&str>,
+    kind: Option<&str>,
+    query: Option<&str>,
+    limit: u32,
+    scoring: &Option<ScoringConfig>,
+    reason: &str,
+) -> Result<Vec<ResumeItem>> {
+    let recall_query = RecallQuery {
+        query: query.map(String::from),
+        namespace: namespace.map(String::from),
+        kind: kind.map(String::from),
+        exclude_expired: true,
+        limit,
+        scoring: scoring.clone(),
+        skip_access_tracking: true,
+        ..Default::default()
+    };
+    let result = repository::recall(conn, &recall_query)?;
+    Ok(result
+        .items
+        .into_iter()
+        .map(|ri| resume_item_from_memory(&ri.memory, "knowledge", reason.to_string()))
+        .collect())
+}
+
+/// Deduplicate by memory ID (section priority order), guarantee one slot for
+/// each non-empty critical section, fill remaining capacity in section order,
+/// then apply the character budget over the serialised representation. Empty
+/// sections are dropped so they release capacity rather than reserving it.
+fn allocate_resume_budget(
+    ordered: Vec<(&str, Vec<ResumeItem>)>,
+    max_items: u32,
+    char_budget: Option<u32>,
+) -> Vec<ResumeSection> {
+    const CRITICAL: usize = 3; // needs attention, waiting, constraints
+
+    // Cross-section dedup, priority order.
+    let mut seen = std::collections::HashSet::new();
+    let mut pools: Vec<(String, Vec<ResumeItem>)> = ordered
+        .into_iter()
+        .map(|(heading, items)| {
+            let kept = items
+                .into_iter()
+                .filter(|item| seen.insert(item.memory_id.clone()))
+                .collect();
+            (heading.to_string(), kept)
+        })
+        .collect();
+
+    // Slot allocation: one guaranteed slot per non-empty critical section,
+    // then greedy fill in section order.
+    let max_items = max_items.max(1) as usize;
+    let mut take: Vec<usize> = vec![0; pools.len()];
+    let mut used = 0;
+    for (index, (_, items)) in pools.iter().enumerate().take(CRITICAL) {
+        if !items.is_empty() && used < max_items {
+            take[index] = 1;
+            used += 1;
+        }
+    }
+    for (index, (_, items)) in pools.iter().enumerate() {
+        while take[index] < items.len() && used < max_items {
+            take[index] += 1;
+            used += 1;
+        }
+    }
+
+    // Character budget over what is actually serialised; first item always kept.
+    let budget = char_budget.map(|b| b as usize);
+    let mut chars_used = 0usize;
+    let mut full = false;
+    let mut first_kept = false;
+
+    let mut sections = Vec::new();
+    for (index, (heading, items)) in pools.iter_mut().enumerate() {
+        let mut kept = Vec::new();
+        for item in items.drain(..).take(take[index]) {
+            if full {
+                continue;
+            }
+            if let Some(b) = budget {
+                let len = resume_item_len(&item);
+                if first_kept && chars_used + len > b {
+                    full = true;
+                    continue;
+                }
+                chars_used += len;
+            }
+            first_kept = true;
+            kept.push(item);
+        }
+        if !kept.is_empty() {
+            sections.push(ResumeSection {
+                heading: heading.clone(),
+                items: kept,
+            });
+        }
+    }
+    sections
+}
+
+// ---------------------------------------------------------------------------
 // Shared helper — run a recall query and wrap the result as a section
 // ---------------------------------------------------------------------------
 
@@ -930,5 +1375,315 @@ mod tests {
             total, 1,
             "duplicate memory should appear once across sections"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Resume brief
+    // -----------------------------------------------------------------------
+
+    const NOW: &str = "2026-07-29T12:00:00Z";
+
+    fn open_action(conn: &Connection, ns: &str, content: &str, due: Option<&str>) -> Memory {
+        let memory = repository::remember(
+            conn,
+            &RememberInput {
+                namespace: ns.into(),
+                kind: "task".into(),
+                title: Some(content.into()),
+                summary: None,
+                content: content.into(),
+                tags: vec![],
+                source: None,
+                source_ref: None,
+                confidence: None,
+                importance: 3,
+                metadata: serde_json::json!({}),
+                valid_from: None,
+                valid_until: None,
+                upsert: false,
+            },
+            &crate::settings::Settings::default(),
+        )
+        .unwrap();
+        crate::attention::create_attention(
+            conn,
+            &crate::attention::AttentionInput {
+                memory_id: memory.id.clone(),
+                due_at: due.map(String::from),
+                ..crate::attention::AttentionInput::default()
+            },
+        )
+        .unwrap();
+        memory
+    }
+
+    fn resume_request(ns: &str) -> ResumeRequest {
+        ResumeRequest {
+            namespace: Some(ns.into()),
+            now: Some(NOW.into()),
+            ..ResumeRequest::default()
+        }
+    }
+
+    fn section<'b>(brief: &'b ResumeBrief, heading: &str) -> Option<&'b ResumeSection> {
+        brief.sections.iter().find(|s| s.heading == heading)
+    }
+
+    #[test]
+    fn resume_puts_overdue_actions_first_with_reasons() {
+        let conn = test_db();
+        let ns = "project:resume";
+        let overdue = open_action(
+            &conn,
+            ns,
+            "Verify the deployment",
+            Some("2026-07-01T00:00:00Z"),
+        );
+        make_memory(&conn, ns, "constraint", "Never edit applied migrations");
+        make_memory(&conn, ns, "decision", "We chose SQLite as the store");
+
+        let brief = build_resume_brief(&conn, &resume_request(ns)).unwrap();
+
+        assert_eq!(brief.sections[0].heading, "Needs attention");
+        let first = &brief.sections[0].items[0];
+        assert_eq!(first.memory_id, overdue.id);
+        assert!(first.reason.contains("overdue"), "reason: {}", first.reason);
+        assert!(first.reason.contains("2026-07-01"), "reason cites evidence");
+
+        let constraints = section(&brief, "Active constraints").unwrap();
+        assert!(constraints.items.iter().all(|i| !i.reason.is_empty()));
+    }
+
+    #[test]
+    fn resume_includes_waiting_items_and_global_constraint_prior() {
+        let conn = test_db();
+        let ns = "project:resume";
+        let blocked = repository::remember(
+            &conn,
+            &RememberInput {
+                namespace: ns.into(),
+                kind: "task".into(),
+                title: Some("Key rotation".into()),
+                summary: None,
+                content: "Rotate the Atlas SSH key".into(),
+                tags: vec![],
+                source: None,
+                source_ref: None,
+                confidence: None,
+                importance: 3,
+                metadata: serde_json::json!({}),
+                valid_from: None,
+                valid_until: None,
+                upsert: false,
+            },
+            &crate::settings::Settings::default(),
+        )
+        .unwrap();
+        crate::attention::create_attention(
+            &conn,
+            &crate::attention::AttentionInput {
+                memory_id: blocked.id.clone(),
+                waiting_on: Some("Marcus: rotation window".into()),
+                ..crate::attention::AttentionInput::default()
+            },
+        )
+        .unwrap();
+        make_memory(&conn, "global", "constraint", "British English everywhere");
+
+        let brief = build_resume_brief(&conn, &resume_request(ns)).unwrap();
+
+        let waiting = section(&brief, "Waiting on").unwrap();
+        assert_eq!(waiting.items[0].memory_id, blocked.id);
+        assert!(waiting.items[0].reason.contains("Marcus"));
+
+        let constraints = section(&brief, "Active constraints").unwrap();
+        assert!(
+            constraints
+                .items
+                .iter()
+                .any(|i| i.reason == "global constraint"),
+            "global preferences arrive with a modest prior"
+        );
+    }
+
+    #[test]
+    fn resume_knowledge_abstains_without_query_and_matches_with_one() {
+        let conn = test_db();
+        let ns = "project:resume";
+        make_memory(
+            &conn,
+            ns,
+            "fact",
+            "The spool uses atomic renames for durability",
+        );
+        make_memory(
+            &conn,
+            ns,
+            "fact",
+            "Completely unrelated trivia about bananas",
+        );
+
+        let without = build_resume_brief(&conn, &resume_request(ns)).unwrap();
+        assert!(section(&without, "Relevant knowledge").is_none());
+
+        let mut request = resume_request(ns);
+        request.query = Some("spool durability".into());
+        let with = build_resume_brief(&conn, &request).unwrap();
+        let knowledge = section(&with, "Relevant knowledge").unwrap();
+        assert!(knowledge.items.iter().any(|i| i.content.contains("spool")));
+        assert!(
+            !knowledge
+                .items
+                .iter()
+                .any(|i| i.content.contains("bananas")),
+            "irrelevant memory is omitted"
+        );
+    }
+
+    #[test]
+    fn resume_excludes_resolved_archived_and_expired_items() {
+        let conn = test_db();
+        let ns = "project:resume";
+
+        let resolved = open_action(&conn, ns, "Already done", Some("2026-07-01T00:00:00Z"));
+        crate::attention::complete(&conn, &resolved.id, None, None, None).unwrap();
+
+        let archived = open_action(&conn, ns, "Archived loop", Some("2026-07-01T00:00:00Z"));
+        repository::archive(&conn, &archived.id).unwrap();
+
+        let expired = repository::remember(
+            &conn,
+            &RememberInput {
+                namespace: ns.into(),
+                kind: "constraint".into(),
+                title: Some("Expired rule".into()),
+                summary: None,
+                content: "This constraint has lapsed".into(),
+                tags: vec![],
+                source: None,
+                source_ref: None,
+                confidence: None,
+                importance: 3,
+                metadata: serde_json::json!({}),
+                valid_from: None,
+                valid_until: Some("2000-01-01T00:00:00Z".into()),
+                upsert: false,
+            },
+            &crate::settings::Settings::default(),
+        )
+        .unwrap();
+
+        let brief = build_resume_brief(&conn, &resume_request(ns)).unwrap();
+        let all_ids: Vec<&str> = brief
+            .sections
+            .iter()
+            .flat_map(|s| s.items.iter().map(|i| i.memory_id.as_str()))
+            .collect();
+        assert!(!all_ids.contains(&resolved.id.as_str()));
+        assert!(!all_ids.contains(&archived.id.as_str()));
+        assert!(!all_ids.contains(&expired.id.as_str()));
+    }
+
+    #[test]
+    fn small_budget_reserves_critical_sections() {
+        let conn = test_db();
+        let ns = "project:resume";
+        open_action(&conn, ns, "Overdue one", Some("2026-07-01T00:00:00Z"));
+        open_action(&conn, ns, "Overdue two", Some("2026-07-02T00:00:00Z"));
+        make_memory(&conn, ns, "constraint", "Keep FTS in sync");
+        make_memory(&conn, ns, "decision", "Rust for the core");
+        make_memory(&conn, ns, "decision", "SQLite for storage");
+
+        let mut request = resume_request(ns);
+        request.max_items = 3;
+        let brief = build_resume_brief(&conn, &request).unwrap();
+
+        assert_eq!(brief.total_items, 3);
+        let attention = section(&brief, "Needs attention").unwrap();
+        assert!(!attention.items.is_empty(), "critical work wins the budget");
+        let constraints = section(&brief, "Active constraints").unwrap();
+        assert_eq!(
+            constraints.items.len(),
+            1,
+            "constraints keep their reserved slot at small budgets"
+        );
+    }
+
+    #[test]
+    fn char_budget_counts_the_serialised_representation() {
+        let conn = test_db();
+        let ns = "project:resume";
+        for index in 0..5 {
+            make_memory(
+                &conn,
+                ns,
+                "decision",
+                &format!("Decision {index}: {}", "x".repeat(300)),
+            );
+        }
+
+        let mut request = resume_request(ns);
+        request.char_budget = Some(500);
+        let brief = build_resume_brief(&conn, &request).unwrap();
+
+        let total: usize = brief
+            .sections
+            .iter()
+            .flat_map(|s| s.items.iter())
+            .map(resume_item_len)
+            .sum();
+        assert!(brief.total_items >= 1, "at least one item is always kept");
+        assert!(
+            total <= 500 || brief.total_items == 1,
+            "budget applies to the serialised representation, used {total}"
+        );
+    }
+
+    #[test]
+    fn automatic_resume_leaves_access_ranking_unchanged() {
+        let conn = test_db();
+        let ns = "project:resume";
+        let memory = make_memory(&conn, ns, "decision", "Untracked decision");
+
+        let brief = build_resume_brief(&conn, &resume_request(ns)).unwrap();
+        assert!(brief.total_items >= 1);
+
+        let after = repository::get_raw(&conn, &memory.id).unwrap();
+        assert_eq!(after.access_count, 0, "resume must not train ranking");
+        assert!(after.last_accessed_at.is_none());
+
+        // Deliberate recall stays tracked.
+        repository::recall(
+            &conn,
+            &RecallQuery {
+                namespace: Some(ns.into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let tracked = repository::get_raw(&conn, &memory.id).unwrap();
+        assert_eq!(tracked.access_count, 1);
+    }
+
+    #[test]
+    fn resume_surfaces_once_per_session_and_records_events() {
+        let conn = test_db();
+        let ns = "project:resume";
+        let overdue = open_action(&conn, ns, "Surface me", Some("2026-07-01T00:00:00Z"));
+
+        let mut request = resume_request(ns);
+        request.session_id = Some("session-a".into());
+
+        let first = build_resume_brief(&conn, &request).unwrap();
+        assert!(section(&first, "Needs attention").is_some());
+        let events = crate::events::list_events(&conn, &overdue.id, 10).unwrap();
+        assert!(events.iter().any(|e| e.event_type == "surfaced"));
+
+        // Same session: suppressed. New session: appears again.
+        let repeat = build_resume_brief(&conn, &request).unwrap();
+        assert!(section(&repeat, "Needs attention").is_none());
+        request.session_id = Some("session-b".into());
+        let fresh = build_resume_brief(&conn, &request).unwrap();
+        assert!(section(&fresh, "Needs attention").is_some());
     }
 }

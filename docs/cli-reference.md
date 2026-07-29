@@ -239,6 +239,25 @@ result envelope includes `replayed`, `stored_memory_ids` and
 
 ---
 
+## Resume (pick up where you left off)
+
+`clio resume` builds a deterministic brief of what deserves attention now:
+eligible open work first (each with the reason it surfaced — overdue, reminder
+due, project-session trigger, dormant), then blocked items, active constraints
+(project plus a modest global prior), recent decisions, prompt-relevant
+knowledge (only with `--query`) and recent activity. All reads are untracked —
+an automatic resume never changes recall ranking. With `--session`, items
+surface once per session and are suppressed on repeats until their state
+changes.
+
+```sh
+clio resume                                  # project-level, auto-detected namespace
+clio resume --query "checkpoint retries"     # task-aware, adds relevant knowledge
+clio resume --session <session-id>           # once-per-session surfacing
+```
+
+---
+
 ## Follow-up Attention (open loops)
 
 `clio action` manages the attention lifecycle: follow-ups you committed to,

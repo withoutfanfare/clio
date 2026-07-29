@@ -863,6 +863,42 @@ Stop-hook capture retries after a lost response, a provider 429 or an outage. Wi
 - LLM returned unparseable JSON → validation error; the key stays open for retry
 - storage failure → transaction rolled back, actionable storage error
 
+## `memory_resume`
+
+Build a deterministic, evidence-backed resume brief: what deserves attention now, and why.
+
+### Why it exists
+
+Handoff and context briefs answer "what is this project?"; resume answers "what should I pick up right now?". One core policy selects eligible open work, blocked items, constraints (with a modest global prior), recent decisions, prompt-relevant knowledge and recent activity — every item carrying a `reason`. Adapters and hooks request the brief; they never recreate ordering, eligibility or budgeting.
+
+### Input
+
+```json
+{ "cwd": "/Users/alice/code/my-project", "session_id": "b2c3d4" }
+{ "query": "checkpoint retry semantics", "session_id": "b2c3d4", "max_items": 12 }
+```
+
+### Input defaults
+
+- `query`: null — the relevant-knowledge section abstains entirely without one
+- `namespace`: null (auto-detected from `cwd`)
+- `session_id`: null (no repeat suppression, no `surfaced` events)
+- `max_items`: 20; `char_budget`: null; `response_format`: markdown
+
+### Behaviour
+
+1. Sections in priority order: Needs attention (eligible open work with machine-readable reasons: `overdue`, `reminder_due`, `project_session`, `dormant`), Waiting on, Active constraints (project first plus up to two global), Recent decisions, Relevant knowledge (query only), Recent activity (receipts)
+2. Empty sections are omitted and release their capacity; each non-empty critical section (attention, waiting, constraints) keeps one guaranteed slot at small budgets
+3. Items are deduplicated across sections by memory ID; archived, expired, resolved and cancelled records never appear
+4. Every read is untracked: automatic delivery leaves `access_count` and `last_accessed_at` unchanged
+5. With `session_id`, each included attention item records one idempotent `surfaced` event and is suppressed on repeat requests in the same scope until its state changes
+6. The character budget counts the serialised representation (title + bounded content + reason); at least one item is always kept
+7. Event-write failure logs a warning and still returns the brief
+
+### Response
+
+Markdown by default; `response_format: "json"` returns `{ namespace, sections: [{ heading, items: [{ memory_id, kind, title, content, source, created_at, state, reason }] }], total_items, generated_at }`.
+
 ## `memory_action`
 
 Manage follow-up attention on memories — the open-loops lifecycle.

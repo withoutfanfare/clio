@@ -142,7 +142,7 @@ Modules:
 - `stats.rs` — analytics queries: `memory_stats()` (counts, namespace/kind breakdown, weekly timeline, tag frequency, link density, embedding coverage), `tag_frequency()`, `timeline()`, `recent_activity()` (create/update/archive event feed)
 - `daemon.rs` — daemon configuration, lifecycle, and health types: `DaemonConfig`, `AutoLinkConfig`, `DaemonStatus`, `DaemonHealth`, `HealthCheck`, `HealthStatus`, `PidFile`; platform path defaults; health check functions for database, embeddings, and capture
 - `review.rs` — review queue for low-confidence captures: `ReviewItem`, `ReviewInput`, `ReviewEdits`, `ReviewStats`; `queue_for_review()`, `list_pending()`, `get_review()`, `approve_review()`, `reject_review()`, `edit_review()`, `review_stats()`
-- `assembly.rs` — context assembly for agent consumption: `ContextPreset` (6 variants), `ContextRequest`, `ContextSection`, `ContextBrief`; `build_context()` combines kind-filtered and recent memories into sectioned briefs
+- `assembly.rs` — context assembly for agent consumption: `ContextPreset` (6 variants), `ContextRequest`, `ContextSection`, `ContextBrief`; `build_context()` combines kind-filtered and recent memories into sectioned briefs. Also the resume policy: `ResumeRequest`/`ResumeBrief` and `build_resume_brief()` — eligible open work with reasons, blocked items, constraints with a global prior, recent decisions, query-relevant knowledge and activity, budget-allocated with critical-section reservations, all reads untracked
 - `validate.rs` — input validation helpers (private to core)
 
 Must NOT depend on: Tauri UI code, MCP-specific types, CLI formatting.
@@ -159,7 +159,7 @@ Must NOT: open ad hoc SQL queries, implement its own validation rules.
 
 Thin MCP adapter. Maps MCP payloads to core input types.
 
-Tools: `memory_remember`, `memory_update`, `memory_recall`, `memory_get`, `memory_recent`, `memory_link`, `memory_archive`, `memory_unarchive`, `memory_delete`, `memory_move`, `memory_namespaces`, `memory_get_links`, `memory_capture`, `memory_session_checkpoint`, `memory_action`, `memory_search`, `memory_stats`, `memory_activity`, `memory_suggest_links`, `memory_context`, `memory_inbox`, `memory_cache_clear`
+Tools: `memory_remember`, `memory_update`, `memory_recall`, `memory_get`, `memory_recent`, `memory_link`, `memory_archive`, `memory_unarchive`, `memory_delete`, `memory_move`, `memory_namespaces`, `memory_get_links`, `memory_capture`, `memory_session_checkpoint`, `memory_action`, `memory_resume`, `memory_search`, `memory_stats`, `memory_activity`, `memory_suggest_links`, `memory_context`, `memory_inbox`, `memory_cache_clear`
 
 Must NOT: duplicate persistence logic, invent alternate search semantics.
 

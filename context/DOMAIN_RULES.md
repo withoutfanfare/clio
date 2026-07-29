@@ -215,6 +215,18 @@ An attention item marks one memory as operationally open. Memories record what w
 - Existing `task`-kind memories remain valid without attention rows
 - Adapters (CLI `clio action`, MCP `memory_action`) are thin: every rule above lives in `clio-core::attention`
 
+### Resume Briefs (Automatic Surfacing)
+
+One core policy (`assembly::build_resume_brief`) decides what surfaces when work resumes; adapters and hooks only request it.
+
+- Section priority: needs-attention (eligible open work), waiting-on, active constraints (project first, plus at most two global as a modest prior), recent decisions, query-relevant knowledge, recent activity
+- Every item carries a `reason`; attention-backed reasons are machine-readable (`overdue`, `reminder_due`, `project_session`, `dormant`) rendered with their evidence
+- The knowledge section abstains without a query; empty sections are omitted and release capacity; non-empty critical sections keep one reserved slot at small budgets
+- Items deduplicate across sections by memory ID; archived, expired, resolved and cancelled records are excluded
+- All resume reads are untracked (`skip_access_tracking`): automatic delivery must never train recall ranking; deliberate recall stays tracked
+- With a session scope, included attention items record one idempotent `surfaced` event and are suppressed on repeats in that scope until their state changes; event-write failure still returns the brief
+- The character budget counts the serialised representation (title + bounded content + reason), keeping at least one item
+
 ### Migration (Cross-Tool Import)
 
 The migration pipeline imports memories from other AI tools (Claude, ChatGPT) into Clio.

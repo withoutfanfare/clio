@@ -175,8 +175,9 @@ pub fn create_attention(conn: &Connection, input: &AttentionInput) -> Result<Att
             return Ok(existing);
         }
 
-        // The memory must exist and provides the namespace.
-        let memory = crate::repository::get(conn, &input.memory_id)?;
+        // The memory must exist and provides the namespace. Untracked read:
+        // opening attention is not a recall.
+        let memory = crate::repository::get_raw(conn, &input.memory_id)?;
 
         let id = new_id();
         let now = now_utc();
@@ -443,13 +444,10 @@ pub fn attach_external(
 
 /// Idempotency key for surfacing `item` in `scope` for `reason`. The item's
 /// `updated_at` is part of the key, so a state change re-arms surfacing.
-pub fn surfaced_key(item: &AttentionItem, scope: &str, reason: EligibilityReason) -> String {
+pub fn surfaced_key(item: &AttentionItem, scope: &str, reason: &str) -> String {
     format!(
         "surfaced:{}:{}:{}:{}",
-        item.memory_id,
-        scope,
-        reason.as_str(),
-        item.updated_at
+        item.memory_id, scope, reason, item.updated_at
     )
 }
 
@@ -459,7 +457,7 @@ pub fn record_surfaced(
     conn: &Connection,
     item: &AttentionItem,
     scope: &str,
-    reason: EligibilityReason,
+    reason: &str,
     actor: Option<&str>,
 ) {
     events::log_event(
@@ -471,7 +469,7 @@ pub fn record_surfaced(
             actor: actor.map(String::from),
             session_id: Some(scope.to_string()),
             event_type: events::EVENT_SURFACED.into(),
-            reason: Some(reason.as_str().to_string()),
+            reason: Some(reason.to_string()),
             ..EventInput::default()
         },
     );
@@ -539,7 +537,7 @@ pub fn eligible(conn: &Connection, ctx: &EligibilityContext) -> Result<Vec<Eligi
         let Some(reason) = reason else { continue };
 
         if let Some(scope) = &ctx.scope {
-            if events::event_exists(conn, &surfaced_key(&item, scope, reason))? {
+            if events::event_exists(conn, &surfaced_key(&item, scope, reason.as_str()))? {
                 continue;
             }
         }
@@ -742,7 +740,13 @@ mod tests {
         let context = ctx(None, Some("session-a"));
         let first = eligible(&conn, &context).unwrap();
         assert_eq!(first.len(), 1);
-        record_surfaced(&conn, &first[0].item, "session-a", first[0].reason, None);
+        record_surfaced(
+            &conn,
+            &first[0].item,
+            "session-a",
+            first[0].reason.as_str(),
+            None,
+        );
 
         // Same scope, same state: suppressed.
         assert!(eligible(&conn, &context).unwrap().is_empty());

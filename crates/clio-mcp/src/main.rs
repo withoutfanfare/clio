@@ -544,6 +544,67 @@ struct InboxParams {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+struct ResumeParams {
+    /// Prompt/task context for the relevant-knowledge section. Omit at
+    /// session start; pass the user's task on the first substantive prompt.
+    #[serde(default)]
+    query: Option<String>,
+
+    /// Namespace scope. Auto-detected from cwd if omitted.
+    #[serde(default)]
+    namespace: Option<String>,
+
+    /// Working dir for namespace detection.
+    #[serde(default)]
+    cwd: Option<String>,
+
+    /// Session or topic scope: suppresses repeats within the scope and
+    /// records idempotent `surfaced` events.
+    #[serde(default)]
+    session_id: Option<String>,
+
+    /// Maximum items across all sections.
+    #[serde(default = "default_inbox_limit")]
+    max_items: u32,
+
+    /// Character budget over the serialised items.
+    #[serde(default)]
+    char_budget: Option<u32>,
+
+    /// Format: markdown|json.
+    #[serde(default = "default_response_format")]
+    response_format: String,
+
+    /// Namespace detected by a local remote bridge.
+    #[serde(default, rename = "_clio_namespace")]
+    #[schemars(skip)]
+    clio_namespace: Option<String>,
+}
+
+fn resume_brief_md(brief: &clio_core::assembly::ResumeBrief) -> String {
+    if brief.sections.is_empty() {
+        return format!(
+            "# Resume — {}\n\nNothing to resume: no open work or relevant context.",
+            brief.namespace
+        );
+    }
+    let mut out = format!("# Resume — {}\n", brief.namespace);
+    for section in &brief.sections {
+        out.push_str(&format!("\n## {}\n\n", section.heading));
+        for item in &section.items {
+            let title = item.title.as_deref().unwrap_or("(untitled)");
+            out.push_str(&format!(
+                "- [{}] **{}** ({})\n",
+                item.kind, title, item.memory_id
+            ));
+            out.push_str(&format!("  why: {}\n", item.reason));
+            out.push_str(&format!("  {}\n", item.content));
+        }
+    }
+    out
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 struct ActionParams {
     /// Action: add | list | eligible | complete | snooze | cancel | attach_external | history.
     action: String,
@@ -1527,6 +1588,7 @@ impl ClioServer {
                 limit,
                 offset: params.offset,
                 scoring,
+                skip_access_tracking: false,
             };
 
             // --global: search all namespaces without scoping.
@@ -2203,6 +2265,59 @@ impl ClioServer {
     }
 
     #[tool(
+        description = "Build a resume brief: eligible open work, blocked items, constraints, \
+                       recent decisions, prompt-relevant knowledge and recent activity — each \
+                       with the reason it appears now. Call at session start (no query), and \
+                       again with `query` on the first substantive task prompt. Reads are \
+                       untracked and repeats are suppressed per session_id scope."
+    )]
+    async fn memory_resume(
+        &self,
+        Parameters(params): Parameters<ResumeParams>,
+    ) -> Result<String, String> {
+        validate_response_format(&params.response_format)?;
+        let conn = self.conn.clone();
+        let settings = self.settings()?;
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock().map_err(|e| format!("lock error: {e}"))?;
+            let cwd_path = params.cwd.as_deref().map(std::path::Path::new);
+            let namespace = params.namespace.clone().or_else(|| {
+                if settings.context.auto_detect {
+                    params.clio_namespace.clone().or_else(|| {
+                        cwd_path
+                            .and_then(clio_core::context::detect_namespace)
+                            .map(|ctx| ctx.namespace)
+                    })
+                } else {
+                    None
+                }
+            });
+
+            let request = clio_core::assembly::ResumeRequest {
+                namespace,
+                query: params.query,
+                session_id: params.session_id,
+                max_items: cap_limit(params.max_items),
+                char_budget: params.char_budget,
+                scoring: Some(settings.scoring.clone()),
+                dormant_days: settings.attention.dormant_days,
+                now: None,
+            };
+
+            let brief = clio_core::assembly::build_resume_brief(&conn, &request)
+                .map_err(|e| format_clio_error(&e))?;
+            if params.response_format == "json" {
+                serde_json::to_string_pretty(&brief)
+                    .map_err(|e| format!("Serialisation error: {e}"))
+            } else {
+                Ok(resume_brief_md(&brief))
+            }
+        })
+        .await
+        .map_err(|e| format!("Internal error: task failed: {e}"))?
+    }
+
+    #[tool(
         description = "Manage follow-up attention on memories (open loops). Actions: add (open \
                        attention on new or existing memory), list, eligible (what needs attention \
                        now, with a machine-readable reason per item), complete (with optional \
@@ -2464,6 +2579,9 @@ impl ServerHandler for ClioServer {
                  - memory_session_checkpoint: distil a session delta exactly once, keyed by \
                  source + session_id + cursor. Retries replay the stored result; an empty \
                  extraction is a successful checkpoint. Requires a configured capture model.\n\
+                 - memory_resume: evidence-backed pickup brief (open work, blockers, \
+                 constraints, relevant knowledge — each with why-now). Prefer it over ad hoc \
+                 recall when resuming work; it is untracked and repeat-suppressed per session.\n\
                  - memory_action: follow-up attention on memories (open loops). When the user \
                  states an explicit decision or commitment, store it IMMEDIATELY with \
                  memory_remember or memory_action(add) — do not wait for end-of-session \

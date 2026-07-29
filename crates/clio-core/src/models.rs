@@ -223,6 +223,11 @@ pub struct RecallQuery {
     /// not exposed via MCP parameters.
     #[serde(skip)]
     pub scoring: Option<crate::settings::ScoringConfig>,
+    /// When true, this recall does not touch `access_count`/`last_accessed_at`.
+    /// Internal-only: automatic surfacing (resume briefs) must not train its
+    /// own ranking. Deliberate recall stays tracked.
+    #[serde(skip)]
+    pub skip_access_tracking: bool,
 }
 
 fn default_true() -> bool {
@@ -250,6 +255,7 @@ impl Default for RecallQuery {
             limit: 10,
             offset: 0,
             scoring: None,
+            skip_access_tracking: false,
         }
     }
 }
