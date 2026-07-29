@@ -25,6 +25,12 @@ fn is_model_or_variant(model: &str, family: &str) -> bool {
             .is_some_and(|suffix| suffix.starts_with('-') || suffix.starts_with('.'))
 }
 
+/// Extra `max_completion_tokens` headroom for models that reason at their
+/// default effort: the cap covers hidden reasoning tokens as well as visible
+/// output, so the caller's visible-output budget alone would truncate or empty
+/// the reply. Bounded rather than uncapped so a runaway response still stops.
+const REASONING_TOKEN_HEADROOM: u64 = 2048;
+
 pub(crate) fn apply_chat_parameters(
     body: &mut serde_json::Value,
     model: &str,
@@ -46,10 +52,17 @@ pub(crate) fn apply_chat_parameters(
         }
         ChatModelCapabilities::ReasoningDefault => {
             if let Some(limit) = max_output_tokens {
-                body["max_completion_tokens"] = serde_json::json!(limit);
+                body["max_completion_tokens"] = serde_json::json!(limit + REASONING_TOKEN_HEADROOM);
             }
         }
-        ChatModelCapabilities::Conservative => {}
+        ChatModelCapabilities::Conservative => {
+            // Unknown compatible models: send no temperature/reasoning fields
+            // (either may 400), but do bound the output — `max_tokens` is the
+            // parameter compatible providers most widely accept.
+            if let Some(limit) = max_output_tokens {
+                body["max_tokens"] = serde_json::json!(limit);
+            }
+        }
     }
 }
 
@@ -83,7 +96,12 @@ mod tests {
 
         let mut gpt5_pro = serde_json::json!({});
         apply_chat_parameters(&mut gpt5_pro, "gpt-5-pro", 0.1, Some(60));
-        assert_eq!(gpt5_pro["max_completion_tokens"], 60);
+        // Default-effort reasoning consumes the completion budget: the cap
+        // must include headroom or a short title comes back empty.
+        assert_eq!(
+            gpt5_pro["max_completion_tokens"],
+            60 + REASONING_TOKEN_HEADROOM
+        );
         assert!(gpt5_pro.get("reasoning_effort").is_none());
         assert!(gpt5_pro.get("temperature").is_none());
 
@@ -94,6 +112,17 @@ mod tests {
 
         let mut unknown = serde_json::json!({});
         apply_chat_parameters(&mut unknown, "compatible-provider/new-model", 0.1, Some(60));
-        assert_eq!(unknown, serde_json::json!({}));
+        // Unknown models get no temperature/reasoning fields but keep a
+        // bounded output via the widely supported max_tokens parameter.
+        assert_eq!(unknown, serde_json::json!({ "max_tokens": 60 }));
+
+        let mut unknown_uncapped = serde_json::json!({});
+        apply_chat_parameters(
+            &mut unknown_uncapped,
+            "compatible-provider/new-model",
+            0.1,
+            None,
+        );
+        assert_eq!(unknown_uncapped, serde_json::json!({}));
     }
 }
