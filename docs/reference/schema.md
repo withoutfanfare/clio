@@ -373,6 +373,73 @@ CREATE UNIQUE INDEX idx_session_checkpoints_identity
 - Checkpoint rows are the replay proof — never delete them to tidy up.
 - Per-atom provenance uses `source` plus `source_ref = {session_id}@{cursor}-{index}`, keeping the existing `UNIQUE(source, source_ref)` upsert rule intact.
 
+## `attention_items`
+
+One optional operational row per memory: something the user committed to, is waiting on, or must decide. Added by migration `010_attention_and_events`.
+
+```sql
+CREATE TABLE attention_items (
+    id TEXT PRIMARY KEY,
+    memory_id TEXT NOT NULL UNIQUE,
+    namespace TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'open'
+        CHECK (status IN ('open', 'snoozed', 'resolved', 'cancelled')),
+    owner TEXT,
+    due_at TEXT,
+    remind_at TEXT,
+    trigger_kind TEXT,
+    waiting_on TEXT,
+    completion_condition TEXT,
+    external_system TEXT,
+    external_ref TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    resolved_at TEXT,
+    FOREIGN KEY (memory_id) REFERENCES memories(id) ON DELETE CASCADE
+);
+
+CREATE INDEX idx_attention_status ON attention_items(status, namespace);
+```
+
+### Attention rules
+
+- Statuses are only `open`, `snoozed`, `resolved`, `cancelled`. Invalid transitions are validation errors, not no-ops; `resolved` and `cancelled` are terminal.
+- Creation is idempotent per memory and commits atomically with its `attention_opened` event.
+- Completion never deletes or rewrites the source memory; it records a `resolved` event and, when evidence is supplied, a `resolved_by` link from the followed-up memory to the evidence memory.
+- Eligibility (`overdue`, `reminder_due`, `project_session`, `dormant`) is a pure read returning a machine-readable reason; it mutates nothing, including access ranking.
+- Existing `task`-kind memories remain valid without attention rows.
+
+## `memory_events`
+
+Append-only ledger of what happened to memories: surfaced, acknowledged, acted, snoozed, resolved. Added by migration `010_attention_and_events`.
+
+```sql
+CREATE TABLE memory_events (
+    id TEXT PRIMARY KEY,
+    idempotency_key TEXT,
+    memory_id TEXT,
+    namespace TEXT,
+    actor TEXT,
+    session_id TEXT,
+    topic TEXT,
+    event_type TEXT NOT NULL CHECK (length(event_type) BETWEEN 1 AND 40),
+    reason TEXT,
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL
+);
+
+CREATE UNIQUE INDEX idx_memory_events_idempotency
+    ON memory_events(idempotency_key) WHERE idempotency_key IS NOT NULL;
+CREATE INDEX idx_memory_events_memory ON memory_events(memory_id, created_at);
+```
+
+### Event rules
+
+- The vocabulary is narrow and validated in core: `attention_opened`, `surfaced`, `acknowledged`, `acted`, `snoozed`, `dismissed`, `resolved`, `cancelled`, `external_attached`.
+- An `idempotency_key` makes a write a no-op when already recorded — automatic surfacing records at most one `surfaced` event per item, scope (session/topic), reason and item state.
+- Events accompanying a state change share the state change's transaction; observational events are fire-and-forget and can never fail the parent operation.
+- Events never mutate memories or their `access_count`/`last_accessed_at` ranking data.
+
 ## Indexes
 
 Required indexes:
@@ -676,6 +743,7 @@ The export format should be easy for:
 | `007_content_dedup_index` | exact-content duplicate probe index |
 | `008_review_source_ref` | `source_ref` column on `review_queue` |
 | `009_session_checkpoints` | `session_checkpoints` table with unique `(source, session_id, cursor)` identity |
+| `010_attention_and_events` | `attention_items` follow-up lifecycle table and append-only `memory_events` ledger |
 
 ## Invariants For Implementers
 

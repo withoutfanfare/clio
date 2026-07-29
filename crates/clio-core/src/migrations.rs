@@ -203,6 +203,50 @@ const MIGRATIONS: &[Migration] = &[
                 ON session_checkpoints(source, session_id, cursor);
         "#,
     },
+    Migration {
+        version: "010_attention_and_events",
+        sql: r#"
+            CREATE TABLE attention_items (
+                id TEXT PRIMARY KEY,
+                memory_id TEXT NOT NULL UNIQUE,
+                namespace TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'open'
+                    CHECK (status IN ('open', 'snoozed', 'resolved', 'cancelled')),
+                owner TEXT,
+                due_at TEXT,
+                remind_at TEXT,
+                trigger_kind TEXT,
+                waiting_on TEXT,
+                completion_condition TEXT,
+                external_system TEXT,
+                external_ref TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                resolved_at TEXT,
+                FOREIGN KEY (memory_id) REFERENCES memories(id) ON DELETE CASCADE
+            );
+
+            CREATE INDEX idx_attention_status ON attention_items(status, namespace);
+
+            CREATE TABLE memory_events (
+                id TEXT PRIMARY KEY,
+                idempotency_key TEXT,
+                memory_id TEXT,
+                namespace TEXT,
+                actor TEXT,
+                session_id TEXT,
+                topic TEXT,
+                event_type TEXT NOT NULL CHECK (length(event_type) BETWEEN 1 AND 40),
+                reason TEXT,
+                metadata_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL
+            );
+
+            CREATE UNIQUE INDEX idx_memory_events_idempotency
+                ON memory_events(idempotency_key) WHERE idempotency_key IS NOT NULL;
+            CREATE INDEX idx_memory_events_memory ON memory_events(memory_id, created_at);
+        "#,
+    },
 ];
 
 /// Run all pending migrations inside a transaction.

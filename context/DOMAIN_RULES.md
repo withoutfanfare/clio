@@ -192,6 +192,19 @@ A checkpoint commits the distillation of one session delta exactly once, keyed b
 - Checkpoint rows are the replay proof: never deleted to tidy up
 - Checkpoint idempotency is additional to, and must not weaken, source/source-ref upsert idempotency
 
+### Attention Lifecycle (Open Loops)
+
+An attention item marks one memory as operationally open. Memories record what was said; attention records what is still owed.
+
+- One optional attention row per memory (`UNIQUE(memory_id)`); creation is idempotent and commits atomically with its `attention_opened` event
+- Statuses are only `open`, `snoozed`, `resolved`, `cancelled`; invalid transitions are validation errors, not no-ops; `resolved` and `cancelled` are terminal
+- Completion never deletes or rewrites the source memory — it records a `resolved` event and, when evidence is supplied, a `resolved_by` link from the followed-up memory to the evidence memory
+- Eligibility is a pure read returning a machine-readable reason per item: `overdue` (past `due_at`), `reminder_due` (past `remind_at`, including expired snoozes), `project_session` (the `project-session` trigger in the item's own namespace), `dormant` (untouched for `attention.dormant_days`)
+- An item surfaces at most once per session/topic scope for the same reason and state — the `surfaced` event's idempotency key includes the item's `updated_at`, so any state change re-arms surfacing
+- Automatic surfacing records events but never touches `access_count`/`last_accessed_at` ranking data
+- Existing `task`-kind memories remain valid without attention rows
+- Adapters (CLI `clio action`, MCP `memory_action`) are thin: every rule above lives in `clio-core::attention`
+
 ### Migration (Cross-Tool Import)
 
 The migration pipeline imports memories from other AI tools (Claude, ChatGPT) into Clio.

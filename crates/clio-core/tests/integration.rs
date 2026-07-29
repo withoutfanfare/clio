@@ -2437,3 +2437,55 @@ fn recall_scoped_global_fallback_is_global_only() {
     assert_eq!(res.count, 1);
     assert_eq!(res.items[0].memory.namespace, "global");
 }
+
+// ---------------------------------------------------------------------------
+// Attention lifecycle (public API)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn attention_lifecycle_preserves_content_and_history() {
+    use clio_core::attention;
+
+    let conn = test_db();
+    let memory = remember_simple(&conn, "Follow up: verify the deployment");
+
+    let item = attention::create_attention(
+        &conn,
+        &attention::AttentionInput {
+            memory_id: memory.id.clone(),
+            owner: Some("user".into()),
+            due_at: Some("2026-07-01T00:00:00Z".into()),
+            ..attention::AttentionInput::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(item.status, "open");
+
+    // Eligible with a machine-readable reason at a fixed time.
+    let eligible = attention::eligible(
+        &conn,
+        &attention::EligibilityContext {
+            namespace: None,
+            scope: None,
+            now: "2026-07-29T12:00:00Z".into(),
+            dormant_days: 0,
+        },
+    )
+    .unwrap();
+    assert_eq!(eligible.len(), 1);
+    assert_eq!(eligible[0].reason.as_str(), "overdue");
+
+    // Snooze, then resolve with evidence; the source memory is untouched.
+    attention::snooze(&conn, &item.id, "2026-08-01T00:00:00Z", Some("user")).unwrap();
+    let evidence = remember_simple(&conn, "Deployment verified via smoke test");
+    let resolved =
+        attention::complete(&conn, &item.id, Some(&evidence.id), None, Some("user")).unwrap();
+    assert_eq!(resolved.status, "resolved");
+
+    let unchanged = repository::get(&conn, &memory.id).unwrap();
+    assert_eq!(unchanged.content, "Follow up: verify the deployment");
+
+    let history = clio_core::events::list_events(&conn, &memory.id, 20).unwrap();
+    let types: Vec<&str> = history.iter().map(|e| e.event_type.as_str()).collect();
+    assert_eq!(types, vec!["attention_opened", "snoozed", "resolved"]);
+}

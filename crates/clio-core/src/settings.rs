@@ -170,6 +170,27 @@ impl Default for ContextConfig {
     }
 }
 
+/// Attention lifecycle policy values.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct AttentionConfig {
+    /// Days an open attention item may sit untouched before eligibility
+    /// reports it as dormant. `0` disables dormancy surfacing.
+    #[serde(default = "default_dormant_days")]
+    pub dormant_days: u32,
+}
+
+fn default_dormant_days() -> u32 {
+    14
+}
+
+impl Default for AttentionConfig {
+    fn default() -> Self {
+        Self {
+            dormant_days: default_dormant_days(),
+        }
+    }
+}
+
 /// Configuration for AI-powered automatic title generation.
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct AutoTitleConfig {
@@ -349,6 +370,10 @@ pub struct Settings {
     #[serde(default)]
     pub consolidate: ConsolidateConfig,
 
+    /// Attention lifecycle policy.
+    #[serde(default)]
+    pub attention: AttentionConfig,
+
     /// Optional shared Atlas route for CLI, hooks and Tauri.
     #[serde(default)]
     pub remote: Option<RemoteConfig>,
@@ -370,6 +395,7 @@ impl Default for Settings {
             daemon: DaemonConfig::default(),
             cleanup: CleanupConfig::default(),
             consolidate: ConsolidateConfig::default(),
+            attention: AttentionConfig::default(),
             remote: None,
         }
     }

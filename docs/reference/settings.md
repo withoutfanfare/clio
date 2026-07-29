@@ -12,6 +12,7 @@ All configuration keys in `clio-settings.json`. The file lives alongside the dat
 | `context` | object | see below | Namespace auto-detection |
 | `scoring` | object | see below | Temporal relevance scoring |
 | `daemon` | object | see below | Always-on daemon |
+| `attention` | object | see below | Follow-up attention lifecycle policy |
 | `remote` | object? | `null` | Optional shared SSH route used by local adapters |
 
 ## embeddings
@@ -174,6 +175,12 @@ database. `clio --local` bypasses the route. The daemon remains local-only.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `auto_threshold` | int | `10` | Consolidate a namespace automatically once it has this many new memories since the last consolidation (used by `clio consolidate --if-due`) |
+
+## attention
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `dormant_days` | int | `14` | Days an open attention item may sit untouched before eligibility reports it as `dormant`. `0` disables dormancy surfacing |
 
 ## Example
 

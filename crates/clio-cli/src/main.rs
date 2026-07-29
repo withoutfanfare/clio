@@ -132,6 +132,9 @@ enum Command {
     /// the stored result instead of creating duplicates.
     Checkpoint(CheckpointArgs),
 
+    /// Manage follow-up attention items (open loops).
+    Action(ActionArgs),
+
     /// Manage the review queue (low-confidence captures).
     Inbox(InboxArgs),
 
@@ -591,6 +594,133 @@ struct SuggestLinksArgs {
 }
 
 #[derive(Parser)]
+struct ActionArgs {
+    #[command(subcommand)]
+    command: ActionSubcommand,
+}
+
+#[derive(Subcommand)]
+enum ActionSubcommand {
+    /// Open attention on a follow-up: give text to create a task memory, or
+    /// --memory to attach attention to an existing memory.
+    Add {
+        /// Content for a new task memory (omit when using --memory).
+        content: Option<String>,
+
+        /// Attach attention to this existing memory instead of creating one.
+        #[arg(long, conflicts_with = "content")]
+        memory: Option<String>,
+
+        /// Namespace for a newly created memory. Auto-detected if omitted.
+        #[arg(long)]
+        namespace: Option<String>,
+
+        /// Who owns the follow-up (e.g. user).
+        #[arg(long)]
+        owner: Option<String>,
+
+        /// Hard due date (ISO-8601 UTC).
+        #[arg(long)]
+        due: Option<String>,
+
+        /// Reminder time (ISO-8601 UTC).
+        #[arg(long)]
+        remind: Option<String>,
+
+        /// Non-time trigger, e.g. project-session.
+        #[arg(long)]
+        trigger: Option<String>,
+
+        /// What or whom this waits on.
+        #[arg(long)]
+        waiting_on: Option<String>,
+
+        /// What would prove this complete.
+        #[arg(long)]
+        condition: Option<String>,
+    },
+
+    /// List attention items.
+    List {
+        /// Filter by namespace.
+        #[arg(long)]
+        namespace: Option<String>,
+
+        /// Filter by status: open, snoozed, resolved, cancelled.
+        #[arg(long)]
+        status: Option<String>,
+
+        /// Maximum number of items to show.
+        #[arg(long, default_value_t = 20)]
+        limit: u32,
+    },
+
+    /// Show which items deserve attention now, with the reason for each.
+    Eligible {
+        /// Project namespace context (enables project-session triggers).
+        #[arg(long)]
+        namespace: Option<String>,
+
+        /// Session or topic scope for once-per-scope suppression.
+        #[arg(long)]
+        scope: Option<String>,
+    },
+
+    /// Resolve an item (by attention ID or memory ID).
+    Complete {
+        id: String,
+
+        /// Memory ID recording the evidence of completion.
+        #[arg(long)]
+        evidence: Option<String>,
+
+        /// Why it is resolved.
+        #[arg(long)]
+        reason: Option<String>,
+    },
+
+    /// Snooze an item until a given time.
+    Snooze {
+        id: String,
+
+        /// Wake time (ISO-8601 UTC).
+        #[arg(long)]
+        until: String,
+    },
+
+    /// Cancel an item.
+    Cancel {
+        id: String,
+
+        /// Why it is cancelled.
+        #[arg(long)]
+        reason: Option<String>,
+    },
+
+    /// Record a verified external reference (e.g. a Things or Linear item).
+    AttachExternal {
+        id: String,
+
+        /// External system name, e.g. things or linear.
+        #[arg(long)]
+        system: String,
+
+        /// Stable external item ID.
+        #[arg(long, name = "ref")]
+        external_ref: String,
+    },
+
+    /// Show the event history for an item (by attention ID or memory ID).
+    History {
+        id: String,
+
+        /// Maximum number of events to show.
+        #[arg(long, default_value_t = 50)]
+        limit: u32,
+    },
+}
+
+#[derive(Parser)]
 struct InboxArgs {
     #[command(subcommand)]
     command: InboxSubcommand,
@@ -1000,6 +1130,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         Command::Capture(args) => cmd_capture(cli.db_path.as_deref(), cli.json, args),
         Command::Distill(args) => cmd_distill(cli.db_path.as_deref(), cli.json, args),
         Command::Checkpoint(args) => cmd_checkpoint(cli.db_path.as_deref(), cli.json, args),
+        Command::Action(args) => cmd_action(cli.db_path.as_deref(), cli.json, args),
         Command::Inbox(args) => cmd_inbox(cli.db_path.as_deref(), cli.json, args),
         Command::Stats(args) => cmd_stats(cli.db_path.as_deref(), cli.json, args),
         Command::Activity(args) => cmd_activity(cli.db_path.as_deref(), cli.json, args),
@@ -2071,6 +2202,232 @@ fn cmd_distill(
             match result {
                 CaptureResult::Stored(memory) => print_memory_card(memory),
                 CaptureResult::Queued(item) => print_review_item(item),
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn print_attention_item(item: &clio_core::attention::AttentionItem) {
+    eprintln!(
+        "  [{}] {} (memory {})",
+        item.status, item.id, item.memory_id
+    );
+    if let Some(due) = &item.due_at {
+        eprintln!("    due:      {due}");
+    }
+    if let Some(remind) = &item.remind_at {
+        eprintln!("    remind:   {remind}");
+    }
+    if let Some(trigger) = &item.trigger {
+        eprintln!("    trigger:  {trigger}");
+    }
+    if let Some(waiting) = &item.waiting_on {
+        eprintln!("    waiting:  {waiting}");
+    }
+    if let (Some(system), Some(external)) = (&item.external_system, &item.external_ref) {
+        eprintln!("    external: {system}:{external}");
+    }
+}
+
+fn cmd_action(
+    db_path: Option<&str>,
+    json: bool,
+    args: ActionArgs,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use clio_core::attention;
+
+    let path = resolve_db_path(db_path)?;
+    let conn = db::open(&path)?;
+
+    match args.command {
+        ActionSubcommand::Add {
+            content,
+            memory,
+            namespace,
+            owner,
+            due,
+            remind,
+            trigger,
+            waiting_on,
+            condition,
+        } => {
+            let s = settings::load(&path)?;
+            conn.execute_batch("BEGIN IMMEDIATE")?;
+            let result = (|| -> Result<attention::AttentionItem, Box<dyn std::error::Error>> {
+                let memory_id = match (&memory, &content) {
+                    (Some(id), _) => id.clone(),
+                    (None, Some(text)) => {
+                        let ns = namespace
+                            .clone()
+                            .or_else(|| s.context.auto_detect.then(current_namespace).flatten())
+                            .unwrap_or_else(|| "global".into());
+                        let created = repository::remember(
+                            &conn,
+                            &RememberInput {
+                                namespace: ns,
+                                kind: "task".into(),
+                                title: None,
+                                summary: None,
+                                content: text.clone(),
+                                tags: vec!["follow-up".into()],
+                                source: None,
+                                source_ref: None,
+                                confidence: None,
+                                importance: 3,
+                                metadata: serde_json::json!({}),
+                                valid_from: None,
+                                valid_until: None,
+                                upsert: false,
+                            },
+                            &s,
+                        )?;
+                        created.id
+                    }
+                    (None, None) => {
+                        return Err("provide content for a new memory or --memory <id>".into());
+                    }
+                };
+                Ok(attention::create_attention(
+                    &conn,
+                    &attention::AttentionInput {
+                        memory_id,
+                        owner: owner.clone(),
+                        due_at: due.clone(),
+                        remind_at: remind.clone(),
+                        trigger: trigger.clone(),
+                        waiting_on: waiting_on.clone(),
+                        completion_condition: condition.clone(),
+                        actor: Some("user".into()),
+                    },
+                )?)
+            })();
+            match result {
+                Ok(item) => {
+                    conn.execute_batch("COMMIT")?;
+                    if json {
+                        println!("{}", serde_json::to_string_pretty(&item)?);
+                    } else {
+                        eprintln!("Attention opened.");
+                        print_attention_item(&item);
+                    }
+                }
+                Err(e) => {
+                    let _ = conn.execute_batch("ROLLBACK");
+                    return Err(e);
+                }
+            }
+        }
+        ActionSubcommand::List {
+            namespace,
+            status,
+            limit,
+        } => {
+            let items =
+                attention::list_attention(&conn, namespace.as_deref(), status.as_deref(), limit)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&items)?);
+            } else if items.is_empty() {
+                eprintln!("No attention items.");
+            } else {
+                eprintln!("{} attention item(s):\n", items.len());
+                for item in &items {
+                    print_attention_item(item);
+                    println!();
+                }
+            }
+        }
+        ActionSubcommand::Eligible { namespace, scope } => {
+            let s = settings::load(&path)?;
+            let namespace = namespace.or_else(current_namespace);
+            let context = attention::EligibilityContext {
+                namespace,
+                scope,
+                now: clio_core::models::now_utc(),
+                dormant_days: s.attention.dormant_days,
+            };
+            let items = attention::eligible(&conn, &context)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&items)?);
+            } else if items.is_empty() {
+                eprintln!("Nothing needs attention right now.");
+            } else {
+                eprintln!("{} item(s) need attention:\n", items.len());
+                for entry in &items {
+                    eprintln!("  why: {}", entry.reason.as_str());
+                    print_attention_item(&entry.item);
+                    println!();
+                }
+            }
+        }
+        ActionSubcommand::Complete {
+            id,
+            evidence,
+            reason,
+        } => {
+            let item = attention::complete(
+                &conn,
+                &id,
+                evidence.as_deref(),
+                reason.as_deref(),
+                Some("user"),
+            )?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&item)?);
+            } else {
+                eprintln!("Resolved.");
+                print_attention_item(&item);
+            }
+        }
+        ActionSubcommand::Snooze { id, until } => {
+            let item = attention::snooze(&conn, &id, &until, Some("user"))?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&item)?);
+            } else {
+                eprintln!("Snoozed until {until}.");
+                print_attention_item(&item);
+            }
+        }
+        ActionSubcommand::Cancel { id, reason } => {
+            let item = attention::cancel(&conn, &id, reason.as_deref(), Some("user"))?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&item)?);
+            } else {
+                eprintln!("Cancelled.");
+                print_attention_item(&item);
+            }
+        }
+        ActionSubcommand::AttachExternal {
+            id,
+            system,
+            external_ref,
+        } => {
+            let item =
+                attention::attach_external(&conn, &id, &system, &external_ref, Some("user"))?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&item)?);
+            } else {
+                eprintln!("External reference recorded.");
+                print_attention_item(&item);
+            }
+        }
+        ActionSubcommand::History { id, limit } => {
+            let item = attention::resolve_attention(&conn, &id)?;
+            let events = clio_core::events::list_events(&conn, &item.memory_id, limit)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&events)?);
+            } else if events.is_empty() {
+                eprintln!("No events recorded.");
+            } else {
+                for event in &events {
+                    let reason = event
+                        .reason
+                        .as_deref()
+                        .map(|r| format!(" — {r}"))
+                        .unwrap_or_default();
+                    eprintln!("  {} {}{}", event.created_at, event.event_type, reason);
+                }
             }
         }
     }
@@ -3821,6 +4178,18 @@ mod tests {
         assert!(command_uses_shared_storage(&setting));
         assert!(command_uses_shared_storage(&show_capture));
         assert!(!command_uses_shared_storage(&show));
+    }
+
+    #[test]
+    fn action_routes_to_the_shared_backend() {
+        let action = Command::Action(ActionArgs {
+            command: ActionSubcommand::List {
+                namespace: None,
+                status: None,
+                limit: 20,
+            },
+        });
+        assert!(command_uses_shared_storage(&action));
     }
 
     #[test]

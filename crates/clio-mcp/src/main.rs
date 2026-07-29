@@ -544,6 +544,94 @@ struct InboxParams {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+struct ActionParams {
+    /// Action: add | list | eligible | complete | snooze | cancel | attach_external | history.
+    action: String,
+
+    /// Attention item ID or memory ID. Required for complete, snooze, cancel,
+    /// attach_external and history.
+    #[serde(default, alias = "id")]
+    action_id: Option<String>,
+
+    /// Content for a new task memory (add). Alternative to memory_id.
+    #[serde(default)]
+    content: Option<String>,
+
+    /// Existing memory to attach attention to (add).
+    #[serde(default)]
+    memory_id: Option<String>,
+
+    /// Namespace: context for add/eligible, filter for list.
+    #[serde(default)]
+    namespace: Option<String>,
+
+    /// Working dir for namespace detection.
+    #[serde(default)]
+    cwd: Option<String>,
+
+    /// Who owns the follow-up (add), e.g. user.
+    #[serde(default)]
+    owner: Option<String>,
+
+    /// Hard due date, ISO-8601 UTC (add).
+    #[serde(default)]
+    due_at: Option<String>,
+
+    /// Reminder time, ISO-8601 UTC (add).
+    #[serde(default)]
+    remind_at: Option<String>,
+
+    /// Non-time trigger (add), e.g. project-session.
+    #[serde(default)]
+    trigger: Option<String>,
+
+    /// What or whom this waits on (add).
+    #[serde(default)]
+    waiting_on: Option<String>,
+
+    /// What would prove this complete (add).
+    #[serde(default)]
+    completion_condition: Option<String>,
+
+    /// Session or topic scope for once-per-scope suppression (eligible).
+    #[serde(default)]
+    scope: Option<String>,
+
+    /// Evidence memory ID recording completion proof (complete).
+    #[serde(default)]
+    evidence: Option<String>,
+
+    /// Wake time, ISO-8601 UTC (snooze).
+    #[serde(default)]
+    until: Option<String>,
+
+    /// Why the state changed (complete/cancel).
+    #[serde(default)]
+    reason: Option<String>,
+
+    /// External system name (attach_external), e.g. things or linear.
+    #[serde(default)]
+    external_system: Option<String>,
+
+    /// Stable external item ID (attach_external).
+    #[serde(default)]
+    external_ref: Option<String>,
+
+    /// Status filter (list): open, snoozed, resolved, cancelled.
+    #[serde(default)]
+    status: Option<String>,
+
+    /// Max items/events to return (list/history).
+    #[serde(default = "default_inbox_limit")]
+    limit: u32,
+
+    /// Namespace detected by a local remote bridge.
+    #[serde(default, rename = "_clio_namespace")]
+    #[schemars(skip)]
+    clio_namespace: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 struct CacheClearParams {}
 
 // ---------------------------------------------------------------------------
@@ -698,6 +786,25 @@ mod namespace_tests {
                 expected
             );
         }
+    }
+
+    #[test]
+    fn action_params_default_optional_fields() {
+        let params: super::ActionParams = serde_json::from_value(serde_json::json!({
+            "action": "eligible"
+        }))
+        .unwrap();
+        assert!(params.action_id.is_none());
+        assert!(params.namespace.is_none());
+        assert!(params.scope.is_none());
+
+        // `id` is accepted as an alias for action_id.
+        let aliased: super::ActionParams = serde_json::from_value(serde_json::json!({
+            "action": "complete",
+            "id": "0195-some-id"
+        }))
+        .unwrap();
+        assert_eq!(aliased.action_id.as_deref(), Some("0195-some-id"));
     }
 
     #[test]
@@ -2095,6 +2202,215 @@ impl ClioServer {
         .map_err(|e| format!("Internal error: task failed: {e}"))?
     }
 
+    #[tool(
+        description = "Manage follow-up attention on memories (open loops). Actions: add (open \
+                       attention on new or existing memory), list, eligible (what needs attention \
+                       now, with a machine-readable reason per item), complete (with optional \
+                       evidence memory), snooze (until a time), cancel, attach_external (record a \
+                       verified Things/Linear reference), history (event audit for an item). \
+                       Statuses: open, snoozed, resolved, cancelled. Completion never rewrites \
+                       the source memory."
+    )]
+    async fn memory_action(
+        &self,
+        Parameters(params): Parameters<ActionParams>,
+    ) -> Result<String, String> {
+        use clio_core::attention;
+
+        let action = params.action.to_lowercase();
+        match action.as_str() {
+            "add" => {
+                if params.content.is_none() && params.memory_id.is_none() {
+                    return Err("action 'add' requires content or memory_id".into());
+                }
+            }
+            "complete" | "snooze" | "cancel" | "attach_external" | "history" => {
+                params
+                    .action_id
+                    .as_deref()
+                    .ok_or_else(|| format!("action '{action}' requires an id"))?;
+                if action == "snooze" && params.until.is_none() {
+                    return Err("action 'snooze' requires until".into());
+                }
+                if action == "attach_external"
+                    && (params.external_system.is_none() || params.external_ref.is_none())
+                {
+                    return Err(
+                        "action 'attach_external' requires external_system and external_ref".into(),
+                    );
+                }
+            }
+            "list" | "eligible" => {}
+            other => {
+                return Err(format!(
+                    "unknown action '{other}'. Expected add, list, eligible, complete, snooze, \
+                     cancel, attach_external, or history."
+                ));
+            }
+        }
+
+        let limit = cap_limit(params.limit);
+        let conn = self.conn.clone();
+        let settings = self.settings()?;
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock().map_err(|e| format!("lock error: {e}"))?;
+            let cwd_path = params.cwd.as_deref().map(std::path::Path::new);
+            let detected_namespace = params.namespace.clone().or_else(|| {
+                if settings.context.auto_detect {
+                    params.clio_namespace.clone().or_else(|| {
+                        cwd_path
+                            .and_then(clio_core::context::detect_namespace)
+                            .map(|ctx| ctx.namespace)
+                    })
+                } else {
+                    None
+                }
+            });
+
+            match action.as_str() {
+                "add" => {
+                    conn.execute_batch("BEGIN IMMEDIATE")
+                        .map_err(|e| format!("lock error: {e}"))?;
+                    let result = (|| -> Result<attention::AttentionItem, String> {
+                        let memory_id = match (&params.memory_id, &params.content) {
+                            (Some(id), _) => id.clone(),
+                            (None, Some(text)) => {
+                                clio_core::repository::remember(
+                                    &conn,
+                                    &clio_core::models::RememberInput {
+                                        namespace: detected_namespace
+                                            .clone()
+                                            .unwrap_or_else(|| "global".into()),
+                                        kind: "task".into(),
+                                        title: None,
+                                        summary: None,
+                                        content: text.clone(),
+                                        tags: vec!["follow-up".into()],
+                                        source: None,
+                                        source_ref: None,
+                                        confidence: None,
+                                        importance: 3,
+                                        metadata: serde_json::json!({}),
+                                        valid_from: None,
+                                        valid_until: None,
+                                        upsert: false,
+                                    },
+                                    &settings,
+                                )
+                                .map_err(|e| format_clio_error(&e))?
+                                .id
+                            }
+                            (None, None) => unreachable!("validated above"),
+                        };
+                        attention::create_attention(
+                            &conn,
+                            &attention::AttentionInput {
+                                memory_id,
+                                owner: params.owner.clone(),
+                                due_at: params.due_at.clone(),
+                                remind_at: params.remind_at.clone(),
+                                trigger: params.trigger.clone(),
+                                waiting_on: params.waiting_on.clone(),
+                                completion_condition: params.completion_condition.clone(),
+                                actor: Some("agent".into()),
+                            },
+                        )
+                        .map_err(|e| format_clio_error(&e))
+                    })();
+                    match result {
+                        Ok(item) => {
+                            conn.execute_batch("COMMIT")
+                                .map_err(|e| format!("commit error: {e}"))?;
+                            serde_json::to_string_pretty(&item)
+                                .map_err(|e| format!("Serialisation error: {e}"))
+                        }
+                        Err(e) => {
+                            let _ = conn.execute_batch("ROLLBACK");
+                            Err(e)
+                        }
+                    }
+                }
+                "list" => {
+                    let items = attention::list_attention(
+                        &conn,
+                        detected_namespace.as_deref(),
+                        params.status.as_deref(),
+                        limit,
+                    )
+                    .map_err(|e| format_clio_error(&e))?;
+                    serde_json::to_string_pretty(&items)
+                        .map_err(|e| format!("Serialisation error: {e}"))
+                }
+                "eligible" => {
+                    let context = attention::EligibilityContext {
+                        namespace: detected_namespace,
+                        scope: params.scope.clone(),
+                        now: clio_core::models::now_utc(),
+                        dormant_days: settings.attention.dormant_days,
+                    };
+                    let items =
+                        attention::eligible(&conn, &context).map_err(|e| format_clio_error(&e))?;
+                    serde_json::to_string_pretty(&items)
+                        .map_err(|e| format!("Serialisation error: {e}"))
+                }
+                "complete" => {
+                    let id = params.action_id.as_deref().expect("validated present");
+                    let item = attention::complete(
+                        &conn,
+                        id,
+                        params.evidence.as_deref(),
+                        params.reason.as_deref(),
+                        Some("agent"),
+                    )
+                    .map_err(|e| format_clio_error(&e))?;
+                    serde_json::to_string_pretty(&item)
+                        .map_err(|e| format!("Serialisation error: {e}"))
+                }
+                "snooze" => {
+                    let id = params.action_id.as_deref().expect("validated present");
+                    let until = params.until.as_deref().expect("validated present");
+                    let item = attention::snooze(&conn, id, until, Some("agent"))
+                        .map_err(|e| format_clio_error(&e))?;
+                    serde_json::to_string_pretty(&item)
+                        .map_err(|e| format!("Serialisation error: {e}"))
+                }
+                "cancel" => {
+                    let id = params.action_id.as_deref().expect("validated present");
+                    let item =
+                        attention::cancel(&conn, id, params.reason.as_deref(), Some("agent"))
+                            .map_err(|e| format_clio_error(&e))?;
+                    serde_json::to_string_pretty(&item)
+                        .map_err(|e| format!("Serialisation error: {e}"))
+                }
+                "attach_external" => {
+                    let id = params.action_id.as_deref().expect("validated present");
+                    let item = attention::attach_external(
+                        &conn,
+                        id,
+                        params.external_system.as_deref().expect("validated"),
+                        params.external_ref.as_deref().expect("validated"),
+                        Some("agent"),
+                    )
+                    .map_err(|e| format_clio_error(&e))?;
+                    serde_json::to_string_pretty(&item)
+                        .map_err(|e| format!("Serialisation error: {e}"))
+                }
+                "history" => {
+                    let id = params.action_id.as_deref().expect("validated present");
+                    let item = attention::resolve_attention(&conn, id)
+                        .map_err(|e| format_clio_error(&e))?;
+                    let events = clio_core::events::list_events(&conn, &item.memory_id, limit)
+                        .map_err(|e| format_clio_error(&e))?;
+                    serde_json::to_string_pretty(&events)
+                        .map_err(|e| format!("Serialisation error: {e}"))
+                }
+                _ => unreachable!("action validated above"),
+            }
+        })
+        .await
+        .map_err(|e| format!("Internal error: task failed: {e}"))?
+    }
+
     /// Clear all in-memory caches. Individual record reads are always fresh.
     #[tool(
         description = "Clear bounded recall and namespace caches. Individual memory and embedding reads are not cached. Returns counts of entries cleared."
@@ -2147,7 +2463,10 @@ impl ServerHandler for ClioServer {
                  - memory_inbox: review queued captures (list/approve/reject/edit via `action`).\n\
                  - memory_session_checkpoint: distil a session delta exactly once, keyed by \
                  source + session_id + cursor. Retries replay the stored result; an empty \
-                 extraction is a successful checkpoint. Requires a configured capture model.\n\n\
+                 extraction is a successful checkpoint. Requires a configured capture model.\n\
+                 - memory_action: follow-up attention on memories (open loops). Open attention \
+                 for explicit user commitments immediately with action:add; complete with \
+                 evidence when done. action:eligible reports what needs attention now and why.\n\n\
                  TICKET CONVENTION: when working a tracked issue, tag stored memories \
                  `ticket:<issue-id>` (lowercase). Tags are FTS-indexed, so a later handoff \
                  brief for that id finds them.\n\n\

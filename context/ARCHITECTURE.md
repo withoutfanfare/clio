@@ -135,6 +135,8 @@ Modules:
 - `settings.rs` — load/save `clio-settings.json` for embedding backend, auto-embed toggle, capture config (incl. `review_threshold`), context detection config, daemon config, shared SSH route, `ScoringConfig`, and `AutoLinkConfig`
 - `capture.rs` — LLM-based capture pipeline: `classify()`, `parse_classification()`, `capture()`; gated behind the `capture` feature flag
 - `checkpoint.rs` — exact-once session checkpoints keyed by `(source, session_id, cursor)`: preflight lookup, in-transaction recheck, atomic atom + review + checkpoint storage, stored-result replay; model extraction and embedding stay outside the write transaction
+- `attention.rs` — narrow follow-up lifecycle (`open`/`snoozed`/`resolved`/`cancelled`): idempotent creation, guarded transitions with audit events, evidence-backed completion via `resolved_by` links, pure-read eligibility with machine-readable reasons and once-per-scope surfacing
+- `events.rs` — append-only `memory_events` ledger with a narrow validated vocabulary and idempotency keys; state-changing events share the parent transaction, observational events are fire-and-forget
 - `migrate.rs` — cross-tool memory importers for Claude and ChatGPT exports; deterministic content-hash `source_ref` for idempotent re-import; optional `--classify` path via capture pipeline
 - `context.rs` — automatic namespace detection from cwd: walks up the directory tree checking `.clio-namespace` file → `.git` → `Cargo.toml`/`package.json`; `detect_namespace()`, `resolve_namespace()`, `resolve_namespace_with_context()`, `init_namespace()`
 - `stats.rs` — analytics queries: `memory_stats()` (counts, namespace/kind breakdown, weekly timeline, tag frequency, link density, embedding coverage), `tag_frequency()`, `timeline()`, `recent_activity()` (create/update/archive event feed)
@@ -157,7 +159,7 @@ Must NOT: open ad hoc SQL queries, implement its own validation rules.
 
 Thin MCP adapter. Maps MCP payloads to core input types.
 
-Tools: `memory_remember`, `memory_update`, `memory_recall`, `memory_get`, `memory_recent`, `memory_link`, `memory_archive`, `memory_unarchive`, `memory_delete`, `memory_move`, `memory_namespaces`, `memory_get_links`, `memory_capture`, `memory_session_checkpoint`, `memory_search`, `memory_stats`, `memory_activity`, `memory_suggest_links`, `memory_context`, `memory_inbox`, `memory_cache_clear`
+Tools: `memory_remember`, `memory_update`, `memory_recall`, `memory_get`, `memory_recent`, `memory_link`, `memory_archive`, `memory_unarchive`, `memory_delete`, `memory_move`, `memory_namespaces`, `memory_get_links`, `memory_capture`, `memory_session_checkpoint`, `memory_action`, `memory_search`, `memory_stats`, `memory_activity`, `memory_suggest_links`, `memory_context`, `memory_inbox`, `memory_cache_clear`
 
 Must NOT: duplicate persistence logic, invent alternate search semantics.
 

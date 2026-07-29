@@ -239,6 +239,34 @@ result envelope includes `replayed`, `stored_memory_ids` and
 
 ---
 
+## Follow-up Attention (open loops)
+
+`clio action` manages the attention lifecycle: follow-ups you committed to,
+things you are waiting on, decisions still owed. Statuses are `open`,
+`snoozed`, `resolved` and `cancelled`; resolved and cancelled are terminal.
+Completing an item never rewrites the underlying memory — it records an event
+and, with `--evidence`, a `resolved_by` link to the proof.
+
+```sh
+# Open attention with a new task memory, or on an existing memory
+clio action add "Verify the deployment after release" --owner user --due 2026-08-01T00:00:00Z
+clio action add --memory <id> --trigger project-session
+
+# What needs attention now, and why (overdue, reminder_due, project_session, dormant)
+clio action eligible
+
+clio action list --status open
+clio action snooze <id> --until 2026-08-15T00:00:00Z
+clio action complete <id> --evidence <memory-id> --reason "shipped"
+clio action cancel <id> --reason "obsolete"
+clio action attach-external <id> --system things --ref <external-id>
+clio action history <id>
+```
+
+`<id>` accepts either the attention item ID or the memory ID.
+
+---
+
 ## Archiving & Deletion
 
 ```sh

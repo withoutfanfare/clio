@@ -860,6 +860,48 @@ Stop-hook capture retries after a lost response, a provider 429 or an outage. Wi
 - LLM returned unparseable JSON → validation error; the key stays open for retry
 - storage failure → transaction rolled back, actionable storage error
 
+## `memory_action`
+
+Manage follow-up attention on memories — the open-loops lifecycle.
+
+### Why it exists
+
+Memories record what was said; attention records what is still owed. An explicit user commitment ("I'll verify the deployment tomorrow") should open attention immediately, resurface at the right moment with a reason, and resolve with evidence — without ever rewriting the underlying memory or losing its audit history.
+
+### Input
+
+One merged tool with an `action` discriminator, mirroring `memory_inbox`:
+
+```json
+{ "action": "add", "content": "Verify the deployment after release", "owner": "user", "due_at": "2026-08-01T00:00:00Z" }
+{ "action": "add", "memory_id": "0195…", "trigger": "project-session" }
+{ "action": "list", "namespace": "project:clio", "status": "open" }
+{ "action": "eligible", "namespace": "project:clio", "scope": "session-b2c3" }
+{ "action": "complete", "id": "0195…", "evidence": "0195…", "reason": "shipped" }
+{ "action": "snooze", "id": "0195…", "until": "2026-08-15T00:00:00Z" }
+{ "action": "cancel", "id": "0195…", "reason": "obsolete" }
+{ "action": "attach_external", "id": "0195…", "external_system": "things", "external_ref": "things-id" }
+{ "action": "history", "id": "0195…" }
+```
+
+`id` accepts either the attention item ID or the underlying memory ID.
+
+### Behaviour
+
+- `add` opens attention on an existing memory (`memory_id`) or creates a `task` memory from `content` and opens attention on it — memory, attention row and initial event commit atomically. Creation is idempotent per memory.
+- Statuses are only `open`, `snoozed`, `resolved`, `cancelled`. Invalid transitions are validation errors; `resolved`/`cancelled` are terminal.
+- `eligible` is a pure read returning each item with a machine-readable `reason` (`overdue`, `reminder_due`, `project_session`, `dormant`). Passing `scope` suppresses items already surfaced in that session/topic for the same reason and state.
+- `complete` records a `resolved` event and, when `evidence` is given, a `resolved_by` link from the followed-up memory to the evidence memory. The source memory is never rewritten.
+- `attach_external` records a verified external reference and keeps the item open; it does not mark anything delivered.
+- `history` returns the append-only event trail for the item's memory.
+
+### Failure cases
+
+- missing required fields per action → validation error naming the field
+- unknown action → validation error listing the valid actions
+- id resolving to no attention item → not-found error
+- invalid transition (e.g. completing a cancelled item) → validation error stating both states
+
 ## `memory_stats`
 
 Get aggregate statistics about the memory system.
