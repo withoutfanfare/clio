@@ -451,6 +451,14 @@ struct CaptureArgs {
     /// Show classification without storing the memory.
     #[arg(long)]
     dry_run: bool,
+
+    /// Use a different model for this request without changing settings.
+    #[arg(long)]
+    model: Option<String>,
+
+    /// Include latency and token usage in dry-run output.
+    #[arg(long, requires = "dry_run")]
+    metrics: bool,
 }
 
 #[derive(Parser)]
@@ -473,6 +481,14 @@ struct DistillArgs {
     /// Show the distilled memories without storing them.
     #[arg(long)]
     dry_run: bool,
+
+    /// Use a different model for this request without changing settings.
+    #[arg(long)]
+    model: Option<String>,
+
+    /// Include latency and token usage in dry-run output.
+    #[arg(long, requires = "dry_run")]
+    metrics: bool,
 }
 
 #[derive(Parser)]
@@ -700,6 +716,12 @@ enum SettingsSubcommand {
         base_url: Option<String>,
     },
 
+    /// Change only the active capture model, preserving credentials and endpoint.
+    SetCaptureModel {
+        /// OpenAI-compatible chat model ID.
+        model: String,
+    },
+
     /// Disable the capture pipeline.
     DisableCapture,
 
@@ -896,17 +918,20 @@ fn run_with_routing(cli: Cli, raw_args: &[OsString]) -> Result<(), Box<dyn std::
 }
 
 fn command_uses_shared_storage(command: &Command) -> bool {
-    !matches!(
-        command,
+    match command {
+        Command::Settings(SettingsArgs {
+            command: SettingsSubcommand::SetCaptureModel { .. },
+        }) => true,
         Command::Init(_)
-            | Command::Context
-            | Command::Settings(_)
-            | Command::Serve
-            | Command::RemoteMcp(_)
-            | Command::Setup(_)
-            | Command::Daemon { .. }
-            | Command::Cache { .. }
-    )
+        | Command::Context
+        | Command::Settings(_)
+        | Command::Serve
+        | Command::RemoteMcp(_)
+        | Command::Setup(_)
+        | Command::Daemon { .. }
+        | Command::Cache { .. } => false,
+        _ => true,
+    }
 }
 
 fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
@@ -1751,6 +1776,25 @@ fn cmd_search(
     Ok(())
 }
 
+fn normalise_capture_model(model: &str) -> Result<String, Box<dyn std::error::Error>> {
+    let model = model.trim();
+    if model.is_empty() {
+        return Err("capture model cannot be empty".into());
+    }
+    Ok(model.to_string())
+}
+
+fn capture_config_with_model(
+    config: &settings::CaptureConfig,
+    model: Option<&str>,
+) -> Result<settings::CaptureConfig, Box<dyn std::error::Error>> {
+    let mut config = config.clone();
+    if let Some(model) = model {
+        config.model = normalise_capture_model(model)?;
+    }
+    Ok(config)
+}
+
 fn cmd_capture(
     db_path: Option<&str>,
     json: bool,
@@ -1759,6 +1803,7 @@ fn cmd_capture(
     let path = resolve_db_path(db_path)?;
     let conn = db::open(&path)?;
     let s = settings::load(&path)?;
+    let capture_config = capture_config_with_model(&s.capture, args.model.as_deref())?;
 
     let text = if args.text == "-" {
         let mut buf = String::new();
@@ -1768,11 +1813,23 @@ fn cmd_capture(
         args.text
     };
 
-    let classification = clio_core::capture::classify(&text, &s.capture)?;
+    let started = std::time::Instant::now();
+    let (classification, usage) = clio_core::capture::classify_with_usage(&text, &capture_config)?;
+    let elapsed_ms = started.elapsed().as_millis();
 
     if args.dry_run {
         if json {
-            println!("{}", serde_json::to_string_pretty(&classification)?);
+            let output = if args.metrics {
+                serde_json::json!({
+                    "model": capture_config.model,
+                    "elapsed_ms": elapsed_ms,
+                    "usage": usage,
+                    "result": classification,
+                })
+            } else {
+                serde_json::to_value(&classification)?
+            };
+            println!("{}", serde_json::to_string_pretty(&output)?);
         } else {
             eprintln!("Dry run — classification result:");
             eprintln!("  kind:       {}", classification.kind);
@@ -1782,6 +1839,14 @@ fn cmd_capture(
             eprintln!("  namespace:  {}", classification.namespace);
             eprintln!("  importance: {}", classification.importance);
             eprintln!("  confidence: {:.2}", classification.confidence);
+            if args.metrics {
+                eprintln!("  model:      {}", capture_config.model);
+                eprintln!("  latency:    {elapsed_ms} ms");
+                eprintln!(
+                    "  tokens:     {} input, {} output, {} reasoning",
+                    usage.input_tokens, usage.output_tokens, usage.reasoning_tokens
+                );
+            }
         }
         return Ok(());
     }
@@ -1827,6 +1892,7 @@ fn cmd_distill(
     let path = resolve_db_path(db_path)?;
     let conn = db::open(&path)?;
     let s = settings::load(&path)?;
+    let capture_config = capture_config_with_model(&s.capture, args.model.as_deref())?;
 
     let text = if args.text == "-" {
         let mut buf = String::new();
@@ -1837,9 +1903,21 @@ fn cmd_distill(
     };
 
     if args.dry_run {
-        let memories = clio_core::capture::distill(&text, &s.capture)?;
+        let started = std::time::Instant::now();
+        let (memories, usage) = clio_core::capture::distill_with_usage(&text, &capture_config)?;
+        let elapsed_ms = started.elapsed().as_millis();
         if json {
-            println!("{}", serde_json::to_string_pretty(&memories)?);
+            let output = if args.metrics {
+                serde_json::json!({
+                    "model": capture_config.model,
+                    "elapsed_ms": elapsed_ms,
+                    "usage": usage,
+                    "result": memories,
+                })
+            } else {
+                serde_json::to_value(&memories)?
+            };
+            println!("{}", serde_json::to_string_pretty(&output)?);
         } else if memories.is_empty() {
             eprintln!("Dry run — nothing durable to distil.");
         } else {
@@ -1847,6 +1925,14 @@ fn cmd_distill(
             for m in &memories {
                 eprintln!("  [{}] {} (importance {})", m.kind, m.title, m.importance);
             }
+        }
+        if args.metrics && !json {
+            eprintln!("  model:      {}", capture_config.model);
+            eprintln!("  latency:    {elapsed_ms} ms");
+            eprintln!(
+                "  tokens:     {} input, {} output, {} reasoning",
+                usage.input_tokens, usage.output_tokens, usage.reasoning_tokens
+            );
         }
         return Ok(());
     }
@@ -1868,7 +1954,7 @@ fn cmd_distill(
     let results = clio_core::capture::distill_and_store(
         &conn,
         &text,
-        &s.capture,
+        &capture_config,
         args.namespace.as_deref(),
         default_namespace.as_deref(),
         &args.source,
@@ -2226,6 +2312,12 @@ fn cmd_settings(
             };
             settings::save(&path, &s)?;
             eprintln!("Capture pipeline enabled.");
+        }
+        SettingsSubcommand::SetCaptureModel { model } => {
+            let mut s = settings::load(&path)?;
+            s.capture.model = normalise_capture_model(&model)?;
+            settings::save(&path, &s)?;
+            eprintln!("Capture model set to {}.", s.capture.model);
         }
         SettingsSubcommand::DisableCapture => {
             let mut s = settings::load(&path)?;
@@ -3595,4 +3687,36 @@ fn setup_json_merge(p: &SetupMergeParams<'_>) -> Result<(), Box<dyn std::error::
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn capture_model_setting_routes_to_the_shared_backend() {
+        let setting = Command::Settings(SettingsArgs {
+            command: SettingsSubcommand::SetCaptureModel {
+                model: "gpt-5.6-luna".into(),
+            },
+        });
+        let show = Command::Settings(SettingsArgs {
+            command: SettingsSubcommand::Show,
+        });
+
+        assert!(command_uses_shared_storage(&setting));
+        assert!(!command_uses_shared_storage(&show));
+    }
+
+    #[test]
+    fn capture_model_override_preserves_other_settings() {
+        let mut base = settings::CaptureConfig::default();
+        base.enabled = true;
+        base.api_key = Some("secret".into());
+        let changed = capture_config_with_model(&base, Some(" gpt-5.6-terra ")).unwrap();
+
+        assert_eq!(changed.model, "gpt-5.6-terra");
+        assert_eq!(changed.api_key, base.api_key);
+        assert!(capture_config_with_model(&base, Some("  ")).is_err());
+    }
 }

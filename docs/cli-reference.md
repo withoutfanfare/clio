@@ -175,10 +175,14 @@ Sends unstructured text to an LLM for automatic classification.
 clio settings use-capture --api-key sk-...
 
 # Preview classification without storing
-clio capture --text "We decided to use Redis for caching" --dry-run
+clio capture "We decided to use Redis for caching" --dry-run
+
+# Compare another model without changing the active setting
+clio --json capture "We decided to use Redis for caching" \
+  --dry-run --model gpt-5.6-luna --metrics
 
 # Capture and store
-clio capture --text "We decided to use Redis for caching"
+clio capture "We decided to use Redis for caching"
 ```
 
 Capture reports either `Stored` with the memory or `Queued` with a review item
@@ -379,6 +383,7 @@ clio settings use-openai --api-key sk-...  # higher quality, needs key
 
 # Capture pipeline
 clio settings use-capture --api-key sk-... --model gpt-4o-mini
+clio settings set-capture-model gpt-5.6-luna
 
 # Route shared operations through an SSH host
 clio settings use-remote \

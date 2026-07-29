@@ -61,6 +61,17 @@ repeat it with an appropriate `--batch-size` until every memory is refreshed.
 | `model` | string | `"gpt-4o-mini"` | Classification model |
 | `review_threshold` | float? | `null` | Confidence below this routes to review queue; `null` disables review |
 
+Change only the model, without replacing the API key or endpoint:
+
+```sh
+clio settings set-capture-model gpt-5.6-luna
+```
+
+On a Mac configured with `settings use-remote`, this command updates Atlas.
+Use `capture --model <model> --dry-run` or `distill --model <model> --dry-run`
+for a one-off comparison that does not change the active setting. Add
+`--metrics` to include latency and provider-reported token usage.
+
 ## context
 
 | Key | Type | Default | Description |

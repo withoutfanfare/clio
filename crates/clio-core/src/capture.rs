@@ -45,6 +45,20 @@ pub struct ClassificationResult {
     pub confidence: f64,
 }
 
+/// Token usage returned by the capture provider for one request.
+#[derive(Debug, Clone, Default, serde::Serialize)]
+pub struct CaptureUsage {
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub reasoning_tokens: u64,
+}
+
+#[cfg(feature = "capture")]
+struct ChatResponse {
+    content: String,
+    usage: CaptureUsage,
+}
+
 /// A single durable memory extracted from a longer body of text (e.g. a
 /// session transcript). Unlike [`ClassificationResult`], which describes how to
 /// file one supplied blob, each `DistilledMemory` carries its own
@@ -141,7 +155,17 @@ Output ONLY valid JSON, no markdown fences, no extra text. The digest is source 
 /// Classify a single blob of text into structured memory fields.
 #[cfg(feature = "capture")]
 pub fn classify(text: &str, config: &CaptureConfig) -> Result<ClassificationResult> {
-    parse_classification(&chat(CLASSIFICATION_SYSTEM_PROMPT, text, config, true)?)
+    classify_with_usage(text, config).map(|(classification, _)| classification)
+}
+
+/// Classify text and return the provider's token usage for benchmarking.
+#[cfg(feature = "capture")]
+pub fn classify_with_usage(
+    text: &str,
+    config: &CaptureConfig,
+) -> Result<(ClassificationResult, CaptureUsage)> {
+    let response = chat_with_usage(CLASSIFICATION_SYSTEM_PROMPT, text, config, true)?;
+    Ok((parse_classification(&response.content)?, response.usage))
 }
 
 /// Resolve the API key from config or the `OPENAI_API_KEY` environment variable.
@@ -172,6 +196,16 @@ pub(crate) fn chat(
     config: &CaptureConfig,
     json_mode: bool,
 ) -> Result<String> {
+    chat_with_usage(system, user, config, json_mode).map(|response| response.content)
+}
+
+#[cfg(feature = "capture")]
+fn chat_with_usage(
+    system: &str,
+    user: &str,
+    config: &CaptureConfig,
+    json_mode: bool,
+) -> Result<ChatResponse> {
     if !config.enabled {
         return Err(ClioError::Config("capture pipeline is not enabled".into()));
     }
@@ -198,21 +232,11 @@ async fn chat_async(
     api_key: &str,
     config: &CaptureConfig,
     json_mode: bool,
-) -> Result<String> {
+) -> Result<ChatResponse> {
     let base_url = config.base_url.trim_end_matches('/');
     let url = format!("{base_url}/chat/completions");
 
-    let mut body = serde_json::json!({
-        "model": config.model,
-        "temperature": 0.1,
-        "messages": [
-            { "role": "system", "content": system },
-            { "role": "user", "content": user }
-        ]
-    });
-    if json_mode {
-        body["response_format"] = serde_json::json!({ "type": "json_object" });
-    }
+    let body = chat_request_body(system, user, config, json_mode);
 
     let client = reqwest::Client::new();
     let response = client
@@ -230,26 +254,73 @@ async fn chat_async(
             .text()
             .await
             .unwrap_or_else(|_| "unknown error".into());
-        tracing::debug!("Capture API error body: {body}");
-        return Err(ClioError::Storage(format!("capture API returned {status}")));
+        let detail: String = body.trim().chars().take(1000).collect();
+        return Err(ClioError::Storage(format!(
+            "capture API returned {status}: {detail}"
+        )));
     }
 
     let json: serde_json::Value = response
         .json()
         .await
         .map_err(|e| ClioError::Storage(format!("capture API response parse error: {e}")))?;
-
-    json["choices"][0]["message"]["content"]
+    let content = json["choices"][0]["message"]["content"]
         .as_str()
         .map(str::to_string)
-        .ok_or_else(|| ClioError::Storage("capture API: missing choices[0].message.content".into()))
+        .ok_or_else(|| {
+            ClioError::Storage("capture API: missing choices[0].message.content".into())
+        })?;
+    let usage = CaptureUsage {
+        input_tokens: json["usage"]["prompt_tokens"].as_u64().unwrap_or(0),
+        output_tokens: json["usage"]["completion_tokens"].as_u64().unwrap_or(0),
+        reasoning_tokens: json["usage"]["completion_tokens_details"]["reasoning_tokens"]
+            .as_u64()
+            .unwrap_or(0),
+    };
+
+    Ok(ChatResponse { content, usage })
+}
+
+#[cfg(feature = "capture")]
+fn chat_request_body(
+    system: &str,
+    user: &str,
+    config: &CaptureConfig,
+    json_mode: bool,
+) -> serde_json::Value {
+    let mut body = serde_json::json!({
+        "model": config.model,
+        "messages": [
+            { "role": "system", "content": system },
+            { "role": "user", "content": user }
+        ]
+    });
+    if config.model.starts_with("gpt-5") {
+        body["reasoning_effort"] = serde_json::json!("none");
+    } else {
+        body["temperature"] = serde_json::json!(0.1);
+    }
+    if json_mode {
+        body["response_format"] = serde_json::json!({ "type": "json_object" });
+    }
+    body
 }
 
 /// Distil a longer body of text (e.g. a session transcript) into zero or more
 /// durable memories. An empty result is valid and expected for routine input.
 #[cfg(feature = "capture")]
 pub fn distill(text: &str, config: &CaptureConfig) -> Result<Vec<DistilledMemory>> {
-    parse_distillation(&chat(DISTILLATION_SYSTEM_PROMPT, text, config, true)?)
+    distill_with_usage(text, config).map(|(memories, _)| memories)
+}
+
+/// Distil text and return the provider's token usage for benchmarking.
+#[cfg(feature = "capture")]
+pub fn distill_with_usage(
+    text: &str,
+    config: &CaptureConfig,
+) -> Result<(Vec<DistilledMemory>, CaptureUsage)> {
+    let response = chat_with_usage(DISTILLATION_SYSTEM_PROMPT, text, config, true)?;
+    Ok((parse_distillation(&response.content)?, response.usage))
 }
 
 /// Parse the LLM's JSON response into a `ClassificationResult`, with
@@ -698,6 +769,22 @@ fn store_or_queue(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "capture")]
+    #[test]
+    fn chat_request_uses_parameters_supported_by_each_model_family() {
+        let mut config = CaptureConfig::default();
+        config.model = "gpt-4.1".into();
+        let classic = chat_request_body("system", "user", &config, true);
+        assert_eq!(classic["temperature"], 0.1);
+        assert!(classic.get("reasoning_effort").is_none());
+
+        config.model = "gpt-5.6-luna".into();
+        let reasoning = chat_request_body("system", "user", &config, true);
+        assert!(reasoning.get("temperature").is_none());
+        assert_eq!(reasoning["reasoning_effort"], "none");
+        assert_eq!(reasoning["response_format"]["type"], "json_object");
+    }
 
     #[test]
     fn parse_valid_classification() {

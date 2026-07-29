@@ -184,6 +184,35 @@ MCP server cannot be activated from different releases. The first managed
 release also preserves any previous binaries and ONNX Runtime in a timestamped
 legacy directory.
 
+### Capture model changes
+
+From a Mac configured to use Atlas, change only the shared capture model with:
+
+```sh
+clio settings set-capture-model gpt-5.6-luna
+```
+
+The command preserves Atlas's API key, endpoint and review threshold. GPT-5
+models use `reasoning_effort: none` and omit `temperature`; older models retain
+the existing `temperature: 0.1` behaviour.
+
+Compare models without changing the shared setting by running the same text
+through each model:
+
+```sh
+for model in gpt-4.1 gpt-5.6-luna gpt-5.6-terra; do
+  clio --json capture "Decision: use Atlas as Clio's canonical backend." \
+    --dry-run --model "$model" --metrics
+done
+
+clio --json distill - --dry-run --model gpt-5.6-luna --metrics \
+  < session-digest.txt
+```
+
+Dry runs call the provider but never write a memory. Keep the input and rubric
+unchanged between runs, and record model, latency, input/output/reasoning tokens,
+classification and confidence before changing the shared setting.
+
 `status` reports the resolved binary paths and SHA-256 hashes. It also counts
 running `clio-mcp` processes and identifies processes still using an older or
 deleted executable.
