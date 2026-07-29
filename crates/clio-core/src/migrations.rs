@@ -184,6 +184,25 @@ const MIGRATIONS: &[Migration] = &[
             ALTER TABLE review_queue ADD COLUMN source_ref TEXT;
         "#,
     },
+    Migration {
+        version: "009_session_checkpoints",
+        sql: r#"
+            CREATE TABLE session_checkpoints (
+                id TEXT PRIMARY KEY,
+                source TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                cursor INTEGER NOT NULL,
+                namespace TEXT,
+                branch TEXT,
+                ticket TEXT,
+                result_json TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+
+            CREATE UNIQUE INDEX idx_session_checkpoints_identity
+                ON session_checkpoints(source, session_id, cursor);
+        "#,
+    },
 ];
 
 /// Run all pending migrations inside a transaction.

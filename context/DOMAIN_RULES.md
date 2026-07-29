@@ -174,6 +174,24 @@ The capture pipeline accepts unstructured text and produces a structured memory 
 - Capture returns an explicit `Stored` or `Queued` outcome; a queued outcome is not yet a memory
 - The raw input text is always stored as `content` unchanged
 
+### Session Checkpoints (Exact-Once Capture)
+
+A checkpoint commits the distillation of one session delta exactly once, keyed by `(source, session_id, cursor)`.
+
+1. Preflight: a completed key returns its stored result envelope (`replayed: true`) without calling the model
+2. Model extraction runs strictly outside the write transaction
+3. One `BEGIN IMMEDIATE` transaction rechecks the key under the write lock, stores every extracted memory or review item through the shared capture path, and inserts the checkpoint record — all atomically
+4. Any failure rolls back every write; the key stays open and the client job stays retryable
+5. An empty extraction is a successful checkpoint and is never redistilled
+6. Auto-embedding runs best-effort after commit and can never fail the checkpoint
+
+**Checkpoint invariants:**
+- A capture attempt ends in exactly one visible state: durable success (checkpoint row), pending retry (no row) or a surfaced error — never silent loss
+- A repeated or concurrent delivery of the same key replays the original result; no duplicate atoms
+- Per-atom provenance is `source` + `source_ref = {session_id}@{cursor}-{index}`, preserving the `UNIQUE(source, source_ref)` upsert rule
+- Checkpoint rows are the replay proof: never deleted to tidy up
+- Checkpoint idempotency is additional to, and must not weaken, source/source-ref upsert idempotency
+
 ### Migration (Cross-Tool Import)
 
 The migration pipeline imports memories from other AI tools (Claude, ChatGPT) into Clio.

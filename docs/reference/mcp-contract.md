@@ -795,6 +795,71 @@ Capture is controlled by the `capture` section of `clio-settings.json`:
 
 Configure via CLI: `clio settings use-capture --api-key <key> [--model <model>] [--base-url <url>]`
 
+## `memory_session_checkpoint`
+
+Distil one session delta and commit it as an exact-once checkpoint keyed by `source + session_id + cursor`.
+
+### Why it exists
+
+Stop-hook capture retries after a lost response, a provider 429 or an outage. Without a server-side identity, a retry either duplicates atoms or silently loses the delta. A checkpoint gives every capture attempt exactly one durable outcome: the first delivery stores the atoms and the result envelope atomically; every later delivery of the same key replays that stored result.
+
+### Input
+
+```json
+{
+  "text": "…redacted session-delta digest…",
+  "source": "claude-session",
+  "session_id": "b2c3d4",
+  "cursor": 1240,
+  "namespace": "project:clio",
+  "cwd": "/Users/alice/code/my-project",
+  "branch": "develop",
+  "ticket": "clio-123"
+}
+```
+
+### Input defaults
+
+- `namespace`: null — an explicit value overrides the namespace of every extracted memory
+- `cwd`: null (used for default-namespace detection, recorded in memory metadata)
+- `branch`, `ticket`: null (stored on the checkpoint row)
+
+### Validation rules
+
+- `text`, `source` and `session_id` are required and must not be empty
+- `cursor` must be zero or positive
+
+### Behaviour
+
+1. Preflight: if a checkpoint for `(source, session_id, cursor)` exists, return its stored result with `replayed: true` — the model is not called
+2. Otherwise distil `text` with the configured capture model (outside any write transaction)
+3. Open one write transaction, recheck the key under the lock, then store every extracted memory or review item and the checkpoint record atomically
+4. Any failure rolls back all writes — no partial session can persist; the key stays open for retry
+5. An empty extraction commits an empty checkpoint: success, never redistilled
+6. Auto-embedding runs best-effort after commit and cannot fail the checkpoint
+7. Namespace resolution per memory matches `clio distill`: explicit `namespace` → LLM `global` promotion → `cwd`-detected default → LLM suggestion
+
+### Response
+
+```json
+{
+  "checkpoint_id": "01954d70-cf20-7d42-bb3b-ff2f0f0de123",
+  "replayed": false,
+  "stored_memory_ids": ["01954d70-…"],
+  "queued_review_ids": [],
+  "created_at": "2026-07-29T16:04:48Z"
+}
+```
+
+`replayed: true` means the key had already completed and the stored envelope was returned unchanged.
+
+### Failure cases
+
+- capture not enabled / API key missing → configuration error (same as `memory_capture`)
+- LLM API request failed → storage error with HTTP status; the key stays open for retry
+- LLM returned unparseable JSON → validation error; the key stays open for retry
+- storage failure → transaction rolled back, actionable storage error
+
 ## `memory_stats`
 
 Get aggregate statistics about the memory system.

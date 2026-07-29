@@ -127,6 +127,11 @@ enum Command {
     /// more durable memories via LLM.
     Distill(DistillArgs),
 
+    /// Distil a session delta and commit it as an exact-once checkpoint keyed
+    /// by source + session + cursor. Safe to retry: a completed key replays
+    /// the stored result instead of creating duplicates.
+    Checkpoint(CheckpointArgs),
+
     /// Manage the review queue (low-confidence captures).
     Inbox(InboxArgs),
 
@@ -489,6 +494,41 @@ struct DistillArgs {
     /// Include latency and token usage in dry-run output.
     #[arg(long, requires = "dry_run")]
     metrics: bool,
+}
+
+#[derive(Parser)]
+struct CheckpointArgs {
+    /// The redacted session-delta digest to distil. Pass `-` to read from stdin.
+    text: String,
+
+    /// Capturing agent recorded on the checkpoint and each memory,
+    /// e.g. claude-session.
+    #[arg(long)]
+    source: String,
+
+    /// Client session identifier.
+    #[arg(long)]
+    session_id: String,
+
+    /// Monotonic transcript cursor marking where this delta ends.
+    #[arg(long)]
+    cursor: i64,
+
+    /// Override the namespace suggested by the LLM for every memory.
+    #[arg(long)]
+    namespace: Option<String>,
+
+    /// Git branch active during the session.
+    #[arg(long)]
+    branch: Option<String>,
+
+    /// Ticket/issue identifier associated with the work.
+    #[arg(long)]
+    ticket: Option<String>,
+
+    /// Use a different model for this request without changing settings.
+    #[arg(long)]
+    model: Option<String>,
 }
 
 #[derive(Parser)]
@@ -959,6 +999,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         Command::Search(args) => cmd_search(cli.db_path.as_deref(), cli.json, args),
         Command::Capture(args) => cmd_capture(cli.db_path.as_deref(), cli.json, args),
         Command::Distill(args) => cmd_distill(cli.db_path.as_deref(), cli.json, args),
+        Command::Checkpoint(args) => cmd_checkpoint(cli.db_path.as_deref(), cli.json, args),
         Command::Inbox(args) => cmd_inbox(cli.db_path.as_deref(), cli.json, args),
         Command::Stats(args) => cmd_stats(cli.db_path.as_deref(), cli.json, args),
         Command::Activity(args) => cmd_activity(cli.db_path.as_deref(), cli.json, args),
@@ -1874,6 +1915,63 @@ fn cmd_capture(
                 print_review_item(&item);
             }
         }
+    }
+
+    Ok(())
+}
+
+fn cmd_checkpoint(
+    db_path: Option<&str>,
+    json: bool,
+    args: CheckpointArgs,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let path = resolve_db_path(db_path)?;
+    let conn = db::open(&path)?;
+    let s = settings::load(&path)?;
+    let capture_config = capture_config_with_model(&s.capture, args.model.as_deref())?;
+
+    let text = if args.text == "-" {
+        let mut buf = String::new();
+        io::stdin().read_to_string(&mut buf)?;
+        buf
+    } else {
+        args.text
+    };
+
+    let cwd = if s.cleanup.record_cwd {
+        current_context_cwd()
+    } else {
+        None
+    };
+    let default_namespace = s.context.auto_detect.then(current_namespace).flatten();
+
+    let request = clio_core::checkpoint::CheckpointRequest {
+        source: args.source,
+        session_id: args.session_id,
+        cursor: args.cursor,
+        namespace_override: args.namespace,
+        default_namespace,
+        cwd,
+        branch: args.branch,
+        ticket: args.ticket,
+    };
+
+    let result = clio_core::checkpoint::checkpoint(&conn, &request, &text, &capture_config, &s)?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&result)?);
+    } else if result.replayed {
+        eprintln!(
+            "Checkpoint already completed — replayed {} stored, {} queued.",
+            result.stored_memory_ids.len(),
+            result.queued_review_ids.len()
+        );
+    } else {
+        eprintln!(
+            "Checkpoint stored — {} memory(ies), {} queued for review.",
+            result.stored_memory_ids.len(),
+            result.queued_review_ids.len()
+        );
     }
 
     Ok(())
@@ -3723,6 +3821,21 @@ mod tests {
         assert!(command_uses_shared_storage(&setting));
         assert!(command_uses_shared_storage(&show_capture));
         assert!(!command_uses_shared_storage(&show));
+    }
+
+    #[test]
+    fn checkpoint_routes_to_the_shared_backend() {
+        let checkpoint = Command::Checkpoint(CheckpointArgs {
+            text: "-".into(),
+            source: "claude-session".into(),
+            session_id: "session-1".into(),
+            cursor: 10,
+            namespace: None,
+            branch: None,
+            ticket: None,
+            model: None,
+        });
+        assert!(command_uses_shared_storage(&checkpoint));
     }
 
     #[test]

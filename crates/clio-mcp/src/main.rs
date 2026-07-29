@@ -342,6 +342,42 @@ struct CaptureParams {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+struct SessionCheckpointParams {
+    /// Redacted session-delta digest to distil.
+    text: String,
+
+    /// Capturing agent, e.g. claude-session.
+    source: String,
+
+    /// Client session identifier.
+    session_id: String,
+
+    /// Monotonic transcript cursor marking where this delta ends.
+    cursor: i64,
+
+    /// Namespace override applied to every extracted memory.
+    #[serde(default)]
+    namespace: Option<String>,
+
+    /// Working dir for namespace detection.
+    #[serde(default)]
+    cwd: Option<String>,
+
+    /// Git branch active during the session.
+    #[serde(default)]
+    branch: Option<String>,
+
+    /// Ticket/issue identifier associated with the work.
+    #[serde(default)]
+    ticket: Option<String>,
+
+    /// Namespace detected by a local remote bridge.
+    #[serde(default, rename = "_clio_namespace")]
+    #[schemars(skip)]
+    clio_namespace: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 struct SearchParams {
     /// Search query.
     query: String,
@@ -662,6 +698,32 @@ mod namespace_tests {
                 expected
             );
         }
+    }
+
+    #[test]
+    fn session_checkpoint_params_default_optional_context() {
+        let params: super::SessionCheckpointParams = serde_json::from_value(serde_json::json!({
+            "text": "digest",
+            "source": "claude-session",
+            "session_id": "session-1",
+            "cursor": 40
+        }))
+        .unwrap();
+        assert!(params.namespace.is_none());
+        assert!(params.branch.is_none());
+        assert!(params.ticket.is_none());
+        assert!(params.clio_namespace.is_none());
+
+        // The local remote bridge injects the detected namespace on the wire.
+        let bridged: super::SessionCheckpointParams = serde_json::from_value(serde_json::json!({
+            "text": "digest",
+            "source": "claude-session",
+            "session_id": "session-1",
+            "cursor": 40,
+            "_clio_namespace": "project:clio"
+        }))
+        .unwrap();
+        assert_eq!(bridged.clio_namespace.as_deref(), Some("project:clio"));
     }
 
     #[test]
@@ -1642,6 +1704,62 @@ impl ClioServer {
         .map_err(|e| format!("Internal error: task failed: {e}"))?
     }
 
+    #[tool(
+        description = "Distil a session delta and commit it as an exact-once checkpoint keyed by \
+                       source + session_id + cursor. Safe to retry: a completed key replays the \
+                       stored result (memory and review IDs) instead of creating duplicates. An \
+                       empty extraction is a successful checkpoint. Requires a configured capture \
+                       model; returns a configuration error otherwise."
+    )]
+    async fn memory_session_checkpoint(
+        &self,
+        Parameters(params): Parameters<SessionCheckpointParams>,
+    ) -> Result<String, String> {
+        if params.text.trim().is_empty() {
+            return Err("text must not be empty.".into());
+        }
+        let conn = self.conn.clone();
+        let settings = self.settings()?;
+        tokio::task::spawn_blocking(move || {
+            // Resolve the default namespace from cwd like memory_capture, but
+            // keep an explicit namespace as the override that always wins.
+            let cwd_path = params.cwd.as_deref().map(std::path::Path::new);
+            let default_namespace = if settings.context.auto_detect {
+                params.clio_namespace.clone().or_else(|| {
+                    cwd_path
+                        .and_then(clio_core::context::detect_namespace)
+                        .map(|ctx| ctx.namespace)
+                })
+            } else {
+                None
+            };
+
+            let request = clio_core::checkpoint::CheckpointRequest {
+                source: params.source,
+                session_id: params.session_id,
+                cursor: params.cursor,
+                namespace_override: params.namespace,
+                default_namespace,
+                cwd: params.cwd,
+                branch: params.branch,
+                ticket: params.ticket,
+            };
+
+            let conn = conn.lock().map_err(|e| format!("lock error: {e}"))?;
+            let result = clio_core::checkpoint::checkpoint(
+                &conn,
+                &request,
+                &params.text,
+                &settings.capture,
+                &settings,
+            )
+            .map_err(|e| format_clio_error(&e))?;
+            serde_json::to_string_pretty(&result).map_err(|e| format!("Serialisation error: {e}"))
+        })
+        .await
+        .map_err(|e| format!("Internal error: task failed: {e}"))?
+    }
+
     /// Semantic vector search.
     #[tool(
         description = "Semantic (vector) search for similar memories. Requires a configured \
@@ -2026,7 +2144,10 @@ impl ServerHandler for ClioServer {
                  person-brief, decision-history, active-constraints, recent-activity, handoff, custom. \
                  The handoff preset requires `query` (a ticket id or topic) and returns a pickup \
                  brief: relevant memories, active constraints, recent receipts.\n\
-                 - memory_inbox: review queued captures (list/approve/reject/edit via `action`).\n\n\
+                 - memory_inbox: review queued captures (list/approve/reject/edit via `action`).\n\
+                 - memory_session_checkpoint: distil a session delta exactly once, keyed by \
+                 source + session_id + cursor. Retries replay the stored result; an empty \
+                 extraction is a successful checkpoint. Requires a configured capture model.\n\n\
                  TICKET CONVENTION: when working a tracked issue, tag stored memories \
                  `ticket:<issue-id>` (lowercase). Tags are FTS-indexed, so a later handoff \
                  brief for that id finds them.\n\n\

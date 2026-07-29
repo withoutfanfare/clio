@@ -520,8 +520,7 @@ pub fn is_session_noise(title: &str) -> bool {
 /// `override_ns` (explicit `--namespace`) → the model's `"global"` promotion →
 /// `default_ns` (the working directory's namespace) → the model's suggestion.
 /// See [`distill_and_store`] for the rationale.
-#[cfg(any(feature = "capture", test))]
-fn resolve_distill_namespace(
+pub(crate) fn resolve_distill_namespace(
     override_ns: Option<&str>,
     llm_choice: &str,
     default_ns: Option<&str>,
@@ -583,6 +582,7 @@ pub fn capture_with_classification(
         None,
         &serde_json::json!({}),
         settings,
+        true,
     )
 }
 
@@ -655,6 +655,7 @@ pub fn distill_and_store(
             item_ref.as_deref(),
             &metadata,
             settings,
+            true,
         )?);
     }
 
@@ -663,10 +664,13 @@ pub fn distill_and_store(
 
 /// Store a classified memory, or route it to the review queue when its
 /// confidence falls below the configured threshold. Shared by the single-item
-/// capture path and the multi-item distillation path so both apply identical
-/// review-routing and auto-embed behaviour.
+/// capture path, the multi-item distillation path and the checkpoint path so
+/// all apply identical review-routing behaviour.
+///
+/// `embed_now` controls immediate auto-embedding; the checkpoint path passes
+/// `false` because provider/embedding work must stay outside its transaction.
 #[allow(clippy::too_many_arguments)]
-fn store_or_queue(
+pub(crate) fn store_or_queue(
     conn: &rusqlite::Connection,
     content: &str,
     classification: &ClassificationResult,
@@ -675,6 +679,7 @@ fn store_or_queue(
     source_ref: Option<&str>,
     metadata: &serde_json::Value,
     settings: &crate::settings::Settings,
+    embed_now: bool,
 ) -> Result<CaptureResult> {
     // Suppress duplicate writes: if an identical, non-archived memory already
     // exists in the target namespace, return it instead of storing or queuing
@@ -754,7 +759,7 @@ fn store_or_queue(
     let memory = crate::repository::remember(conn, &input, settings)?;
 
     // Auto-embed if enabled.
-    if settings.auto_embed {
+    if embed_now && settings.auto_embed {
         if let Ok(backend) = crate::embeddings::create_backend(&settings.embeddings) {
             if let Err(e) = crate::embeddings::embed_and_store(conn, backend.as_ref(), &memory) {
                 tracing::warn!("capture auto-embed failed: {e}");

@@ -417,3 +417,102 @@ fn semantic_search_only_compares_the_active_embedding_space() {
 
     assert_eq!(result_ids, vec![compatible.id.as_str()]);
 }
+
+// ---------------------------------------------------------------------------
+// Checkpoint identity race
+// ---------------------------------------------------------------------------
+
+static CHECKPOINT_BLOCKED: AtomicBool = AtomicBool::new(false);
+
+fn checkpoint_busy_handler(_attempt: i32) -> bool {
+    CHECKPOINT_BLOCKED.store(true, Ordering::Release);
+    std::thread::sleep(Duration::from_millis(1));
+    true
+}
+
+fn checkpoint_request() -> clio_core::checkpoint::CheckpointRequest {
+    clio_core::checkpoint::CheckpointRequest {
+        source: "claude-session".into(),
+        session_id: "race-session".into(),
+        cursor: 40,
+        namespace_override: None,
+        default_namespace: Some("project:multi-machine".into()),
+        cwd: None,
+        branch: None,
+        ticket: None,
+    }
+}
+
+fn checkpoint_atom(content: &str) -> clio_core::capture::DistilledMemory {
+    clio_core::capture::DistilledMemory {
+        content: content.into(),
+        kind: "fact".into(),
+        title: format!("Title: {content}"),
+        summary: String::new(),
+        tags: vec!["race".into()],
+        namespace: "project:multi-machine".into(),
+        importance: 3,
+        confidence: 1.0,
+    }
+}
+
+#[test]
+fn simultaneous_checkpoints_with_the_same_key_store_once() {
+    CHECKPOINT_BLOCKED.store(false, Ordering::Release);
+    let (_directory, mut first, second) = file_db();
+    second
+        .busy_handler(Some(checkpoint_busy_handler))
+        .expect("failed to install busy handler");
+
+    let transaction = first
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .unwrap();
+    let (completed_tx, completed_rx) = std::sync::mpsc::sync_channel(1);
+    let worker = std::thread::spawn(move || {
+        let result = clio_core::checkpoint::store_checkpoint(
+            &second,
+            &checkpoint_request(),
+            &[checkpoint_atom("retried delta fact")],
+            &test_settings(),
+        );
+        completed_tx.send(result).unwrap();
+    });
+
+    wait_until_blocked(&CHECKPOINT_BLOCKED, &completed_rx);
+    let first_result = clio_core::checkpoint::store_checkpoint(
+        &transaction,
+        &checkpoint_request(),
+        &[checkpoint_atom("original delta fact")],
+        &test_settings(),
+    )
+    .unwrap();
+    transaction.commit().unwrap();
+
+    let second_result = completed_rx
+        .recv()
+        .expect("checkpoint worker stopped without a result")
+        .expect("the competing checkpoint should replay the stored result");
+    worker.join().expect("checkpoint worker panicked");
+
+    assert!(!first_result.replayed);
+    assert!(second_result.replayed);
+    assert_eq!(second_result.checkpoint_id, first_result.checkpoint_id);
+    assert_eq!(
+        second_result.stored_memory_ids,
+        first_result.stored_memory_ids
+    );
+
+    let checkpoints: u32 = first
+        .query_row("SELECT COUNT(*) FROM session_checkpoints", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(checkpoints, 1);
+    let memories: u32 = first
+        .query_row("SELECT COUNT(*) FROM memories", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(
+        memories, 1,
+        "only the winning checkpoint's atom may persist"
+    );
+}

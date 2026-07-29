@@ -212,6 +212,31 @@ right project rather than wherever the model guesses. The model may still
 promote a genuinely cross-project fact to `global`. `--namespace` overrides both,
 forcing every extracted memory into the given namespace.
 
+### Checkpoint (exact-once session capture)
+
+`checkpoint` distils a session delta like `distill`, but commits it **exactly
+once** under the identity `source + session-id + cursor`. Retrying a delivered
+key — after a lost response, provider error or outage — replays the stored
+result (the same memory and review IDs) instead of creating duplicates. All
+extracted memories, review items and the checkpoint record commit in one
+transaction; an empty extraction is a successful checkpoint and is never
+redistilled.
+
+```sh
+clio checkpoint - \
+  --source claude-session \
+  --session-id <session-id> \
+  --cursor <transcript-offset> \
+  --branch develop \
+  < session-delta-digest.txt
+```
+
+Pass `-` to read the digest from stdin. `--namespace` overrides every extracted
+memory's namespace; `--branch` and `--ticket` record session context on the
+checkpoint. Requires the capture pipeline to be enabled. With `--json` the
+result envelope includes `replayed`, `stored_memory_ids` and
+`queued_review_ids`.
+
 ---
 
 ## Archiving & Deletion

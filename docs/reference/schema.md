@@ -329,6 +329,50 @@ CREATE INDEX IF NOT EXISTS idx_review_queue_status ON review_queue(status);
 - `edit` updates suggested fields and sets status to `edited` — still requires approval
 - `review_threshold` is an optional float in `CaptureConfig`; when `None`, all captures bypass the queue
 
+## `session_checkpoints`
+
+Records the durable outcome of distilling one session delta exactly once. Added by migration `009_session_checkpoints`.
+
+```sql
+CREATE TABLE session_checkpoints (
+    id TEXT PRIMARY KEY,
+    source TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    cursor INTEGER NOT NULL,
+    namespace TEXT,
+    branch TEXT,
+    ticket TEXT,
+    result_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+CREATE UNIQUE INDEX idx_session_checkpoints_identity
+    ON session_checkpoints(source, session_id, cursor);
+```
+
+### Field semantics
+
+| Field | Meaning | Rules |
+|---|---|---|
+| `id` | opaque checkpoint id | UUIDv7 |
+| `source` | capturing agent (e.g. `claude-session`) | required |
+| `session_id` | client session identifier | required |
+| `cursor` | monotonic transcript cursor for the delta's end | required, `>= 0` |
+| `namespace` | requested namespace context | nullable |
+| `branch` | git branch active during the session | nullable |
+| `ticket` | ticket/issue identifier | nullable |
+| `result_json` | stored result envelope: memory IDs and review-item IDs | JSON; never transcript text or secrets |
+| `created_at` | when the checkpoint committed | ISO-8601 UTC |
+
+### Checkpoint rules
+
+- The identity is `(source, session_id, cursor)`: a repeated or concurrently delivered key replays the stored `result_json` instead of storing new atoms.
+- The extracted memories, review items and checkpoint row commit in one transaction; any failure rolls back all of them. No partial session can persist.
+- Model extraction and embedding happen strictly outside the write transaction; auto-embedding runs best-effort after commit.
+- An intentionally empty extraction is a successful checkpoint and is never redistilled.
+- Checkpoint rows are the replay proof — never delete them to tidy up.
+- Per-atom provenance uses `source` plus `source_ref = {session_id}@{cursor}-{index}`, keeping the existing `UNIQUE(source, source_ref)` upsert rule intact.
+
 ## Indexes
 
 Required indexes:
@@ -631,6 +675,7 @@ The export format should be easy for:
 | `006_scoped_recall_indexes` | active namespace/kind and review queue creation-time indexes |
 | `007_content_dedup_index` | exact-content duplicate probe index |
 | `008_review_source_ref` | `source_ref` column on `review_queue` |
+| `009_session_checkpoints` | `session_checkpoints` table with unique `(source, session_id, cursor)` identity |
 
 ## Invariants For Implementers
 
