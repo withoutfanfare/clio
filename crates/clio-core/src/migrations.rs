@@ -363,6 +363,14 @@ const MIGRATIONS: &[Migration] = &[
             CREATE INDEX idx_delivery_outbox_status ON delivery_outbox(status, destination);
         "#,
     },
+    Migration {
+        version: "013_delivery_external_identity",
+        sql: r#"
+            CREATE UNIQUE INDEX idx_delivery_outbox_external
+                ON delivery_outbox(destination, external_id)
+                WHERE external_id IS NOT NULL;
+        "#,
+    },
 ];
 
 /// Run all pending migrations inside a transaction.

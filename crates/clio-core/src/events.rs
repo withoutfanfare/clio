@@ -147,11 +147,16 @@ pub fn event_exists(conn: &Connection, idempotency_key: &str) -> Result<bool> {
 
 /// List events for one memory, oldest first.
 pub fn list_events(conn: &Connection, memory_id: &str, limit: u32) -> Result<Vec<MemoryEvent>> {
+    // Window on the NEWEST rows (a long history must not hide its latest
+    // transitions), then present them chronologically.
     let mut stmt = conn.prepare_cached(
         "SELECT id, idempotency_key, memory_id, namespace, actor, session_id, topic,
                 event_type, reason, metadata_json, created_at
-         FROM memory_events WHERE memory_id = ?1
-         ORDER BY created_at, id LIMIT ?2",
+         FROM (
+             SELECT * FROM memory_events WHERE memory_id = ?1
+             ORDER BY created_at DESC, id DESC LIMIT ?2
+         )
+         ORDER BY created_at, id",
     )?;
     let rows = stmt.query_map(params![memory_id, limit], |row| {
         Ok((

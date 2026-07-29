@@ -533,6 +533,7 @@ CREATE INDEX idx_delivery_outbox_status ON delivery_outbox(status, destination);
 
 - `delivery_key = {destination}:{attention_id}`: a duplicate approval replays the one record — never a second external item.
 - `delivered` requires a verified read-back: the stable `external_id` plus `readback_json` evidence, stored atomically with the attention item's external reference.
+- One verified external identity maps to one delivery: `(destination, external_id)` is unique (partial index), a conflicting confirmation is rejected with the colliding delivery named, and a replay is accepted only with the exact stored ID.
 - Network/auth/create/read-back failure leaves the record retryable (`failed` → `retry` → `pending`) and the attention item open. A crash after the external create is visibly stuck in `delivering` and is NOT blindly retryable: reconcile with the destination first, then `confirm_delivery` with the found ID or `fail_delivery` with evidence nothing was created.
 - External completion mirrors into Clio only by a stable external ID Clio itself recorded; a conflicting local terminal state is preserved and the disagreement recorded as an event.
 - Credentials never enter this table, memory metadata, logs or payloads — adapters hold them in the user process.
@@ -844,6 +845,7 @@ The export format should be easy for:
 | `010_attention_and_events` | `attention_items` follow-up lifecycle table and append-only `memory_events` ledger |
 | `011_occurrences_and_namespace_state` | `memory_occurrences` sightings, `namespace_state` mutation generation and its triggers |
 | `012_delivery_outbox` | `delivery_outbox` verified external-handoff state machine |
+| `013_delivery_external_identity` | unique `(destination, external_id)` on delivered outbox rows |
 
 ## Invariants For Implementers
 

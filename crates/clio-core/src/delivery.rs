@@ -172,12 +172,41 @@ pub fn confirm_delivery(
     let result = (|| -> Result<DeliveryItem> {
         let item = get_delivery(conn, id)?;
         if item.status == STATUS_DELIVERED {
-            return Ok(item); // replay of a confirmed delivery
+            // Only an exact-ID replay is benign; a different ID for the same
+            // delivery is a reconciliation conflict that must surface.
+            if item.external_id.as_deref() == Some(external_id) {
+                return Ok(item);
+            }
+            return Err(ClioError::Validation(format!(
+                "delivery {} is already confirmed as external id '{}'; refusing conflicting id \
+                 '{external_id}'",
+                item.id,
+                item.external_id.as_deref().unwrap_or("?")
+            )));
         }
         if item.status != STATUS_DELIVERING {
             return Err(ClioError::Validation(format!(
                 "cannot confirm delivery from status '{}'",
                 item.status
+            )));
+        }
+        // One external identity maps to one delivery: a second delivery
+        // claiming the same (destination, external_id) would let completion
+        // mirroring resolve an arbitrary attention item. The partial unique
+        // index is the backstop; this check gives an actionable error.
+        let conflicting: Option<String> = conn
+            .query_row(
+                "SELECT id FROM delivery_outbox
+                 WHERE destination = ?1 AND external_id = ?2 AND id != ?3",
+                params![item.destination, external_id, item.id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if let Some(other) = conflicting {
+            return Err(ClioError::Validation(format!(
+                "external id '{external_id}' in {} is already recorded on delivery {other}; \
+                 reconcile before confirming",
+                item.destination
             )));
         }
         let now = now_utc();
@@ -552,6 +581,29 @@ mod tests {
                 .is_some_and(|r| r.contains("local state already 'cancelled'"))),
             "the disagreement is recorded, not hidden"
         );
+    }
+
+    #[test]
+    fn external_identity_is_unique_and_conflicts_surface() {
+        let conn = test_conn();
+        let first = open_item(&conn);
+        let second = open_item(&conn);
+
+        let a = enqueue_delivery(&conn, &first.id, "things", &payload()).unwrap();
+        begin_attempt(&conn, &a.id).unwrap();
+        confirm_delivery(&conn, &a.id, "things-shared", &serde_json::json!({})).unwrap();
+
+        // A second delivery may not claim the same verified identity —
+        // completion mirroring must never resolve an arbitrary item.
+        let b = enqueue_delivery(&conn, &second.id, "things", &payload()).unwrap();
+        begin_attempt(&conn, &b.id).unwrap();
+        assert!(confirm_delivery(&conn, &b.id, "things-shared", &serde_json::json!({})).is_err());
+
+        // Replaying a confirmed delivery with a DIFFERENT id is a visible
+        // reconciliation conflict, not a silent success.
+        assert!(confirm_delivery(&conn, &a.id, "things-other", &serde_json::json!({})).is_err());
+        // Exact-ID replay stays benign.
+        assert!(confirm_delivery(&conn, &a.id, "things-shared", &serde_json::json!({})).is_ok());
     }
 
     #[test]

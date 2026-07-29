@@ -212,6 +212,28 @@ pub fn approve_review(
             .filter(|value| value.is_object())
             .cloned();
 
+        // A queued suggestion whose content already had a canonical memory at
+        // capture time attaches to that memory rather than storing a
+        // duplicate row (the checkpoint stamped its ID into the metadata).
+        if let Some(canonical) = item
+            .metadata
+            .get("canonical_memory_id")
+            .and_then(|value| value.as_str())
+        {
+            if let Ok(memory) = crate::repository::get_raw(conn, canonical) {
+                crate::occurrences::record_occurrence(
+                    conn,
+                    &memory.id,
+                    item.source_route.as_deref(),
+                    item.source_ref.as_deref(),
+                    None,
+                )?;
+                open_attention_from_metadata(conn, &memory, attention_data.as_ref())?;
+                return Ok(memory);
+            }
+            // The canonical memory has gone; fall through to normal storage.
+        }
+
         if !upsert {
             if let Some(existing_id) = crate::repository::find_content_duplicate(
                 conn,
@@ -219,6 +241,13 @@ pub fn approve_review(
                 &item.content,
             )? {
                 let memory = crate::repository::get(conn, &existing_id)?;
+                crate::occurrences::record_occurrence(
+                    conn,
+                    &memory.id,
+                    item.source_route.as_deref(),
+                    item.source_ref.as_deref(),
+                    None,
+                )?;
                 open_attention_from_metadata(conn, &memory, attention_data.as_ref())?;
                 return Ok(memory);
             }
@@ -242,6 +271,13 @@ pub fn approve_review(
         };
 
         let memory = crate::repository::remember(conn, &input, settings)?;
+        crate::occurrences::record_occurrence(
+            conn,
+            &memory.id,
+            memory.source.as_deref(),
+            memory.source_ref.as_deref(),
+            None,
+        )?;
         open_attention_from_metadata(conn, &memory, attention_data.as_ref())?;
         Ok(memory)
     })();

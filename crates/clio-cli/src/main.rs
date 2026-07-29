@@ -2960,7 +2960,7 @@ fn cmd_resume(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let path = resolve_db_path(db_path)?;
     let conn = db::open(&path)?;
-    let stgs = settings::load(&path).ok().unwrap_or_default();
+    let stgs = settings::load(&path)?;
 
     let namespace = match &args.namespace {
         Some(ns) => Some(ns.clone()),

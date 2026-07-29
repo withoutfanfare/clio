@@ -135,15 +135,12 @@ pub fn store_checkpoint(
         // Cursors are monotonic per session. An older cursor arriving after a
         // newer one committed means stale or overlapping client state (e.g. a
         // lost spool) — reject it visibly rather than re-applying old deltas.
-        let latest: Option<i64> = conn
-            .query_row(
-                "SELECT MAX(cursor) FROM session_checkpoints
-                 WHERE source = ?1 AND session_id = ?2",
-                params![req.source, req.session_id],
-                |row| row.get(0),
-            )
-            .ok()
-            .flatten();
+        let latest: Option<i64> = conn.query_row(
+            "SELECT MAX(cursor) FROM session_checkpoints
+             WHERE source = ?1 AND session_id = ?2",
+            params![req.source, req.session_id],
+            |row| row.get(0),
+        )?;
         if let Some(latest) = latest {
             if req.cursor < latest {
                 return Err(ClioError::Validation(format!(
@@ -191,7 +188,7 @@ pub fn store_checkpoint(
             if let Some(attention) = &memory.attention {
                 meta.insert("attention".into(), serde_json::to_value(attention)?);
             }
-            let metadata = serde_json::Value::Object(meta);
+            let mut metadata = serde_json::Value::Object(meta);
 
             // Unique provenance per atom, sharing the checkpoint key as the
             // prefix so a session's memories stay traceable to their delta.
@@ -205,11 +202,17 @@ pub fn store_checkpoint(
                 .as_ref()
                 .is_some_and(|attention| !attention.is_explicit());
             if inferred_loop {
+                // Even when the content matches an existing memory, the
+                // suggested open loop itself still needs review. Stamp the
+                // canonical memory into the metadata so approval attaches
+                // attention to it instead of storing a duplicate row — the
+                // follow-up is never silently dropped either way.
                 if let Some(existing_id) =
                     crate::repository::find_content_duplicate(conn, &namespace, &memory.content)?
                 {
-                    stored_memory_ids.push(existing_id);
-                    continue;
+                    if let Some(object) = metadata.as_object_mut() {
+                        object.insert("canonical_memory_id".into(), serde_json::json!(existing_id));
+                    }
                 }
                 let review_item = crate::review::queue_for_review(
                     conn,
@@ -623,6 +626,48 @@ mod tests {
         } else {
             assert_eq!(result.stored_memory_ids.len(), 2);
         }
+    }
+
+    #[test]
+    fn duplicate_content_suggestion_still_queues_for_review() {
+        let conn = test_conn();
+        let settings = Settings::default();
+
+        // The fact already exists as a canonical memory.
+        let first = store_checkpoint(
+            &conn,
+            &request(10),
+            &[atom("shared follow-up fact")],
+            &settings,
+        )
+        .unwrap();
+        let canonical = first.stored_memory_ids[0].clone();
+
+        // A later session suggests the same content as an open loop: the
+        // suggestion must reach the review queue, not vanish into dedup.
+        let mut suggested = atom("shared follow-up fact");
+        suggested.attention = Some(crate::capture::DistilledAttention {
+            explicitness: "suggested".into(),
+            owner: Some("user".into()),
+            ..crate::capture::DistilledAttention::default()
+        });
+        let second = store_checkpoint(&conn, &request(20), &[suggested], &settings).unwrap();
+        assert_eq!(
+            second.queued_review_ids.len(),
+            1,
+            "suggestion stays reviewable"
+        );
+
+        // Approval dedups onto the canonical memory and opens its attention.
+        let memory =
+            crate::review::approve_review(&conn, &second.queued_review_ids[0], &settings).unwrap();
+        assert_eq!(memory.id, canonical, "no duplicate memory row");
+        assert!(
+            crate::attention::get_by_memory(&conn, &canonical)
+                .unwrap()
+                .is_some(),
+            "the follow-up lives on the canonical memory"
+        );
     }
 
     #[test]

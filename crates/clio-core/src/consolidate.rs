@@ -134,8 +134,10 @@ fn build_digest(memories: &[SourceMemory]) -> (String, Vec<String>, bool) {
             m.id, m.kind, m.importance, title, m.content
         );
         if out.len() + entry.len() > MAX_INPUT_CHARS {
+            // Skip what does not fit and keep going — one oversized memory
+            // must not empty the digest and wedge consolidation forever.
             truncated = true;
-            break;
+            continue;
         }
         out.push_str(&entry);
         included.push(m.id.clone());
