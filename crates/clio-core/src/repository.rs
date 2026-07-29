@@ -144,6 +144,7 @@ pub fn remember(
     get_raw(conn, &id)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn update_existing(
     conn: &Connection,
     id: &str,

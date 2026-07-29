@@ -171,7 +171,7 @@ impl Default for ContextConfig {
 }
 
 /// Configuration for AI-powered automatic title generation.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct AutoTitleConfig {
     /// Whether AI title generation is enabled.
     #[serde(default)]
@@ -188,17 +188,6 @@ pub struct AutoTitleConfig {
     /// Model to use. Falls back to capture.model if None.
     #[serde(default)]
     pub model: Option<String>,
-}
-
-impl Default for AutoTitleConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            api_key: None,
-            base_url: None,
-            model: None,
-        }
-    }
 }
 
 /// Configuration for namespace cleanup (stale-namespace detection and purge).
@@ -541,14 +530,16 @@ mod tests {
 
     #[test]
     fn remote_settings_round_trip() {
-        let mut settings = Settings::default();
-        settings.remote = Some(RemoteConfig {
-            host: "atlas".into(),
-            db_path: "/srv/clio/memory.db".into(),
-            mcp_binary: "/srv/clio/clio-mcp".into(),
-            cli_binary: "/srv/clio/clio".into(),
-            bridge_command: "/Users/example/.cargo/bin/clio".into(),
-        });
+        let settings = Settings {
+            remote: Some(RemoteConfig {
+                host: "atlas".into(),
+                db_path: "/srv/clio/memory.db".into(),
+                mcp_binary: "/srv/clio/clio-mcp".into(),
+                cli_binary: "/srv/clio/clio".into(),
+                bridge_command: "/Users/example/.cargo/bin/clio".into(),
+            }),
+            ..Default::default()
+        };
 
         let encoded = serde_json::to_string(&settings).unwrap();
         let decoded: Settings = serde_json::from_str(&encoded).unwrap();

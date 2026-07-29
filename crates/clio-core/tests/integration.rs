@@ -1664,7 +1664,8 @@ fn merge_retains_tags_in_memory_tags_table() {
     let keep = remember_with_tags(&conn, "Primary content about rust", &["alpha", "beta"]);
     let dup = remember_with_tags(&conn, "Duplicate content about rust", &["beta", "gamma"]);
 
-    clio_core::deduplication::merge_memories(&conn, &keep.id, &[dup.id.clone()]).unwrap();
+    clio_core::deduplication::merge_memories(&conn, &keep.id, std::slice::from_ref(&dup.id))
+        .unwrap();
 
     // Regression: the normalised memory_tags rows for the kept memory were silently
     // dropped because the re-insert omitted the NOT NULL created_at column.
@@ -1812,7 +1813,8 @@ fn merge_does_not_inflate_access_count() {
     let keep = remember_simple(&conn, "keep this memory");
     let dup = remember_simple(&conn, "duplicate memory");
 
-    clio_core::deduplication::merge_memories(&conn, &keep.id, &[dup.id.clone()]).unwrap();
+    clio_core::deduplication::merge_memories(&conn, &keep.id, std::slice::from_ref(&dup.id))
+        .unwrap();
 
     let access_count: i64 = conn
         .query_row(

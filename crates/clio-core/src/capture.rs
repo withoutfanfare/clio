@@ -4,6 +4,7 @@
 use crate::error::{ClioError, Result};
 use crate::models::{Memory, RememberInput};
 use crate::review::{ReviewInput, ReviewItem};
+#[cfg(feature = "capture")]
 use crate::settings::CaptureConfig;
 
 // ---------------------------------------------------------------------------
@@ -87,6 +88,7 @@ pub struct DistilledMemory {
 // System prompt
 // ---------------------------------------------------------------------------
 
+#[cfg(feature = "capture")]
 const CLASSIFICATION_SYSTEM_PROMPT: &str = r#"You are a memory classification assistant. Given unstructured text, you extract structured fields for storage in a knowledge base.
 
 Respond ONLY with a JSON object containing these fields:
@@ -112,6 +114,7 @@ Rules:
 - If the text is ambiguous, prefer "note" as kind and lower confidence.
 - Output ONLY valid JSON, no markdown fences, no extra text."#;
 
+#[cfg(feature = "capture")]
 const DISTILLATION_SYSTEM_PROMPT: &str = r#"You are a knowledge curator for a long-lived, cross-tool memory shared by several AI coding assistants. You are given a digest of one working session (user prompts, assistant replies, and the tools that were run). Your job is to extract only the DURABLE KNOWLEDGE worth recalling in a completely different session weeks from now.
 
 Capture things like:
@@ -517,6 +520,7 @@ pub fn is_session_noise(title: &str) -> bool {
 /// `override_ns` (explicit `--namespace`) → the model's `"global"` promotion →
 /// `default_ns` (the working directory's namespace) → the model's suggestion.
 /// See [`distill_and_store`] for the rationale.
+#[cfg(any(feature = "capture", test))]
 fn resolve_distill_namespace(
     override_ns: Option<&str>,
     llm_choice: &str,
@@ -772,8 +776,10 @@ mod tests {
     #[cfg(feature = "capture")]
     #[test]
     fn chat_request_uses_parameters_supported_by_each_model_family() {
-        let mut config = CaptureConfig::default();
-        config.model = "gpt-4.1".into();
+        let mut config = CaptureConfig {
+            model: "gpt-4.1".into(),
+            ..Default::default()
+        };
         let classic = chat_request_body("system", "user", &config, true);
         assert_eq!(classic["temperature"], 0.1);
         assert!(classic.get("reasoning_effort").is_none());

@@ -7,9 +7,16 @@
 //! (`kind = summary`, upserted on `source + source_ref`), leaving the atomic
 //! memories untouched.
 
-use crate::error::{ClioError, Result};
-use crate::models::{Memory, RememberInput};
-use crate::settings::{CaptureConfig, Settings};
+#[cfg(feature = "capture")]
+use crate::error::ClioError;
+use crate::error::Result;
+use crate::models::Memory;
+#[cfg(any(feature = "capture", test))]
+use crate::models::RememberInput;
+#[cfg(feature = "capture")]
+use crate::settings::CaptureConfig;
+#[cfg(any(feature = "capture", test))]
+use crate::settings::Settings;
 use rusqlite::Connection;
 use serde::Serialize;
 
@@ -22,8 +29,10 @@ pub const CONSOLIDATED_SOURCE: &str = "clio-consolidate";
 /// Upper bound on the characters of atomic-memory digest sent to the LLM, to
 /// bound cost on large namespaces. Highest-importance, most-recent memories are
 /// kept first.
+#[cfg(any(feature = "capture", test))]
 const MAX_INPUT_CHARS: usize = 60_000;
 
+#[cfg(feature = "capture")]
 const CONSOLIDATION_SYSTEM_PROMPT: &str = r#"You are a knowledge curator maintaining a single living "project memory" document for an AI coding assistant. You are given the project's atomic memories (decisions, facts, constraints, observations) gathered over time. Produce ONE coherent, well-organised Markdown document that a future assistant could read to understand the project.
 
 Rules:
@@ -43,6 +52,7 @@ pub struct ConsolidationResult {
     pub source_count: usize,
 }
 
+#[cfg(any(feature = "capture", test))]
 struct SourceMemory {
     kind: String,
     title: Option<String>,
@@ -53,6 +63,7 @@ struct SourceMemory {
 /// Load the atomic memories that should feed consolidation: live (non-archived)
 /// memories in the namespace, excluding the consolidated singleton itself,
 /// ordered by importance then recency.
+#[cfg(any(feature = "capture", test))]
 fn load_source_memories(conn: &Connection, namespace: &str) -> Result<Vec<SourceMemory>> {
     let mut stmt = conn.prepare(
         "SELECT kind, title, content, importance
@@ -74,6 +85,7 @@ fn load_source_memories(conn: &Connection, namespace: &str) -> Result<Vec<Source
 }
 
 /// Build a compact, bounded digest of the atomic memories for the LLM.
+#[cfg(any(feature = "capture", test))]
 fn build_digest(memories: &[SourceMemory]) -> String {
     let mut out = String::new();
     for m in memories {

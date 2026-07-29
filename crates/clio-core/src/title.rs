@@ -37,6 +37,7 @@ pub fn generate_title(content: &str) -> String {
     }
 }
 
+#[cfg(feature = "capture")]
 const TITLE_SYSTEM_PROMPT: &str = r#"You generate concise, descriptive titles for knowledge base entries. Given the content of a memory, respond with ONLY a short title (max 80 characters). No quotes, no punctuation at the end, no explanation — just the title text."#;
 
 /// Generate a title using an OpenAI-compatible LLM.

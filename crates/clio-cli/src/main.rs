@@ -3727,9 +3727,11 @@ mod tests {
 
     #[test]
     fn capture_model_override_preserves_other_settings() {
-        let mut base = settings::CaptureConfig::default();
-        base.enabled = true;
-        base.api_key = Some("secret".into());
+        let base = settings::CaptureConfig {
+            enabled: true,
+            api_key: Some("secret".into()),
+            ..Default::default()
+        };
         let changed = capture_config_with_model(&base, Some(" gpt-5.6-terra ")).unwrap();
 
         assert_eq!(changed.model, "gpt-5.6-terra");

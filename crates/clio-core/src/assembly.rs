@@ -522,6 +522,7 @@ fn build_handoff(
 // Shared helper — run a recall query and wrap the result as a section
 // ---------------------------------------------------------------------------
 
+#[allow(clippy::too_many_arguments)]
 fn recall_section(
     conn: &Connection,
     heading: &str,
