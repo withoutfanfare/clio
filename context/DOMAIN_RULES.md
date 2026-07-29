@@ -223,6 +223,15 @@ An attention item marks one memory as operationally open. Memories record what w
 - Consolidation output is structured and cited: every statement carries input memory IDs, validated against the bounded input; an invalid candidate is rejected and the previous singleton stays, visibly stale via its generation watermark
 - Receipts never feed model-authored project truth; contradictions remain separate and labelled unresolved; resume drops a stale consolidated singleton rather than leading with it
 
+### External Delivery (Things / Linear)
+
+- One-tap approval is the only trigger: no external work is ever created from a speculative suggestion
+- Delivery is not successful until read-back verifies the stable external ID; the outbox row and the attention item's external reference update atomically
+- A duplicate approval replays one outbox record (stable `destination:attention_id` key)
+- Every failure (network, auth, create, read-back) leaves the outbox retryable and the Clio attention item open; a crash between create and read-back is visibly `delivering`
+- Verified external completion resolves the attention item by stable ID only; a conflicting local terminal state stays and the disagreement is recorded as an event — no silent last-write-wins
+- Credentials live in the adapters' user process (Keychain/environment), never in Clio's database
+
 ### Graph Recall Safety
 
 - Linked recall (`include_links`) follows edges in both directions; each connected memory appears once, carrying every edge context (`from`, `to`, `direction` relative to the anchor, `relationship`, `metadata`)

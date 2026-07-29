@@ -339,6 +339,30 @@ const MIGRATIONS: &[Migration] = &[
             END;
         "#,
     },
+    Migration {
+        version: "012_delivery_outbox",
+        sql: r#"
+            CREATE TABLE delivery_outbox (
+                id TEXT PRIMARY KEY,
+                delivery_key TEXT NOT NULL UNIQUE,
+                attention_id TEXT NOT NULL,
+                destination TEXT NOT NULL,
+                payload_json TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending'
+                    CHECK (status IN ('pending', 'delivering', 'delivered', 'failed')),
+                attempts INTEGER NOT NULL DEFAULT 0,
+                last_error TEXT,
+                external_id TEXT,
+                readback_json TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                delivered_at TEXT,
+                FOREIGN KEY (attention_id) REFERENCES attention_items(id) ON DELETE CASCADE
+            );
+
+            CREATE INDEX idx_delivery_outbox_status ON delivery_outbox(status, destination);
+        "#,
+    },
 ];
 
 /// Run all pending migrations inside a transaction.

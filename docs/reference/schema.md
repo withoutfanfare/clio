@@ -503,6 +503,41 @@ CREATE TABLE namespace_state (
 - `consolidation_is_stale` compares the stored watermark to the current generation; a pre-watermark (legacy) singleton always reads as stale.
 - Receipts are excluded from consolidation input; contradictions stay separate and labelled unresolved.
 
+## `delivery_outbox`
+
+The state machine between one-tap approval and a *proved* external handoff (Things/Linear). Added by migration `012_delivery_outbox`.
+
+```sql
+CREATE TABLE delivery_outbox (
+    id TEXT PRIMARY KEY,
+    delivery_key TEXT NOT NULL UNIQUE,
+    attention_id TEXT NOT NULL,
+    destination TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending'
+        CHECK (status IN ('pending', 'delivering', 'delivered', 'failed')),
+    attempts INTEGER NOT NULL DEFAULT 0,
+    last_error TEXT,
+    external_id TEXT,
+    readback_json TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    delivered_at TEXT,
+    FOREIGN KEY (attention_id) REFERENCES attention_items(id) ON DELETE CASCADE
+);
+
+CREATE INDEX idx_delivery_outbox_status ON delivery_outbox(status, destination);
+```
+
+### Delivery rules
+
+- `delivery_key = {destination}:{attention_id}`: a duplicate approval replays the one record — never a second external item.
+- `delivered` requires a verified read-back: the stable `external_id` plus `readback_json` evidence, stored atomically with the attention item's external reference.
+- Network/auth/create/read-back failure leaves the record retryable (`failed` → `retry` → `pending`) and the attention item open; a crash after the external create is visibly stuck in `delivering` with its attempt history.
+- External completion mirrors into Clio only by a stable external ID Clio itself recorded; a conflicting local terminal state is preserved and the disagreement recorded as an event.
+- Credentials never enter this table, memory metadata, logs or payloads — adapters hold them in the user process.
+- Destination adapters (the actual Things/Linear API code) are gated on proving each product's create + read-back contract live.
+
 ## Indexes
 
 Required indexes:
@@ -808,6 +843,7 @@ The export format should be easy for:
 | `009_session_checkpoints` | `session_checkpoints` table with unique `(source, session_id, cursor)` identity |
 | `010_attention_and_events` | `attention_items` follow-up lifecycle table and append-only `memory_events` ledger |
 | `011_occurrences_and_namespace_state` | `memory_occurrences` sightings, `namespace_state` mutation generation and its triggers |
+| `012_delivery_outbox` | `delivery_outbox` verified external-handoff state machine |
 
 ## Invariants For Implementers
 
