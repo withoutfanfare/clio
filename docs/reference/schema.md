@@ -201,15 +201,29 @@ CREATE TABLE memory_links (
 - reciprocal links are not implied
 - duplicate links of the same type between the same nodes are disallowed
 - `metadata_json` allows future explanation or provenance of the edge
+- graph reads preserve direction, relationship and metadata: linked recall
+  returns each connected memory once with every edge context that reached it,
+  and `repository::get_link_contexts` exposes both directions for one memory
+- automatically persisted links always use the `auto:` prefix
+  (`auto:relates_to`); typed relations are created by people (or accepted
+  proposals), never silently by a model
 
-Recommended relationship labels:
+The relationship vocabulary is open; these labels are documented and preferred:
 
 - `relates_to`
+- `same_as`
 - `supports`
 - `contradicts`
 - `derived_from`
 - `supersedes`
+- `reverses`
 - `references`
+- `evidence_for`
+- `follow_up_of`
+- `blocks`
+- `resolved_by`
+- `implements`
+- `continuation_of`
 
 ## `schema_migrations`
 

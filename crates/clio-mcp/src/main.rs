@@ -320,6 +320,12 @@ struct MoveNamespaceParams {
 struct GetLinksParams {
     /// Memory ID.
     memory_id: String,
+
+    /// Edge direction: outgoing (default, compatible shape), incoming, or
+    /// both. Non-default directions return edge contexts with a `direction`
+    /// field relative to this memory.
+    #[serde(default)]
+    direction: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -1817,14 +1823,34 @@ impl ClioServer {
         Parameters(params): Parameters<GetLinksParams>,
     ) -> Result<String, String> {
         validate_memory_id(&params.memory_id, "memory_id")?;
+        let direction = params
+            .direction
+            .as_deref()
+            .unwrap_or("outgoing")
+            .to_string();
+        if !matches!(direction.as_str(), "outgoing" | "incoming" | "both") {
+            return Err(format!(
+                "unknown direction '{direction}'. Expected outgoing, incoming, or both."
+            ));
+        }
         let conn = self.conn.clone();
         let cache = self.cache.clone();
         tokio::task::spawn_blocking(move || {
             let conn = conn.lock().map_err(|e| format!("lock error: {e}"))?;
-            let links = cache
-                .get_links(&conn, &params.memory_id)
+            if direction == "outgoing" {
+                // Compatible shape for existing callers.
+                let links = cache
+                    .get_links(&conn, &params.memory_id)
+                    .map_err(|e| format_clio_error(&e))?;
+                return serde_json::to_string_pretty(&links)
+                    .map_err(|e| format!("Serialisation error: {e}"));
+            }
+            let mut contexts = clio_core::repository::get_link_contexts(&conn, &params.memory_id)
                 .map_err(|e| format_clio_error(&e))?;
-            serde_json::to_string_pretty(&links).map_err(|e| format!("Serialisation error: {e}"))
+            if direction == "incoming" {
+                contexts.retain(|c| c.direction == "incoming");
+            }
+            serde_json::to_string_pretty(&contexts).map_err(|e| format!("Serialisation error: {e}"))
         })
         .await
         .map_err(|e| format!("Internal error: task failed: {e}"))?

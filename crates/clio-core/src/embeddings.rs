@@ -705,6 +705,7 @@ fn semantic_recall_from_results(
                 memory,
                 rank: Some(rank),
                 linked_from: None,
+                link_context: Vec::new(),
             }
         })
         .collect();
@@ -878,6 +879,11 @@ pub fn suggest_links(
             }
         };
 
+    // Candidate scope: the source memory's own namespace only — cross-project
+    // links are review-only and never suggested by default. Archived and
+    // expired memories are never candidates.
+    let source_namespace = crate::repository::get_raw(conn, memory_id)?.namespace;
+
     // Find similar memories, excluding the source memory and any already linked
     // (in either direction). Filtering at the SQL level avoids pulling linked
     // rows into memory and decoding their embeddings.
@@ -886,6 +892,8 @@ pub fn suggest_links(
          FROM memory_embeddings e
          JOIN memories m ON m.id = e.memory_id
          WHERE m.archived_at IS NULL
+           AND (m.valid_until IS NULL OR datetime(m.valid_until) > datetime('now'))
+           AND m.namespace = ?4
            AND e.memory_id != ?1
            AND e.model = ?2
            AND e.dimensions = ?3
@@ -896,7 +904,12 @@ pub fn suggest_links(
            )",
     )?;
     let rows = stmt.query_map(
-        params![memory_id, backend.model_name(), backend.dimensions() as i64],
+        params![
+            memory_id,
+            backend.model_name(),
+            backend.dimensions() as i64,
+            source_namespace
+        ],
         |row| {
             let mid: String = row.get(0)?;
             let blob: Vec<u8> = row.get(1)?;

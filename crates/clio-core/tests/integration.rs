@@ -2621,3 +2621,201 @@ fn session_attention_cases_route_to_the_annotated_outcome() {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Directional, typed graph recall (Task 8)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn recall_includes_incoming_links_with_direction_and_metadata() {
+    let conn = test_db();
+    let anchor = remember_simple(&conn, "anchor memory about loquats");
+    let upstream = remember_simple(&conn, "upstream evidence memory");
+
+    // upstream --evidence_for--> anchor (an INCOMING edge for the anchor).
+    repository::link(
+        &conn,
+        &LinkInput {
+            from_memory_id: upstream.id.clone(),
+            to_memory_id: anchor.id.clone(),
+            relationship: "evidence_for".into(),
+            metadata: serde_json::json!({ "note": "smoke test output" }),
+        },
+    )
+    .unwrap();
+
+    let result = repository::recall(
+        &conn,
+        &RecallQuery {
+            query: Some("loquats".into()),
+            include_links: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    let linked = result
+        .items
+        .iter()
+        .find(|i| i.memory.id == upstream.id)
+        .expect("incoming-linked memory should be included");
+    assert_eq!(linked.linked_from.as_deref(), Some(anchor.id.as_str()));
+    assert_eq!(linked.link_context.len(), 1);
+    let ctx = &linked.link_context[0];
+    assert_eq!(ctx.direction, "incoming");
+    assert_eq!(ctx.relationship, "evidence_for");
+    assert_eq!(ctx.from_memory_id, upstream.id);
+    assert_eq!(ctx.to_memory_id, anchor.id);
+    assert_eq!(ctx.metadata["note"], "smoke test output");
+}
+
+#[test]
+fn recall_preserves_multiple_edges_to_one_target() {
+    let conn = test_db();
+    let anchor = remember_simple(&conn, "anchor memory about damsons");
+    let target = remember_simple(&conn, "richly linked target");
+
+    for relationship in ["supports", "follow_up_of"] {
+        repository::link(
+            &conn,
+            &LinkInput {
+                from_memory_id: anchor.id.clone(),
+                to_memory_id: target.id.clone(),
+                relationship: relationship.into(),
+                metadata: serde_json::json!({}),
+            },
+        )
+        .unwrap();
+    }
+    // And one incoming edge from the target back to the anchor.
+    repository::link(
+        &conn,
+        &LinkInput {
+            from_memory_id: target.id.clone(),
+            to_memory_id: anchor.id.clone(),
+            relationship: "contradicts".into(),
+            metadata: serde_json::json!({}),
+        },
+    )
+    .unwrap();
+
+    let result = repository::recall(
+        &conn,
+        &RecallQuery {
+            query: Some("damsons".into()),
+            include_links: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    let appearances: Vec<_> = result
+        .items
+        .iter()
+        .filter(|i| i.memory.id == target.id)
+        .collect();
+    assert_eq!(appearances.len(), 1, "target memory deduplicated");
+    let contexts = &appearances[0].link_context;
+    assert_eq!(contexts.len(), 3, "every edge context preserved");
+    let rels: Vec<&str> = contexts.iter().map(|c| c.relationship.as_str()).collect();
+    assert!(rels.contains(&"supports"));
+    assert!(rels.contains(&"follow_up_of"));
+    assert!(rels.contains(&"contradicts"));
+    assert_eq!(
+        contexts
+            .iter()
+            .filter(|c| c.direction == "incoming")
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn link_contexts_expose_both_directions_for_one_memory() {
+    let conn = test_db();
+    let memory = remember_simple(&conn, "central memory");
+    let out_target = remember_simple(&conn, "outgoing target");
+    let in_source = remember_simple(&conn, "incoming source");
+
+    repository::link(
+        &conn,
+        &LinkInput {
+            from_memory_id: memory.id.clone(),
+            to_memory_id: out_target.id.clone(),
+            relationship: "supersedes".into(),
+            metadata: serde_json::json!({}),
+        },
+    )
+    .unwrap();
+    repository::link(
+        &conn,
+        &LinkInput {
+            from_memory_id: in_source.id.clone(),
+            to_memory_id: memory.id.clone(),
+            relationship: "resolved_by".into(),
+            metadata: serde_json::json!({}),
+        },
+    )
+    .unwrap();
+
+    let contexts = repository::get_link_contexts(&conn, &memory.id).unwrap();
+    assert_eq!(contexts.len(), 2);
+    let outgoing = contexts.iter().find(|c| c.direction == "outgoing").unwrap();
+    assert_eq!(outgoing.relationship, "supersedes");
+    assert_eq!(outgoing.to_memory_id, out_target.id);
+    let incoming = contexts.iter().find(|c| c.direction == "incoming").unwrap();
+    assert_eq!(incoming.relationship, "resolved_by");
+    assert_eq!(incoming.from_memory_id, in_source.id);
+}
+
+#[test]
+fn suggest_links_stays_in_namespace_and_skips_hidden_candidates() {
+    use clio_core::embeddings::{EmbeddingBackend, store_embedding, suggest_links};
+
+    struct SameVectorBackend;
+    impl EmbeddingBackend for SameVectorBackend {
+        fn model_name(&self) -> &str {
+            "model-a"
+        }
+        fn dimensions(&self) -> usize {
+            2
+        }
+        fn embed_one(&self, _text: &str) -> clio_core::error::Result<Vec<f32>> {
+            Ok(vec![1.0, 0.0])
+        }
+        fn embed_batch(&self, texts: &[String]) -> clio_core::error::Result<Vec<Vec<f32>>> {
+            Ok(texts.iter().map(|_| vec![1.0, 0.0]).collect())
+        }
+    }
+
+    let conn = test_db();
+    let backend = SameVectorBackend;
+
+    let source = remember_in(&conn, "project:x", "source memory");
+    let same_ns = remember_in(&conn, "project:x", "same namespace candidate");
+    let other_ns = remember_in(&conn, "project:y", "other namespace candidate");
+    let archived = remember_in(&conn, "project:x", "archived candidate");
+    repository::archive(&conn, &archived.id).unwrap();
+    let expired = repository::remember(
+        &conn,
+        &RememberInput {
+            namespace: "project:x".into(),
+            valid_until: Some("2000-01-01T00:00:00Z".into()),
+            ..base_input("expired candidate")
+        },
+        &Settings::default(),
+    )
+    .unwrap();
+
+    for memory in [&source, &same_ns, &other_ns, &archived, &expired] {
+        store_embedding(&conn, &memory.id, "model-a", 2, &[1.0, 0.0]).unwrap();
+    }
+
+    let suggestions = suggest_links(&conn, &source.id, &backend, 0.5, 10).unwrap();
+    let ids: Vec<&str> = suggestions.iter().map(|(m, _)| m.id.as_str()).collect();
+    assert_eq!(
+        ids,
+        vec![same_ns.id.as_str()],
+        "only live, unexpired, same-namespace candidates may be suggested"
+    );
+}

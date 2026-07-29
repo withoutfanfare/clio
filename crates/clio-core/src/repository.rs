@@ -622,6 +622,19 @@ fn touch_accessed_chunk(conn: &Connection, ids: &[&str]) -> Result<()> {
 
 /// Fetch all outgoing links for multiple memory IDs in a single query.
 fn get_links_bulk(conn: &Connection, memory_ids: &[String]) -> Result<Vec<MemoryLink>> {
+    get_links_bulk_directed(conn, memory_ids, false)
+}
+
+/// Fetch all incoming links for multiple memory IDs in a single query.
+fn get_links_bulk_incoming(conn: &Connection, memory_ids: &[String]) -> Result<Vec<MemoryLink>> {
+    get_links_bulk_directed(conn, memory_ids, true)
+}
+
+fn get_links_bulk_directed(
+    conn: &Connection,
+    memory_ids: &[String],
+    incoming: bool,
+) -> Result<Vec<MemoryLink>> {
     if memory_ids.is_empty() {
         return Ok(Vec::new());
     }
@@ -629,9 +642,14 @@ fn get_links_bulk(conn: &Connection, memory_ids: &[String]) -> Result<Vec<Memory
         .map(|i| format!("?{i}"))
         .collect::<Vec<_>>()
         .join(", ");
+    let column = if incoming {
+        "to_memory_id"
+    } else {
+        "from_memory_id"
+    };
     let sql = format!(
         "SELECT from_memory_id, to_memory_id, relationship, metadata_json, created_at
-         FROM memory_links WHERE from_memory_id IN ({placeholders}) ORDER BY created_at"
+         FROM memory_links WHERE {column} IN ({placeholders}) ORDER BY created_at"
     );
     let params: Vec<Box<dyn rusqlite::types::ToSql>> = memory_ids
         .iter()
@@ -664,11 +682,13 @@ fn get_links_bulk(conn: &Connection, memory_ids: &[String]) -> Result<Vec<Memory
     Ok(links)
 }
 
-/// Append linked memories to a recall result. For each item in the result,
-/// fetch its outgoing links and add the linked memories (if not already present).
+/// Append linked memories to a recall result: every memory connected to a
+/// direct result by an edge in either direction, each carrying the full set
+/// of edge contexts (direction, relationship, metadata) that reached it.
 ///
 /// Linked targets reapply the parent query's archive and expiry eligibility so
-/// hidden records cannot re-enter recall through graph expansion.
+/// hidden records cannot re-enter recall through graph expansion. Target
+/// memories are deduplicated; their edge contexts are not.
 ///
 /// Uses batch fetching to avoid N+1 queries.
 fn append_linked_memories(
@@ -676,47 +696,68 @@ fn append_linked_memories(
     result: &mut RecallResult,
     q: &RecallQuery,
 ) -> Result<()> {
-    use std::collections::HashSet;
+    use std::collections::{HashMap, HashSet};
 
     let existing_ids: HashSet<String> = result.items.iter().map(|i| i.memory.id.clone()).collect();
+    let anchor_ids: Vec<String> = result.items.iter().map(|i| i.memory.id.clone()).collect();
 
-    // Fetch all outgoing links for current result items in one query.
-    let source_ids: Vec<String> = result.items.iter().map(|i| i.memory.id.clone()).collect();
-    let all_links = get_links_bulk(conn, &source_ids)?;
+    let outgoing = get_links_bulk(conn, &anchor_ids)?;
+    let incoming = get_links_bulk_incoming(conn, &anchor_ids)?;
 
-    // Collect target IDs and their link sources, deduplicating.
-    let mut target_to_source: Vec<(String, String)> = Vec::new();
-    let mut added_ids: HashSet<String> = HashSet::new();
+    // linked id -> (first anchor, every edge context that reached it),
+    // preserving first-seen order for stable output.
+    let mut order: Vec<String> = Vec::new();
+    let mut contexts: HashMap<String, (String, Vec<LinkContext>)> = HashMap::new();
 
-    for link in all_links {
-        let target_id = link.to_memory_id;
-        if !existing_ids.contains(&target_id) && added_ids.insert(target_id.clone()) {
-            target_to_source.push((target_id, link.from_memory_id));
+    let mut add_edge = |linked_id: &str, anchor_id: &str, direction: &str, link: MemoryLink| {
+        if existing_ids.contains(linked_id) {
+            return;
         }
+        let entry = contexts.entry(linked_id.to_string()).or_insert_with(|| {
+            order.push(linked_id.to_string());
+            (anchor_id.to_string(), Vec::new())
+        });
+        entry.1.push(LinkContext {
+            from_memory_id: link.from_memory_id,
+            to_memory_id: link.to_memory_id,
+            direction: direction.to_string(),
+            relationship: link.relationship,
+            metadata: link.metadata,
+            created_at: link.created_at,
+        });
+    };
+
+    for link in outgoing {
+        let (linked, anchor) = (link.to_memory_id.clone(), link.from_memory_id.clone());
+        add_edge(&linked, &anchor, "outgoing", link);
+    }
+    for link in incoming {
+        let (linked, anchor) = (link.from_memory_id.clone(), link.to_memory_id.clone());
+        add_edge(&linked, &anchor, "incoming", link);
     }
 
-    if target_to_source.is_empty() {
+    if order.is_empty() {
         return Ok(());
     }
 
     // Batch-fetch all linked memories in one query, reapplying the parent
     // query's archive/expiry eligibility.
-    let ids_to_fetch: Vec<String> = target_to_source.iter().map(|(id, _)| id.clone()).collect();
-    let fetched = get_many_eligible(conn, &ids_to_fetch, q.include_archived, q.exclude_expired)?;
-
-    // Build a map of id -> source for linking.
-    let source_map: std::collections::HashMap<String, String> =
-        target_to_source.into_iter().collect();
+    let fetched = get_many_eligible(conn, &order, q.include_archived, q.exclude_expired)?;
+    let mut fetched_map: HashMap<String, Memory> =
+        fetched.into_iter().map(|m| (m.id.clone(), m)).collect();
 
     let mut linked_items: Vec<RecallItem> = Vec::new();
-    for memory in fetched {
-        if let Some(linked_from) = source_map.get(&memory.id) {
-            linked_items.push(RecallItem {
-                memory,
-                rank: None,
-                linked_from: Some(linked_from.clone()),
-            });
-        }
+    for id in &order {
+        let Some(memory) = fetched_map.remove(id) else {
+            continue; // hidden by eligibility
+        };
+        let (linked_from, link_context) = contexts.remove(id).expect("context recorded");
+        linked_items.push(RecallItem {
+            memory,
+            rank: None,
+            linked_from: Some(linked_from),
+            link_context,
+        });
     }
 
     if !linked_items.is_empty() {
@@ -727,6 +768,36 @@ fn append_linked_memories(
     }
 
     Ok(())
+}
+
+/// Every edge touching one memory, in both directions, with relationship and
+/// metadata preserved. Direction is relative to the given memory.
+pub fn get_link_contexts(conn: &Connection, memory_id: &str) -> Result<Vec<LinkContext>> {
+    require_exists(conn, memory_id)?;
+    let ids = vec![memory_id.to_string()];
+    let mut contexts = Vec::new();
+    for link in get_links_bulk(conn, &ids)? {
+        contexts.push(LinkContext {
+            from_memory_id: link.from_memory_id,
+            to_memory_id: link.to_memory_id,
+            direction: "outgoing".into(),
+            relationship: link.relationship,
+            metadata: link.metadata,
+            created_at: link.created_at,
+        });
+    }
+    for link in get_links_bulk_incoming(conn, &ids)? {
+        contexts.push(LinkContext {
+            from_memory_id: link.from_memory_id,
+            to_memory_id: link.to_memory_id,
+            direction: "incoming".into(),
+            relationship: link.relationship,
+            metadata: link.metadata,
+            created_at: link.created_at,
+        });
+    }
+    contexts.sort_by(|a, b| a.created_at.cmp(&b.created_at));
+    Ok(contexts)
 }
 
 /// Sanitise a user-supplied FTS query. Each whitespace-separated term is quoted
@@ -831,6 +902,7 @@ fn recall_fts(conn: &Connection, fts_query: &str, q: &RecallQuery) -> Result<Rec
             memory,
             rank: Some(rank),
             linked_from: None,
+            link_context: Vec::new(),
         });
     }
 
@@ -907,6 +979,7 @@ fn recall_recent(conn: &Connection, q: &RecallQuery) -> Result<RecallResult> {
             memory,
             rank: None,
             linked_from: None,
+            link_context: Vec::new(),
         });
     }
 

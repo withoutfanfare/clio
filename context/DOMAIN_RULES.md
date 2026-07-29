@@ -215,6 +215,14 @@ An attention item marks one memory as operationally open. Memories record what w
 - Existing `task`-kind memories remain valid without attention rows
 - Adapters (CLI `clio action`, MCP `memory_action`) are thin: every rule above lives in `clio-core::attention`
 
+### Graph Recall Safety
+
+- Linked recall (`include_links`) follows edges in both directions; each connected memory appears once, carrying every edge context (`from`, `to`, `direction` relative to the anchor, `relationship`, `metadata`)
+- Linked targets reapply the parent query's archive/expiry eligibility — hidden records cannot re-enter recall through graph expansion
+- Link suggestions are candidates only: they default to the source memory's own namespace and never include archived or expired targets; cross-project relations are review-only
+- `same_as`, contradiction, supersession/reversal and every cross-project relation require user acceptance; background auto-linking persists only `auto:relates_to`
+- The relationship vocabulary is open but documented in `docs/reference/schema.md`; a classifier may propose a typed relation but can never accept one
+
 ### Resume Briefs (Automatic Surfacing)
 
 One core policy (`assembly::build_resume_brief`) decides what surfaces when work resumes; adapters and hooks only request it.

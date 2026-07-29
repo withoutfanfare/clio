@@ -863,6 +863,15 @@ Stop-hook capture retries after a lost response, a provider 429 or an outage. Wi
 - LLM returned unparseable JSON → validation error; the key stays open for retry
 - storage failure → transaction rolled back, actionable storage error
 
+## `memory_get_links` — direction parameter
+
+`memory_get_links` accepts an optional `direction` field:
+
+- `"outgoing"` (default): the existing compatible shape — raw outgoing links
+- `"incoming"` / `"both"`: edge contexts `{ from_memory_id, to_memory_id, direction, relationship, metadata, created_at }`, where `direction` is relative to the requested memory
+
+Linked recall (`memory_recall` with `include_links`) likewise returns each linked memory once with a `link_context` array preserving every edge's direction, relationship and metadata.
+
 ## `memory_resume`
 
 Build a deterministic, evidence-backed resume brief: what deserves attention now, and why.
