@@ -190,17 +190,18 @@ deleted executable.
 
 ### Migration gate
 
-After taking the online backup, deploy copies that snapshot to a disposable
-database and lets the candidate CLI apply its migrations there. It also runs
-keyword-recall and semantic-search smoke checks, exercising both the repository
-SQLite maths configuration and the dynamically loaded ONNX Runtime. The live
-database is touched only after the probe succeeds, and its resulting migration
-set must match the probe.
+After taking the online backup, deploy copies that snapshot and its settings to
+a disposable directory and lets the candidate CLI apply its migrations there.
+It also runs keyword-recall and semantic-search smoke checks, exercising the
+live embedding configuration, repository SQLite maths configuration and
+dynamically loaded ONNX Runtime. The live database is touched only after the
+probe succeeds, and its resulting migration set must match the probe.
 
-If the probe finds pending migrations, deploy temporarily gates the stable MCP
-entry point before counting active sessions. New connections fail fast during
-this short maintenance window, so a reconnect cannot start another old process
-between the compatibility check and migration. Existing processes are not
+If the probe finds pending migrations, deploy records the candidate SHA and
+temporarily gates the stable MCP entry point. Every MCP process holds a shared
+database maintenance lease before opening SQLite; deploy must acquire the
+exclusive lease before migration. This closes the startup race between gating
+the entry point and detecting an old process. Existing processes are not
 killed. If any remain, deploy stops before changing the live database or active
 release. The normal response is to disconnect the clients, deploy, then
 reconnect them.
@@ -219,9 +220,10 @@ persistent environment setting. The override applies to a specific, reviewed
 migration; it is not a general deployment convenience. If live migration may
 have started but activation fails, the script deliberately leaves new MCP
 sessions gated so an incompatible old binary cannot reopen the database.
-Re-running the same deployment recognises that gate and switches `current` to
-the candidate before admitting new sessions; roll forward before reconnecting
-clients.
+Re-running the exact candidate SHA recognises that gate and switches `current`
+to the candidate before admitting new sessions. A different SHA is rejected;
+inspect the live migration state and roll the recorded candidate forward before
+reconnecting clients.
 
 After activation, restart the MCP integration in every AI client. A symlink
 change affects new processes only.

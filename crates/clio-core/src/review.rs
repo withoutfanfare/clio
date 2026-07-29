@@ -200,17 +200,20 @@ pub fn approve_review(
         }
         let item = get_review(conn, id)?;
 
-        // Resolve exact duplicates to the existing memory while the review
-        // transition remains protected by the same write transaction.
-        if let Some(existing_id) = crate::repository::find_content_duplicate(
-            conn,
-            &item.suggested_namespace,
-            &item.content,
-        )? {
-            return crate::repository::get(conn, &existing_id);
+        let upsert = item.source_route.is_some() && item.source_ref.is_some();
+        // Provenance-backed items must reach remember() so source/source_ref
+        // idempotency is preserved. Unprovenanced duplicates can reuse the
+        // existing memory without creating a second row.
+        if !upsert {
+            if let Some(existing_id) = crate::repository::find_content_duplicate(
+                conn,
+                &item.suggested_namespace,
+                &item.content,
+            )? {
+                return crate::repository::get(conn, &existing_id);
+            }
         }
 
-        let upsert = item.source_route.is_some() && item.source_ref.is_some();
         let input = crate::models::RememberInput {
             namespace: item.suggested_namespace,
             kind: item.suggested_kind,

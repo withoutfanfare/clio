@@ -501,6 +501,7 @@ name = "clio-mcp"
 version = "0.1.0"
 dependencies = [
  "clio-core",
+ "libc",
  "rmcp",
  "rusqlite",
  "schemars 1.2.1",

@@ -1909,6 +1909,62 @@ fn approve_review_of_duplicate_content_does_not_create_second_memory() {
     assert_eq!(res.total, 1, "no duplicate row should be created");
 }
 
+#[test]
+fn approve_review_preserves_source_reference_idempotency() {
+    use clio_core::review::{ReviewInput, approve_review, queue_for_review};
+
+    let conn = test_db();
+    repository::remember(
+        &conn,
+        &RememberInput {
+            namespace: "test".into(),
+            ..base_input("shared review content")
+        },
+        &Settings::default(),
+    )
+    .unwrap();
+    let input = ReviewInput {
+        content: "shared review content".into(),
+        suggested_namespace: "test".into(),
+        suggested_kind: "fact".into(),
+        suggested_title: Some("provenanced".into()),
+        suggested_summary: None,
+        suggested_tags: vec![],
+        suggested_importance: 4,
+        suggested_confidence: Some(0.9),
+        source_route: Some("import".into()),
+        source_ref: Some("record-1".into()),
+        metadata: serde_json::json!({}),
+    };
+    let first = queue_for_review(&conn, &input).unwrap();
+    let second = queue_for_review(&conn, &input).unwrap();
+
+    let first_memory = approve_review(&conn, &first.id, &Settings::default()).unwrap();
+    let second_memory = approve_review(&conn, &second.id, &Settings::default()).unwrap();
+
+    assert_eq!(first_memory.id, second_memory.id);
+    assert_eq!(second_memory.source.as_deref(), Some("import"));
+    assert_eq!(second_memory.source_ref.as_deref(), Some("record-1"));
+}
+
+#[test]
+fn empty_patch_does_not_advance_updated_at() {
+    let conn = test_db();
+    let memory = remember_simple(&conn, "unchanged");
+    let patched = repository::update(
+        &conn,
+        &memory.id,
+        &UpdateInput {
+            expected_updated_at: Some(memory.updated_at.clone()),
+            ..UpdateInput::default()
+        },
+        &Settings::default(),
+    )
+    .unwrap();
+
+    assert_eq!(patched.updated_at, memory.updated_at);
+}
+
 // ---------------------------------------------------------------------------
 // Semantic recall: composite scoring fusion + expiry
 // ---------------------------------------------------------------------------
