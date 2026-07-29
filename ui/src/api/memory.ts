@@ -1,6 +1,10 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
+  AttentionItem,
+  AttentionOverview,
   BackupListEntry,
+  CaptureQueueHealth,
+  LinkContext,
   BackupResult,
   BulkResult,
   CleanupCandidate,
@@ -358,4 +362,47 @@ export async function mergeMemories(
   mergeIds: string[],
 ): Promise<Memory> {
   return invoke<Memory>("cmd_merge_memories", { keepId, mergeIds });
+}
+
+export async function attentionOverview(
+  namespace?: string | null,
+): Promise<AttentionOverview> {
+  return invoke<AttentionOverview>("cmd_attention_overview", { namespace });
+}
+
+export async function actionComplete(params: {
+  id: string;
+  evidence?: string | null;
+  reason?: string | null;
+}): Promise<AttentionItem> {
+  return invoke<AttentionItem>("cmd_action_complete", {
+    id: params.id,
+    evidence: params.evidence ?? null,
+    reason: params.reason ?? null,
+  });
+}
+
+export async function actionSnooze(params: {
+  id: string;
+  until: string;
+}): Promise<AttentionItem> {
+  return invoke<AttentionItem>("cmd_action_snooze", params);
+}
+
+export async function actionCancel(params: {
+  id: string;
+  reason?: string | null;
+}): Promise<AttentionItem> {
+  return invoke<AttentionItem>("cmd_action_cancel", {
+    id: params.id,
+    reason: params.reason ?? null,
+  });
+}
+
+export async function linkContexts(memoryId: string): Promise<LinkContext[]> {
+  return invoke<LinkContext[]>("cmd_link_contexts", { memoryId: memoryId });
+}
+
+export async function captureQueueHealth(): Promise<CaptureQueueHealth | null> {
+  return invoke<CaptureQueueHealth | null>("cmd_capture_queue_health");
 }

@@ -209,6 +209,13 @@ async function createProject() {
     </Transition>
 
     <div class="panel-footer">
+      <SSidebarLink @click="router.push({ name: 'attention' })">
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+          <circle cx="8" cy="8" r="6" stroke="currentColor" stroke-width="1.2"/>
+          <path d="M8 4.5V8l2.5 1.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
+        </svg>
+        Needs attention
+      </SSidebarLink>
       <SSidebarLink @click="goToStats">
         <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
           <rect x="2" y="9" width="3" height="5" rx="0.5" stroke="currentColor" stroke-width="1.2"/>

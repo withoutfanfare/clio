@@ -2348,7 +2348,9 @@ impl ClioServer {
                        attention on new or existing memory), list, eligible (what needs attention \
                        now, with a machine-readable reason per item), complete (with optional \
                        evidence memory), snooze (until a time), cancel, attach_external (record a \
-                       verified Things/Linear reference), history (event audit for an item). \
+                       verified Things/Linear reference), history (event audit for an item), \
+                       overview (eligible + open items, review depth and consolidation \
+                       freshness in one call). \
                        Statuses: open, snoozed, resolved, cancelled. Completion never rewrites \
                        the source memory."
     )]
@@ -2381,11 +2383,11 @@ impl ClioServer {
                     );
                 }
             }
-            "list" | "eligible" => {}
+            "list" | "eligible" | "overview" => {}
             other => {
                 return Err(format!(
-                    "unknown action '{other}'. Expected add, list, eligible, complete, snooze, \
-                     cancel, attach_external, or history."
+                    "unknown action '{other}'. Expected add, list, eligible, overview, complete, \
+                     snooze, cancel, attach_external, or history."
                 ));
             }
         }
@@ -2480,6 +2482,17 @@ impl ClioServer {
                     )
                     .map_err(|e| format_clio_error(&e))?;
                     serde_json::to_string_pretty(&items)
+                        .map_err(|e| format!("Serialisation error: {e}"))
+                }
+                "overview" => {
+                    let overview = attention::overview(
+                        &conn,
+                        detected_namespace.as_deref(),
+                        params.scope.as_deref(),
+                        settings.attention.dormant_days,
+                    )
+                    .map_err(|e| format_clio_error(&e))?;
+                    serde_json::to_string_pretty(&overview)
                         .map_err(|e| format!("Serialisation error: {e}"))
                 }
                 "eligible" => {

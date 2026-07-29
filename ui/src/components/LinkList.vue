@@ -3,14 +3,18 @@ import { ref, watch } from "vue";
 import { SButton, SSpinner, SProgressBar } from "@stuntrocket/ui";
 import * as api from "@/api/memory";
 import { useMemoryStore } from "@/stores/memories";
-import type { MemoryLink, SuggestionResult } from "@/api/types";
+import type { LinkContext, SuggestionResult } from "@/api/types";
 
 const props = defineProps<{
   memoryId: string;
 }>();
 
+// Relationships that describe how truth changed — rendered as history.
+const HISTORY_RELATIONSHIPS = ["supersedes", "reverses", "contradicts", "resolved_by"];
+
 const store = useMemoryStore();
-const links = ref<MemoryLink[]>([]);
+const links = ref<LinkContext[]>([]);
+const titles = ref<Record<string, string>>({});
 const suggestions = ref<SuggestionResult[]>([]);
 const loadingSuggestions = ref(false);
 const loadingLinks = ref(false);
@@ -19,12 +23,41 @@ const suggestAttempted = ref(false);
 const expanded = ref(false);
 const loaded = ref(false);
 
+function otherId(ctx: LinkContext): string {
+  return ctx.direction === "outgoing" ? ctx.to_memory_id : ctx.from_memory_id;
+}
+
+function linkTitle(ctx: LinkContext): string {
+  const id = otherId(ctx);
+  return titles.value[id] ?? id.slice(-8);
+}
+
+function rationale(ctx: LinkContext): string | null {
+  const value = ctx.metadata?.["rationale"];
+  return typeof value === "string" && value ? value : null;
+}
+
+function isHistory(ctx: LinkContext): boolean {
+  return HISTORY_RELATIONSHIPS.includes(ctx.relationship);
+}
+
 async function loadLinks() {
   if (loaded.value || loadingLinks.value) return;
   loadingLinks.value = true;
   try {
-    links.value = await api.getLinks(props.memoryId);
+    links.value = await api.linkContexts(props.memoryId);
     loaded.value = true;
+    // Resolve linked titles best-effort so rows read as titles, not IDs.
+    const ids = [...new Set(links.value.map(otherId))];
+    for (const id of ids) {
+      if (titles.value[id]) continue;
+      try {
+        const memory = await api.getMemory(id);
+        titles.value[id] = memory.title ?? memory.content.slice(0, 60);
+      } catch {
+        // Leave the fallback id snippet.
+      }
+    }
   } catch {
     // May not have links
   } finally {
@@ -74,7 +107,7 @@ async function createLink(toId: string) {
       from_memory_id: props.memoryId,
       to_memory_id: toId,
     });
-    links.value = await api.getLinks(props.memoryId);
+    links.value = await api.linkContexts(props.memoryId);
     suggestions.value = suggestions.value.filter((s) => s.memory.id !== toId);
   } catch {
     // Link creation failed
@@ -117,15 +150,32 @@ function openLinked(id: string) {
         <SProgressBar v-if="loadingLinks" :value="0" indeterminate size="sm" class="loading-bar" />
         <SProgressBar v-if="loadingSuggestions" :value="0" indeterminate size="sm" class="loading-bar" />
 
-        <div v-if="links.length" class="links-items">
+        <div v-if="links.some(isHistory)" class="history-items">
+          <span class="suggestions-label">Decision history</span>
           <button
-            v-for="link in links"
-            :key="link.to_memory_id"
+            v-for="link in links.filter(isHistory)"
+            :key="link.from_memory_id + link.relationship + link.to_memory_id"
             class="link-item"
-            @click="openLinked(link.to_memory_id)"
+            @click="openLinked(otherId(link))"
           >
+            <span class="link-dir" aria-hidden="true">{{ link.direction === "outgoing" ? "→" : "←" }}</span>
+            <span class="link-rel">{{ link.relationship }}</span>
+            <span class="link-title">{{ linkTitle(link) }}</span>
+          </button>
+        </div>
+
+        <div v-if="links.some((l) => !isHistory(l))" class="links-items">
+          <button
+            v-for="link in links.filter((l) => !isHistory(l))"
+            :key="link.from_memory_id + link.relationship + link.to_memory_id"
+            class="link-item"
+            :title="rationale(link) ?? undefined"
+            @click="openLinked(otherId(link))"
+          >
+            <span class="link-dir" aria-hidden="true">{{ link.direction === "outgoing" ? "→" : "←" }}</span>
             <span class="link-rel">{{ link.relationship || "relates_to" }}</span>
-            <span class="link-id">{{ link.to_memory_id.slice(0, 8) }}</span>
+            <span class="link-title">{{ linkTitle(link) }}</span>
+            <span v-if="rationale(link)" class="link-rationale">{{ rationale(link) }}</span>
           </button>
         </div>
 
@@ -257,10 +307,31 @@ function openLinked(id: string) {
   font-weight: 500;
 }
 
-.link-id {
+.link-dir {
+  font-size: 12px;
+  color: var(--color-text-tertiary);
+}
+
+.link-title {
   font-size: 13px;
   color: var(--color-text-primary);
-  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.link-rationale {
+  font-size: 11px;
+  color: var(--color-text-tertiary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.history-items {
+  display: flex;
+  flex-direction: column;
+  margin-bottom: var(--space-2);
 }
 
 .suggestions {

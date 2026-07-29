@@ -35,3 +35,11 @@ The Settings view can change the shared capture model when the Atlas route was
 persisted with `clio settings use-remote`. Environment-only development mode
 does not modify operational settings; persist the route before testing that
 control.
+
+## Needs attention view
+
+`/attention` combines eligible follow-ups (each with the reason it surfaced),
+open and snoozed items, review-inbox depth, client capture-queue health and
+consolidated-memory freshness. Row actions (Complete / Snooze / Cancel) call
+the shared core lifecycle; in Atlas mode they go through `memory_action` and
+never fall back to local storage on a disconnect.

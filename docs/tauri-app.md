@@ -84,6 +84,22 @@ All commands are defined in `crates/clio-tauri/src/commands/` and registered in 
 | `cmd_capture` | text, namespace | `CaptureResult` | LLM-classify and store unstructured text |
 | `cmd_cache_clear` | — | `CacheClearResult` | Clear the in-memory cache |
 
+### Attention Commands (`commands/attention.rs`)
+
+The Today / Needs attention surface. Local mode serialises the same core types
+the Atlas `memory_action` tool returns, so local and remote payloads stay
+identical by construction. A remote disconnect surfaces as an error — the app
+never falls back to local storage.
+
+| Command | Parameters | Returns | Description |
+|---|---|---|---|
+| `cmd_attention_overview` | namespace? | `AttentionOverview` (JSON) | Eligible items with reasons, open/snoozed items, review depth, consolidation freshness |
+| `cmd_action_complete` | id, evidence?, reason? | `AttentionItem` (JSON) | Resolve a follow-up; rows stay on screen until the server confirms |
+| `cmd_action_snooze` | id, until | `AttentionItem` (JSON) | Snooze until a time |
+| `cmd_action_cancel` | id, reason? | `AttentionItem` (JSON) | Cancel a follow-up |
+| `cmd_link_contexts` | memory_id | `Vec<LinkContext>` (JSON) | Both-direction edges with relationship + metadata (drives link rows and the decision-history panel) |
+| `cmd_capture_queue_health` | — | JSON or `null` | Client-local capture spool depth; `null` renders as "unavailable", never zero |
+
 ### Search Commands (`commands/search.rs`)
 
 | Command | Parameters | Returns | Description |

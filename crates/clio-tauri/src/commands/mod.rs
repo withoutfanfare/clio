@@ -1,3 +1,4 @@
+pub mod attention;
 pub mod clipboard;
 pub mod deduplication;
 pub mod memory;

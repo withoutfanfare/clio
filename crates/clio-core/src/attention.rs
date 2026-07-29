@@ -442,6 +442,54 @@ pub fn attach_external(
     )
 }
 
+/// One combined operational surface for "what needs attention": eligible
+/// items with reasons, all open/snoozed items, review-inbox depth and the
+/// consolidation freshness flag. One core builder so every adapter (MCP,
+/// Tauri) shows the same truth.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct AttentionOverview {
+    pub eligible: Vec<EligibleAttention>,
+    pub open: Vec<AttentionItem>,
+    pub review_pending: u32,
+    /// `None` when the namespace has no consolidated singleton.
+    pub consolidation_stale: Option<bool>,
+    pub generated_at: String,
+}
+
+/// Build the operational overview. Pure read: nothing is mutated, including
+/// access ranking and surfaced-event state (pass no scope for a dashboard).
+pub fn overview(
+    conn: &Connection,
+    namespace: Option<&str>,
+    scope: Option<&str>,
+    dormant_days: u32,
+) -> Result<AttentionOverview> {
+    let now = now_utc();
+    let eligible_items = eligible(
+        conn,
+        &EligibilityContext {
+            namespace: namespace.map(String::from),
+            scope: scope.map(String::from),
+            now: now.clone(),
+            dormant_days,
+        },
+    )?;
+    let mut open = list_attention(conn, namespace, Some(STATUS_OPEN), 100)?;
+    open.extend(list_attention(conn, namespace, Some(STATUS_SNOOZED), 100)?);
+    let review_pending = crate::review::review_stats(conn)?.pending;
+    let consolidation_stale = match namespace {
+        Some(ns) => crate::consolidate::consolidation_is_stale(conn, ns)?,
+        None => None,
+    };
+    Ok(AttentionOverview {
+        eligible: eligible_items,
+        open,
+        review_pending,
+        consolidation_stale,
+        generated_at: now,
+    })
+}
+
 /// Idempotency key for surfacing `item` in `scope` for `reason`. The item's
 /// `updated_at` is part of the key, so a state change re-arms surfacing.
 pub fn surfaced_key(item: &AttentionItem, scope: &str, reason: &str) -> String {
@@ -846,6 +894,34 @@ mod tests {
         assert_eq!(attached.status, STATUS_OPEN);
         assert_eq!(attached.external_system.as_deref(), Some("things"));
         assert_eq!(attached.external_ref.as_deref(), Some("things-id-1"));
+    }
+
+    #[test]
+    fn overview_combines_eligibility_reviews_and_freshness() {
+        let conn = test_conn();
+        let due = remember(&conn, "Overdue item");
+        create_attention(
+            &conn,
+            &AttentionInput {
+                memory_id: due.id.clone(),
+                due_at: Some("2000-01-01T00:00:00Z".into()),
+                ..AttentionInput::default()
+            },
+        )
+        .unwrap();
+        let snoozed = remember(&conn, "Sleeping item");
+        let item = open_attention(&conn, &snoozed.id);
+        snooze(&conn, &item.id, "2999-01-01T00:00:00Z", None).unwrap();
+
+        let overview = overview(&conn, Some("project:attention-test"), None, 0).unwrap();
+        assert_eq!(overview.eligible.len(), 1);
+        assert_eq!(overview.eligible[0].reason, EligibilityReason::Overdue);
+        assert_eq!(overview.open.len(), 2, "open + snoozed items are visible");
+        assert_eq!(overview.review_pending, 0);
+        assert_eq!(
+            overview.consolidation_stale, None,
+            "no singleton means no freshness claim"
+        );
     }
 
     #[test]

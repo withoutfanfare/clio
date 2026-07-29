@@ -264,3 +264,55 @@ export interface MergePreview {
   links_transferred: number;
   memories_archived: number;
 }
+
+export interface AttentionItem {
+  id: string;
+  memory_id: string;
+  namespace: string;
+  status: "open" | "snoozed" | "resolved" | "cancelled";
+  owner: string | null;
+  due_at: string | null;
+  remind_at: string | null;
+  trigger: string | null;
+  waiting_on: string | null;
+  completion_condition: string | null;
+  external_system: string | null;
+  external_ref: string | null;
+  created_at: string;
+  updated_at: string;
+  resolved_at: string | null;
+}
+
+export type EligibilityReason =
+  | "overdue"
+  | "reminder_due"
+  | "project_session"
+  | "dormant";
+
+export interface EligibleAttention extends AttentionItem {
+  reason: EligibilityReason;
+}
+
+export interface AttentionOverview {
+  eligible: EligibleAttention[];
+  open: AttentionItem[];
+  review_pending: number;
+  consolidation_stale: boolean | null;
+  generated_at: string;
+}
+
+export interface LinkContext {
+  from_memory_id: string;
+  to_memory_id: string;
+  direction: "outgoing" | "incoming";
+  relationship: string;
+  metadata: Record<string, unknown>;
+  created_at: string;
+}
+
+export interface CaptureQueueHealth {
+  pending: number;
+  processing: number;
+  dead: number;
+  oldest_pending_age_secs: number | null;
+}
