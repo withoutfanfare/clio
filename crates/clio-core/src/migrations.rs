@@ -247,6 +247,98 @@ const MIGRATIONS: &[Migration] = &[
             CREATE INDEX idx_memory_events_memory ON memory_events(memory_id, created_at);
         "#,
     },
+    Migration {
+        version: "011_occurrences_and_namespace_state",
+        sql: r#"
+            CREATE TABLE memory_occurrences (
+                id TEXT PRIMARY KEY,
+                memory_id TEXT NOT NULL,
+                source TEXT,
+                source_ref TEXT,
+                session_id TEXT,
+                occurred_at TEXT NOT NULL,
+                metadata_json TEXT NOT NULL DEFAULT '{}',
+                FOREIGN KEY (memory_id) REFERENCES memories(id) ON DELETE CASCADE
+            );
+
+            CREATE INDEX idx_memory_occurrences_memory
+                ON memory_occurrences(memory_id, occurred_at);
+
+            CREATE UNIQUE INDEX idx_memory_occurrences_provenance
+                ON memory_occurrences(memory_id, source, source_ref)
+                WHERE source IS NOT NULL AND source_ref IS NOT NULL;
+
+            CREATE TABLE namespace_state (
+                namespace TEXT PRIMARY KEY,
+                generation INTEGER NOT NULL DEFAULT 0,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE TRIGGER memories_gen_ai AFTER INSERT ON memories BEGIN
+                INSERT INTO namespace_state(namespace, generation, updated_at)
+                VALUES (new.namespace, 1, strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+                ON CONFLICT(namespace) DO UPDATE SET
+                    generation = generation + 1, updated_at = excluded.updated_at;
+            END;
+
+            CREATE TRIGGER memories_gen_au AFTER UPDATE ON memories BEGIN
+                INSERT INTO namespace_state(namespace, generation, updated_at)
+                VALUES (old.namespace, 1, strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+                ON CONFLICT(namespace) DO UPDATE SET
+                    generation = generation + 1, updated_at = excluded.updated_at;
+                INSERT INTO namespace_state(namespace, generation, updated_at)
+                SELECT new.namespace, 1, strftime('%Y-%m-%dT%H:%M:%fZ','now')
+                WHERE new.namespace != old.namespace
+                ON CONFLICT(namespace) DO UPDATE SET
+                    generation = generation + 1, updated_at = excluded.updated_at;
+            END;
+
+            CREATE TRIGGER memories_gen_ad AFTER DELETE ON memories BEGIN
+                INSERT INTO namespace_state(namespace, generation, updated_at)
+                VALUES (old.namespace, 1, strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+                ON CONFLICT(namespace) DO UPDATE SET
+                    generation = generation + 1, updated_at = excluded.updated_at;
+            END;
+
+            CREATE TRIGGER links_gen_ai AFTER INSERT ON memory_links BEGIN
+                INSERT INTO namespace_state(namespace, generation, updated_at)
+                SELECT namespace, 1, strftime('%Y-%m-%dT%H:%M:%fZ','now')
+                FROM memories WHERE id IN (new.from_memory_id, new.to_memory_id)
+                ON CONFLICT(namespace) DO UPDATE SET
+                    generation = generation + 1, updated_at = excluded.updated_at;
+            END;
+
+            CREATE TRIGGER links_gen_ad AFTER DELETE ON memory_links BEGIN
+                INSERT INTO namespace_state(namespace, generation, updated_at)
+                SELECT namespace, 1, strftime('%Y-%m-%dT%H:%M:%fZ','now')
+                FROM memories WHERE id IN (old.from_memory_id, old.to_memory_id)
+                ON CONFLICT(namespace) DO UPDATE SET
+                    generation = generation + 1, updated_at = excluded.updated_at;
+            END;
+
+            CREATE TRIGGER attention_gen_ai AFTER INSERT ON attention_items BEGIN
+                INSERT INTO namespace_state(namespace, generation, updated_at)
+                VALUES (new.namespace, 1, strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+                ON CONFLICT(namespace) DO UPDATE SET
+                    generation = generation + 1, updated_at = excluded.updated_at;
+            END;
+
+            CREATE TRIGGER attention_gen_au AFTER UPDATE ON attention_items BEGIN
+                INSERT INTO namespace_state(namespace, generation, updated_at)
+                VALUES (new.namespace, 1, strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+                ON CONFLICT(namespace) DO UPDATE SET
+                    generation = generation + 1, updated_at = excluded.updated_at;
+            END;
+
+            CREATE TRIGGER occurrences_gen_ai AFTER INSERT ON memory_occurrences BEGIN
+                INSERT INTO namespace_state(namespace, generation, updated_at)
+                SELECT namespace, 1, strftime('%Y-%m-%dT%H:%M:%fZ','now')
+                FROM memories WHERE id = new.memory_id
+                ON CONFLICT(namespace) DO UPDATE SET
+                    generation = generation + 1, updated_at = excluded.updated_at;
+            END;
+        "#,
+    },
 ];
 
 /// Run all pending migrations inside a transaction.

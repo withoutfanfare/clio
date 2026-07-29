@@ -215,6 +215,14 @@ An attention item marks one memory as operationally open. Memories record what w
 - Existing `task`-kind memories remain valid without attention rows
 - Adapters (CLI `clio action`, MCP `memory_action`) are thin: every rule above lives in `clio-core::attention`
 
+### Occurrences and Cited Consolidation
+
+- Repeated exact evidence strengthens one canonical memory: the capture path records an append-only occurrence (first sighting included) instead of a duplicate row; checkpoint replays add nothing thanks to the provenance unique index
+- Merges transfer occurrences to the kept memory before archiving duplicates
+- Every memory/link/attention/occurrence mutation bumps the namespace's generation via triggers — adapters cannot forget invalidation
+- Consolidation output is structured and cited: every statement carries input memory IDs, validated against the bounded input; an invalid candidate is rejected and the previous singleton stays, visibly stale via its generation watermark
+- Receipts never feed model-authored project truth; contradictions remain separate and labelled unresolved; resume drops a stale consolidated singleton rather than leading with it
+
 ### Graph Recall Safety
 
 - Linked recall (`include_links`) follows edges in both directions; each connected memory appears once, carrying every edge context (`from`, `to`, `direction` relative to the anchor, `relationship`, `metadata`)

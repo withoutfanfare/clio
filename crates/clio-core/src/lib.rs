@@ -19,6 +19,7 @@ pub mod integrity;
 pub mod migrate;
 pub mod migrations;
 pub mod models;
+pub mod occurrences;
 #[cfg(feature = "capture")]
 mod openai;
 pub mod repository;

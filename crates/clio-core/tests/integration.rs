@@ -2819,3 +2819,66 @@ fn suggest_links_stays_in_namespace_and_skips_hidden_candidates() {
         "only live, unexpired, same-namespace candidates may be suggested"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Occurrences through the checkpoint path (Task 9)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn repeated_evidence_across_sessions_keeps_one_memory_with_occurrences() {
+    use clio_core::checkpoint::{CheckpointRequest, store_checkpoint};
+    use clio_core::occurrences;
+
+    let conn = test_db();
+    let settings = Settings::default();
+    let atom = || clio_core::capture::DistilledMemory {
+        content: "The Atlas key rotates monthly.".into(),
+        kind: "fact".into(),
+        title: "Atlas key rotation".into(),
+        summary: String::new(),
+        tags: vec![],
+        namespace: "project:occ".into(),
+        importance: 3,
+        confidence: 1.0,
+        attention: None,
+        resolves: None,
+    };
+    let request = |session: &str, cursor: i64| CheckpointRequest {
+        source: "claude-session".into(),
+        session_id: session.into(),
+        cursor,
+        namespace_override: None,
+        default_namespace: Some("project:occ".into()),
+        cwd: None,
+        branch: None,
+        ticket: None,
+    };
+
+    let first = store_checkpoint(&conn, &request("sess-a", 10), &[atom()], &settings).unwrap();
+    let memory_id = first.stored_memory_ids[0].clone();
+
+    // Same evidenced fact from a different session: no second memory row.
+    let second = store_checkpoint(&conn, &request("sess-b", 5), &[atom()], &settings).unwrap();
+    assert_eq!(second.stored_memory_ids, vec![memory_id.clone()]);
+    let count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM memories WHERE namespace = 'project:occ'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(count, 1, "one canonical memory");
+    assert_eq!(
+        occurrences::count_occurrences(&conn, &memory_id).unwrap(),
+        2,
+        "each session's sighting is provenance"
+    );
+
+    // Checkpoint replay of a delivered key adds no occurrence.
+    let replay = store_checkpoint(&conn, &request("sess-a", 10), &[atom()], &settings).unwrap();
+    assert!(replay.replayed);
+    assert_eq!(
+        occurrences::count_occurrences(&conn, &memory_id).unwrap(),
+        2
+    );
+}

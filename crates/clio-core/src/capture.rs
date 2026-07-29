@@ -762,6 +762,9 @@ pub(crate) fn store_or_queue(
     if let Some(existing_id) = crate::repository::find_content_duplicate(conn, namespace, content)?
     {
         let memory = crate::repository::get(conn, &existing_id)?;
+        // Repeated exact evidence strengthens the canonical memory: keep one
+        // row, record this sighting's provenance as an occurrence.
+        crate::occurrences::record_occurrence(conn, &existing_id, Some(source), source_ref, None)?;
         tracing::debug!(
             "capture deduplicated against existing memory {} in {}",
             existing_id,
@@ -775,6 +778,7 @@ pub(crate) fn store_or_queue(
     if let Some(archived_id) = crate::repository::find_archived_duplicate(conn, namespace, content)?
     {
         let memory = crate::repository::unarchive(conn, &archived_id)?;
+        crate::occurrences::record_occurrence(conn, &archived_id, Some(source), source_ref, None)?;
         tracing::debug!(
             "capture revived archived duplicate {} in {}",
             archived_id,
@@ -831,6 +835,9 @@ pub(crate) fn store_or_queue(
     };
 
     let memory = crate::repository::remember(conn, &input, settings)?;
+    // The first sighting is an occurrence too, so repeat evidence counts
+    // from one rather than appearing out of nowhere at two.
+    crate::occurrences::record_occurrence(conn, &memory.id, Some(source), source_ref, None)?;
 
     // Auto-embed if enabled.
     if embed_now && settings.auto_embed {

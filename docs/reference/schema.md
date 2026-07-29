@@ -454,6 +454,55 @@ CREATE INDEX idx_memory_events_memory ON memory_events(memory_id, created_at);
 - Events accompanying a state change share the state change's transaction; observational events are fire-and-forget and can never fail the parent operation.
 - Events never mutate memories or their `access_count`/`last_accessed_at` ranking data.
 
+## `memory_occurrences`
+
+Append-only sightings of a canonical memory's content: repeated exact evidence strengthens one row instead of duplicating it, without losing provenance. Added by migration `011_occurrences_and_namespace_state`.
+
+```sql
+CREATE TABLE memory_occurrences (
+    id TEXT PRIMARY KEY,
+    memory_id TEXT NOT NULL,
+    source TEXT,
+    source_ref TEXT,
+    session_id TEXT,
+    occurred_at TEXT NOT NULL,
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    FOREIGN KEY (memory_id) REFERENCES memories(id) ON DELETE CASCADE
+);
+
+CREATE INDEX idx_memory_occurrences_memory
+    ON memory_occurrences(memory_id, occurred_at);
+
+CREATE UNIQUE INDEX idx_memory_occurrences_provenance
+    ON memory_occurrences(memory_id, source, source_ref)
+    WHERE source IS NOT NULL AND source_ref IS NOT NULL;
+```
+
+### Occurrence rules
+
+- The capture path records an occurrence for the first sighting and for every dedup/revival hit; the partial unique index makes checkpoint replays and duplicate deliveries no-ops.
+- Occurrence writes share their caller's capture/review transaction.
+- `merge_memories` transfers occurrences to the kept memory before archiving the duplicate row; provenance collisions are dropped as duplicates.
+
+## `namespace_state`
+
+Per-namespace mutation generation, bumped by triggers on every memory, link, attention and occurrence write. Derived views (the consolidated singleton) store the generation as a freshness watermark; alternate adapters cannot forget invalidation because the triggers do it. Added by migration `011_occurrences_and_namespace_state`.
+
+```sql
+CREATE TABLE namespace_state (
+    namespace TEXT PRIMARY KEY,
+    generation INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL
+);
+```
+
+### Consolidation freshness
+
+- The consolidated singleton's metadata carries `generation`, `consolidated_from`, `truncated` and the full structured `citations`.
+- Every material statement must cite input memory IDs; invalid or uncited candidates are rejected and the previous view stays in place, visibly stale.
+- `consolidation_is_stale` compares the stored watermark to the current generation; a pre-watermark (legacy) singleton always reads as stale.
+- Receipts are excluded from consolidation input; contradictions stay separate and labelled unresolved.
+
 ## Indexes
 
 Required indexes:
@@ -758,6 +807,7 @@ The export format should be easy for:
 | `008_review_source_ref` | `source_ref` column on `review_queue` |
 | `009_session_checkpoints` | `session_checkpoints` table with unique `(source, session_id, cursor)` identity |
 | `010_attention_and_events` | `attention_items` follow-up lifecycle table and append-only `memory_events` ledger |
+| `011_occurrences_and_namespace_state` | `memory_occurrences` sightings, `namespace_state` mutation generation and its triggers |
 
 ## Invariants For Implementers
 

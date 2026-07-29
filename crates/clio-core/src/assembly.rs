@@ -781,6 +781,20 @@ pub fn build_resume_brief(conn: &Connection, request: &ResumeRequest) -> Result<
                 &format!("matches the current task ({query})"),
             )?;
             items.retain(|i| i.kind != "receipt");
+            // Never lead with stale derived truth: drop the consolidated
+            // singleton when its namespace has moved past its watermark.
+            let has_consolidated = items
+                .iter()
+                .any(|i| i.source.as_deref() == Some(crate::consolidate::CONSOLIDATED_SOURCE));
+            if has_consolidated {
+                let ns = request.namespace.as_deref().unwrap_or("global");
+                let stale = crate::consolidate::consolidation_is_stale(conn, ns)?.unwrap_or(true);
+                if stale {
+                    items.retain(|i| {
+                        i.source.as_deref() != Some(crate::consolidate::CONSOLIDATED_SOURCE)
+                    });
+                }
+            }
             items
         }
         None => Vec::new(),
