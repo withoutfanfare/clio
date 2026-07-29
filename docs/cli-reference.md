@@ -284,6 +284,21 @@ clio action history <id>
 
 `<id>` accepts either the attention item ID or the memory ID.
 
+### Effectiveness (event-backed usefulness report)
+
+`clio effectiveness` reports whether the memory system is actually working:
+confirmed checkpoints, attention lifecycle counts, stale open items, unique
+automatic surfacings versus deliberate reads, unresolved contradictions,
+consolidation freshness, external delivery states, review depth and any
+corrupt rows. All reads are untracked — running the report never changes
+recall ranking. Missing client-side data is reported as unavailable, never
+as zero.
+
+```sh
+clio effectiveness            # auto-detected namespace
+clio effectiveness --json     # structured output for dashboards
+```
+
 ---
 
 ## Archiving & Deletion

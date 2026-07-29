@@ -388,3 +388,194 @@ mod tests {
         assert_eq!(activity[0].namespace, "project:ai");
     }
 }
+
+// ---------------------------------------------------------------------------
+// Effectiveness (event-backed acceptance reporting)
+// ---------------------------------------------------------------------------
+
+/// Event-backed usefulness report. Every read is untracked: building the
+/// report can never mutate rank, access or event state. Deliberate recall
+/// (access counts) and automatic injection (`surfaced` events) are separate
+/// measures — automatic surfacing must never train ranking. Corrupt rows are
+/// counted and reported, never silently dropped from denominators.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct EffectivenessReport {
+    pub namespace: Option<String>,
+    /// Server-confirmed capture attempts.
+    pub checkpoints_total: i64,
+    pub last_checkpoint_at: Option<String>,
+    /// Attention lifecycle counts by status.
+    pub attention: std::collections::BTreeMap<String, i64>,
+    /// Open items untouched beyond the dormancy policy.
+    pub attention_stale: i64,
+    /// Append-only event counts by type (idempotent events already unique).
+    pub events: std::collections::BTreeMap<String, i64>,
+    /// Distinct automatic injections (unique surfaced idempotency keys).
+    pub surfaced_unique: i64,
+    /// Deliberate recall volume: total tracked accesses across memories.
+    pub deliberate_accesses: i64,
+    /// `contradicts` links where both endpoints are still active.
+    pub unresolved_contradictions: i64,
+    pub consolidation_stale: Option<bool>,
+    /// External delivery outbox counts by status.
+    pub deliveries: std::collections::BTreeMap<String, i64>,
+    pub review_pending: u32,
+    /// Rows whose JSON payloads failed to validate — reported, not hidden.
+    pub corrupt_rows: i64,
+    pub generated_at: String,
+}
+
+/// Build the effectiveness report from untracked reads only.
+pub fn effectiveness(
+    conn: &Connection,
+    namespace: Option<&str>,
+    dormant_days: u32,
+) -> Result<EffectivenessReport> {
+    let ns_clause = |column: &str| match namespace {
+        Some(_) => format!(" AND {column} = ?1"),
+        None => String::new(),
+    };
+    let ns_params: Vec<Box<dyn rusqlite::types::ToSql>> = match namespace {
+        Some(ns) => vec![Box::new(ns.to_string())],
+        None => Vec::new(),
+    };
+    let refs: Vec<&dyn rusqlite::types::ToSql> = ns_params.iter().map(|p| p.as_ref()).collect();
+
+    let (checkpoints_total, last_checkpoint_at): (i64, Option<String>) = conn.query_row(
+        &format!(
+            "SELECT COUNT(*), MAX(created_at) FROM session_checkpoints WHERE 1=1{}",
+            ns_clause("namespace")
+        ),
+        refs.as_slice(),
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+
+    let mut attention = std::collections::BTreeMap::new();
+    {
+        let mut stmt = conn.prepare(&format!(
+            "SELECT status, COUNT(*) FROM attention_items WHERE 1=1{} GROUP BY status",
+            ns_clause("namespace")
+        ))?;
+        let rows = stmt.query_map(refs.as_slice(), |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        })?;
+        for row in rows {
+            let (status, count) = row?;
+            attention.insert(status, count);
+        }
+    }
+
+    let attention_stale: i64 = match namespace {
+        Some(ns) => conn.query_row(
+            "SELECT COUNT(*) FROM attention_items
+             WHERE status = 'open' AND namespace = ?1
+               AND julianday('now') - julianday(updated_at) > ?2",
+            rusqlite::params![ns, f64::from(dormant_days)],
+            |row| row.get(0),
+        )?,
+        None => conn.query_row(
+            "SELECT COUNT(*) FROM attention_items
+             WHERE status = 'open'
+               AND julianday('now') - julianday(updated_at) > ?1",
+            rusqlite::params![f64::from(dormant_days)],
+            |row| row.get(0),
+        )?,
+    };
+
+    let mut events = std::collections::BTreeMap::new();
+    {
+        let mut stmt = conn.prepare(&format!(
+            "SELECT event_type, COUNT(*) FROM memory_events WHERE 1=1{} GROUP BY event_type",
+            ns_clause("namespace")
+        ))?;
+        let rows = stmt.query_map(refs.as_slice(), |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        })?;
+        for row in rows {
+            let (event_type, count) = row?;
+            events.insert(event_type, count);
+        }
+    }
+
+    let surfaced_unique: i64 = conn.query_row(
+        &format!(
+            "SELECT COUNT(DISTINCT idempotency_key) FROM memory_events
+             WHERE event_type = 'surfaced' AND idempotency_key IS NOT NULL{}",
+            ns_clause("namespace")
+        ),
+        refs.as_slice(),
+        |row| row.get(0),
+    )?;
+
+    let deliberate_accesses: i64 = conn.query_row(
+        &format!(
+            "SELECT COALESCE(SUM(access_count), 0) FROM memories WHERE 1=1{}",
+            ns_clause("namespace")
+        ),
+        refs.as_slice(),
+        |row| row.get(0),
+    )?;
+
+    let unresolved_contradictions: i64 = conn.query_row(
+        &format!(
+            "SELECT COUNT(*) FROM memory_links l
+             JOIN memories f ON f.id = l.from_memory_id
+             JOIN memories t ON t.id = l.to_memory_id
+             WHERE l.relationship = 'contradicts'
+               AND f.archived_at IS NULL AND t.archived_at IS NULL{}",
+            match namespace {
+                Some(_) => " AND f.namespace = ?1".to_string(),
+                None => String::new(),
+            }
+        ),
+        refs.as_slice(),
+        |row| row.get(0),
+    )?;
+
+    let consolidation_stale = match namespace {
+        Some(ns) => crate::consolidate::consolidation_is_stale(conn, ns)?,
+        None => None,
+    };
+
+    let mut deliveries = std::collections::BTreeMap::new();
+    {
+        let mut stmt =
+            conn.prepare("SELECT status, COUNT(*) FROM delivery_outbox GROUP BY status")?;
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        })?;
+        for row in rows {
+            let (status, count) = row?;
+            deliveries.insert(status, count);
+        }
+    }
+
+    let review_pending = crate::review::review_stats(conn)?.pending;
+
+    let corrupt_rows: i64 = conn.query_row(
+        "SELECT
+            (SELECT COUNT(*) FROM memories WHERE json_valid(metadata_json) = 0)
+          + (SELECT COUNT(*) FROM memory_events WHERE json_valid(metadata_json) = 0)
+          + (SELECT COUNT(*) FROM session_checkpoints WHERE json_valid(result_json) = 0)
+          + (SELECT COUNT(*) FROM delivery_outbox WHERE json_valid(payload_json) = 0)",
+        [],
+        |row| row.get(0),
+    )?;
+
+    Ok(EffectivenessReport {
+        namespace: namespace.map(String::from),
+        checkpoints_total,
+        last_checkpoint_at,
+        attention,
+        attention_stale,
+        events,
+        surfaced_unique,
+        deliberate_accesses,
+        unresolved_contradictions,
+        consolidation_stale,
+        deliveries,
+        review_pending,
+        corrupt_rows,
+        generated_at: crate::models::now_utc(),
+    })
+}

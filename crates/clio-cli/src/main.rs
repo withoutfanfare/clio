@@ -141,6 +141,10 @@ enum Command {
     /// Show memory statistics and analytics.
     Stats(StatsArgs),
 
+    /// Event-backed usefulness report: capture, attention, surfacing and
+    /// delivery state. Untracked reads only — never changes ranking.
+    Effectiveness(EffectivenessArgs),
+
     /// Show recent memory activity (creates, updates, archives).
     Activity(ActivityArgs),
 
@@ -536,6 +540,13 @@ struct CheckpointArgs {
     /// Use a different model for this request without changing settings.
     #[arg(long)]
     model: Option<String>,
+}
+
+#[derive(Parser)]
+struct EffectivenessArgs {
+    /// Scope the report to a namespace. Auto-detected from cwd if omitted.
+    #[arg(long)]
+    namespace: Option<String>,
 }
 
 #[derive(Parser)]
@@ -1160,6 +1171,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         Command::Action(args) => cmd_action(cli.db_path.as_deref(), cli.json, args),
         Command::Inbox(args) => cmd_inbox(cli.db_path.as_deref(), cli.json, args),
         Command::Stats(args) => cmd_stats(cli.db_path.as_deref(), cli.json, args),
+        Command::Effectiveness(args) => cmd_effectiveness(cli.db_path.as_deref(), cli.json, args),
         Command::Activity(args) => cmd_activity(cli.db_path.as_deref(), cli.json, args),
         Command::SuggestLinks(args) => cmd_suggest_links(cli.db_path.as_deref(), cli.json, args),
         Command::Embed(args) => cmd_embed(cli.db_path.as_deref(), args),
@@ -2853,6 +2865,57 @@ fn cmd_settings(
         }
     }
 
+    Ok(())
+}
+
+fn cmd_effectiveness(
+    db_path: Option<&str>,
+    json: bool,
+    args: EffectivenessArgs,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let path = resolve_db_path(db_path)?;
+    let conn = db::open(&path)?;
+    let s = settings::load(&path)?;
+    let namespace = args
+        .namespace
+        .or_else(|| s.context.auto_detect.then(current_namespace).flatten());
+
+    let report =
+        clio_core::stats::effectiveness(&conn, namespace.as_deref(), s.attention.dormant_days)?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        eprintln!(
+            "Effectiveness — {}",
+            report.namespace.as_deref().unwrap_or("all namespaces")
+        );
+        eprintln!(
+            "  checkpoints:     {} (last {})",
+            report.checkpoints_total,
+            report.last_checkpoint_at.as_deref().unwrap_or("never")
+        );
+        for (status, count) in &report.attention {
+            eprintln!("  attention {status}: {count}");
+        }
+        eprintln!("  stale open items: {}", report.attention_stale);
+        eprintln!("  auto-surfaced:    {} unique", report.surfaced_unique);
+        eprintln!("  deliberate reads: {}", report.deliberate_accesses);
+        eprintln!("  contradictions:   {}", report.unresolved_contradictions);
+        if let Some(stale) = report.consolidation_stale {
+            eprintln!(
+                "  consolidation:    {}",
+                if stale { "STALE" } else { "fresh" }
+            );
+        }
+        for (status, count) in &report.deliveries {
+            eprintln!("  delivery {status}: {count}");
+        }
+        eprintln!("  review pending:   {}", report.review_pending);
+        if report.corrupt_rows > 0 {
+            eprintln!("  CORRUPT ROWS:     {}", report.corrupt_rows);
+        }
+    }
     Ok(())
 }
 

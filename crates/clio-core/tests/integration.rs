@@ -2882,3 +2882,65 @@ fn repeated_evidence_across_sessions_keeps_one_memory_with_occurrences() {
         2
     );
 }
+
+// ---------------------------------------------------------------------------
+// Effectiveness reporting (Task 12)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn effectiveness_report_is_untracked_and_dedupes_surfaced_events() {
+    use clio_core::attention::{self, AttentionInput};
+    use clio_core::stats;
+
+    let conn = test_db();
+    let memory = remember_in(&conn, "project:fx", "An overdue follow-up");
+    attention::create_attention(
+        &conn,
+        &AttentionInput {
+            memory_id: memory.id.clone(),
+            due_at: Some("2000-01-01T00:00:00Z".into()),
+            ..AttentionInput::default()
+        },
+    )
+    .unwrap();
+
+    // The same surfaced key recorded twice counts once.
+    let item = attention::resolve_attention(&conn, &memory.id).unwrap();
+    attention::record_surfaced(&conn, &item, "session-a", "overdue", None);
+    attention::record_surfaced(&conn, &item, "session-a", "overdue", None);
+    attention::record_surfaced(&conn, &item, "session-b", "overdue", None);
+
+    let before_access: i64 = conn
+        .query_row(
+            "SELECT COALESCE(SUM(access_count),0) FROM memories",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let before_events: i64 = conn
+        .query_row("SELECT COUNT(*) FROM memory_events", [], |r| r.get(0))
+        .unwrap();
+
+    let report = stats::effectiveness(&conn, Some("project:fx"), 14).unwrap();
+    assert_eq!(
+        report.surfaced_unique, 2,
+        "idempotent surfacing deduplicated"
+    );
+    assert_eq!(report.attention.get("open"), Some(&1));
+    assert_eq!(report.corrupt_rows, 0);
+    assert_eq!(report.deliberate_accesses, before_access);
+
+    // Reporting mutates nothing: no access tracking, no new events.
+    let after_access: i64 = conn
+        .query_row(
+            "SELECT COALESCE(SUM(access_count),0) FROM memories",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let after_events: i64 = conn
+        .query_row("SELECT COUNT(*) FROM memory_events", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(after_access, before_access);
+    assert_eq!(after_events, before_events);
+}
