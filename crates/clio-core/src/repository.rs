@@ -553,7 +553,7 @@ pub fn recall(conn: &Connection, query: &RecallQuery) -> Result<RecallResult> {
     };
 
     if query.include_links {
-        append_linked_memories(conn, &mut result)?;
+        append_linked_memories(conn, &mut result, query)?;
     }
 
     // Fire-and-forget access tracking for all returned items.
@@ -663,8 +663,15 @@ fn get_links_bulk(conn: &Connection, memory_ids: &[String]) -> Result<Vec<Memory
 /// Append linked memories to a recall result. For each item in the result,
 /// fetch its outgoing links and add the linked memories (if not already present).
 ///
+/// Linked targets reapply the parent query's archive and expiry eligibility so
+/// hidden records cannot re-enter recall through graph expansion.
+///
 /// Uses batch fetching to avoid N+1 queries.
-fn append_linked_memories(conn: &Connection, result: &mut RecallResult) -> Result<()> {
+fn append_linked_memories(
+    conn: &Connection,
+    result: &mut RecallResult,
+    q: &RecallQuery,
+) -> Result<()> {
     use std::collections::HashSet;
 
     let existing_ids: HashSet<String> = result.items.iter().map(|i| i.memory.id.clone()).collect();
@@ -688,9 +695,10 @@ fn append_linked_memories(conn: &Connection, result: &mut RecallResult) -> Resul
         return Ok(());
     }
 
-    // Batch-fetch all linked memories in one query.
+    // Batch-fetch all linked memories in one query, reapplying the parent
+    // query's archive/expiry eligibility.
     let ids_to_fetch: Vec<String> = target_to_source.iter().map(|(id, _)| id.clone()).collect();
-    let fetched = get_many(conn, &ids_to_fetch)?;
+    let fetched = get_many_eligible(conn, &ids_to_fetch, q.include_archived, q.exclude_expired)?;
 
     // Build a map of id -> source for linking.
     let source_map: std::collections::HashMap<String, String> =
@@ -1508,6 +1516,17 @@ pub fn get_many_pub(conn: &Connection, ids: &[String]) -> Result<Vec<Memory>> {
 
 /// Fetch multiple memories by ID in a single query.
 fn get_many(conn: &Connection, ids: &[String]) -> Result<Vec<Memory>> {
+    get_many_eligible(conn, ids, true, false)
+}
+
+/// Fetch multiple memories by ID, applying archive/expiry eligibility in SQL.
+/// The eligibility clauses mirror `append_filters` exactly.
+fn get_many_eligible(
+    conn: &Connection,
+    ids: &[String],
+    include_archived: bool,
+    exclude_expired: bool,
+) -> Result<Vec<Memory>> {
     if ids.is_empty() {
         return Ok(Vec::new());
     }
@@ -1515,13 +1534,19 @@ fn get_many(conn: &Connection, ids: &[String]) -> Result<Vec<Memory>> {
         .map(|i| format!("?{i}"))
         .collect::<Vec<_>>()
         .join(", ");
-    let sql = format!(
+    let mut sql = format!(
         "SELECT id, namespace, kind, title, summary, content, tags_text,
                 source, source_ref, confidence, importance, metadata_json,
                 valid_from, valid_until, archived_at, created_at, updated_at,
                 last_accessed_at, access_count
          FROM memories WHERE id IN ({placeholders})"
     );
+    if !include_archived {
+        sql.push_str(" AND archived_at IS NULL");
+    }
+    if exclude_expired {
+        sql.push_str(" AND (valid_until IS NULL OR datetime(valid_until) > datetime('now'))");
+    }
     let params: Vec<Box<dyn rusqlite::types::ToSql>> = ids
         .iter()
         .map(|id| -> Box<dyn rusqlite::types::ToSql> { Box::new(id.clone()) })

@@ -1410,6 +1410,115 @@ fn recall_with_include_links_appends_linked_memories() {
     assert!(result_no_links.items[0].linked_from.is_none());
 }
 
+fn link_simple(conn: &rusqlite::Connection, from: &Memory, to: &Memory) {
+    repository::link(
+        conn,
+        &LinkInput {
+            from_memory_id: from.id.clone(),
+            to_memory_id: to.id.clone(),
+            relationship: "relates_to".into(),
+            metadata: serde_json::json!({}),
+        },
+    )
+    .unwrap();
+}
+
+#[test]
+fn recall_with_include_links_hides_archived_and_expired_targets() {
+    let conn = test_db();
+
+    let anchor = remember_simple(&conn, "anchor memory about quinces");
+    let live = remember_simple(&conn, "linked live fact");
+    let archived = remember_simple(&conn, "linked archived fact");
+    repository::archive(&conn, &archived.id).unwrap();
+    let expired = repository::remember(
+        &conn,
+        &RememberInput {
+            valid_until: Some("2000-01-01T00:00:00Z".into()),
+            ..base_input("linked expired fact")
+        },
+        &Settings::default(),
+    )
+    .unwrap();
+
+    link_simple(&conn, &anchor, &live);
+    link_simple(&conn, &anchor, &archived);
+    link_simple(&conn, &anchor, &expired);
+
+    // Default recall: an archived linked target must stay hidden.
+    let result = repository::recall(
+        &conn,
+        &RecallQuery {
+            query: Some("quinces".into()),
+            include_links: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let ids: Vec<&str> = result.items.iter().map(|i| i.memory.id.as_str()).collect();
+    assert!(
+        ids.contains(&live.id.as_str()),
+        "live linked target should appear"
+    );
+    assert!(
+        !ids.contains(&archived.id.as_str()),
+        "archived linked target must stay hidden in default recall"
+    );
+    assert_eq!(result.count as usize, result.items.len());
+
+    // Expiry eligibility follows the parent query.
+    let result = repository::recall(
+        &conn,
+        &RecallQuery {
+            query: Some("quinces".into()),
+            include_links: true,
+            exclude_expired: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let ids: Vec<&str> = result.items.iter().map(|i| i.memory.id.as_str()).collect();
+    assert!(ids.contains(&live.id.as_str()));
+    assert!(
+        !ids.contains(&expired.id.as_str()),
+        "expired linked target must stay hidden when the parent recall excludes expired"
+    );
+    assert!(!ids.contains(&archived.id.as_str()));
+    assert_eq!(result.count as usize, result.items.len());
+}
+
+#[test]
+fn recall_with_include_archived_still_expands_archived_targets() {
+    // Characterisation: an explicitly requested archived recall keeps working,
+    // and linked expansion follows the parent query's eligibility.
+    let conn = test_db();
+
+    let anchor = remember_simple(&conn, "anchor memory about medlars");
+    let archived = remember_simple(&conn, "linked archived companion");
+    repository::archive(&conn, &archived.id).unwrap();
+    link_simple(&conn, &anchor, &archived);
+
+    let result = repository::recall(
+        &conn,
+        &RecallQuery {
+            query: Some("medlars".into()),
+            include_links: true,
+            include_archived: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let archived_item = result.items.iter().find(|i| i.memory.id == archived.id);
+    assert!(
+        archived_item.is_some(),
+        "archived linked target should appear when the parent recall includes archived"
+    );
+    assert_eq!(
+        archived_item.unwrap().linked_from.as_deref(),
+        Some(anchor.id.as_str())
+    );
+}
+
 #[test]
 fn bulk_link_expansion_returns_linked_memories() {
     let conn = test_db();
