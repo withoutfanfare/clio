@@ -23,6 +23,7 @@ pub const EVENT_DISMISSED: &str = "dismissed";
 pub const EVENT_RESOLVED: &str = "resolved";
 pub const EVENT_CANCELLED: &str = "cancelled";
 pub const EVENT_EXTERNAL_ATTACHED: &str = "external_attached";
+pub const EVENT_RESOLUTION_CANDIDATE: &str = "resolution_candidate";
 
 const KNOWN_EVENT_TYPES: &[&str] = &[
     EVENT_ATTENTION_OPENED,
@@ -34,6 +35,7 @@ const KNOWN_EVENT_TYPES: &[&str] = &[
     EVENT_RESOLVED,
     EVENT_CANCELLED,
     EVENT_EXTERNAL_ATTACHED,
+    EVENT_RESOLUTION_CANDIDATE,
 ];
 
 /// Input for one event record.

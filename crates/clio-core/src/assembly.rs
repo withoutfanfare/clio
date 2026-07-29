@@ -676,11 +676,19 @@ pub fn build_resume_brief(conn: &Connection, request: &ResumeRequest) -> Result<
 
     let now = request.now.clone().unwrap_or_else(now_utc);
 
+    // An unresolved namespace means `global` — never an unscoped sweep of
+    // every project's memories and actions.
+    let namespace = request
+        .namespace
+        .clone()
+        .filter(|ns| !ns.trim().is_empty())
+        .unwrap_or_else(|| "global".to_string());
+
     // 1. Eligible open work (already once-per-scope suppressed by core).
     let eligible = attention::eligible(
         conn,
         &attention::EligibilityContext {
-            namespace: request.namespace.clone(),
+            namespace: Some(namespace.clone()),
             scope: request.session_id.clone(),
             now: now.clone(),
             dormant_days: request.dormant_days,
@@ -700,12 +708,8 @@ pub fn build_resume_brief(conn: &Connection, request: &ResumeRequest) -> Result<
 
     // 2. Blocked / waiting items (open, waiting_on set, not already included).
     let mut waiting = Vec::new();
-    for item in attention::list_attention(
-        conn,
-        request.namespace.as_deref(),
-        Some(attention::STATUS_OPEN),
-        50,
-    )? {
+    for item in attention::list_attention(conn, Some(&namespace), Some(attention::STATUS_OPEN), 50)?
+    {
         let Some(waiting_on) = item.waiting_on.clone() else {
             continue;
         };
@@ -729,7 +733,7 @@ pub fn build_resume_brief(conn: &Connection, request: &ResumeRequest) -> Result<
     // 3. Constraints: project first, plus a modest global prior.
     let mut constraints = resume_recall(
         conn,
-        request.namespace.as_deref(),
+        Some(&namespace),
         Some("constraint"),
         None,
         6,
@@ -755,7 +759,7 @@ pub fn build_resume_brief(conn: &Connection, request: &ResumeRequest) -> Result<
     // 4. Recent decisions.
     let decisions = resume_recall(
         conn,
-        request.namespace.as_deref(),
+        Some(&namespace),
         Some("decision"),
         None,
         5,
@@ -773,7 +777,7 @@ pub fn build_resume_brief(conn: &Connection, request: &ResumeRequest) -> Result<
         Some(query) => {
             let mut items = resume_recall(
                 conn,
-                request.namespace.as_deref(),
+                Some(&namespace),
                 None,
                 Some(query),
                 10,
@@ -787,8 +791,8 @@ pub fn build_resume_brief(conn: &Connection, request: &ResumeRequest) -> Result<
                 .iter()
                 .any(|i| i.source.as_deref() == Some(crate::consolidate::CONSOLIDATED_SOURCE));
             if has_consolidated {
-                let ns = request.namespace.as_deref().unwrap_or("global");
-                let stale = crate::consolidate::consolidation_is_stale(conn, ns)?.unwrap_or(true);
+                let stale =
+                    crate::consolidate::consolidation_is_stale(conn, &namespace)?.unwrap_or(true);
                 if stale {
                     items.retain(|i| {
                         i.source.as_deref() != Some(crate::consolidate::CONSOLIDATED_SOURCE)
@@ -803,7 +807,7 @@ pub fn build_resume_brief(conn: &Connection, request: &ResumeRequest) -> Result<
     // 6. Recent substantive activity (receipts).
     let activity = resume_recall(
         conn,
-        request.namespace.as_deref(),
+        Some(&namespace),
         Some("receipt"),
         None,
         3,
@@ -843,10 +847,7 @@ pub fn build_resume_brief(conn: &Connection, request: &ResumeRequest) -> Result<
 
     let total_items: u32 = sections.iter().map(|s| s.items.len() as u32).sum();
     Ok(ResumeBrief {
-        namespace: request
-            .namespace
-            .clone()
-            .unwrap_or_else(|| "global".to_string()),
+        namespace,
         sections,
         total_items,
         generated_at: now,
@@ -943,30 +944,54 @@ fn allocate_resume_budget(
         }
     }
 
-    // Character budget over what is actually serialised; first item always kept.
+    // Character budget over what is actually serialised. Reserved critical
+    // items (the first slot of each non-empty critical section) are funded
+    // FIRST, so a verbose earlier section cannot starve the slots the
+    // reservation contract promised. At least one item is always kept.
     let budget = char_budget.map(|b| b as usize);
     let mut chars_used = 0usize;
-    let mut full = false;
     let mut first_kept = false;
+
+    // Budget pass order: reserved criticals, then everything else in
+    // section-priority order.
+    let mut funded: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut dropped: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut fund = |item: &ResumeItem| {
+        if let Some(b) = budget {
+            let len = resume_item_len(item);
+            if first_kept && chars_used + len > b {
+                dropped.insert(item.memory_id.clone());
+                return;
+            }
+            chars_used += len;
+        }
+        first_kept = true;
+        funded.insert(item.memory_id.clone());
+    };
+    for (index, (_, items)) in pools.iter().enumerate().take(CRITICAL) {
+        if take[index] > 0 {
+            if let Some(item) = items.first() {
+                fund(item);
+            }
+        }
+    }
+    for (index, (_, items)) in pools.iter().enumerate() {
+        for (position, item) in items.iter().enumerate().take(take[index]) {
+            let is_reserved_critical = index < CRITICAL && position == 0;
+            if is_reserved_critical {
+                continue; // already funded in the first pass
+            }
+            fund(item);
+        }
+    }
 
     let mut sections = Vec::new();
     for (index, (heading, items)) in pools.iter_mut().enumerate() {
-        let mut kept = Vec::new();
-        for item in items.drain(..).take(take[index]) {
-            if full {
-                continue;
-            }
-            if let Some(b) = budget {
-                let len = resume_item_len(&item);
-                if first_kept && chars_used + len > b {
-                    full = true;
-                    continue;
-                }
-                chars_used += len;
-            }
-            first_kept = true;
-            kept.push(item);
-        }
+        let kept: Vec<ResumeItem> = items
+            .drain(..)
+            .take(take[index])
+            .filter(|item| funded.contains(&item.memory_id))
+            .collect();
         if !kept.is_empty() {
             sections.push(ResumeSection {
                 heading: heading.clone(),

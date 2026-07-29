@@ -9,7 +9,9 @@
         "kind": "task",
         "title": "Verify Atlas deployment",
         "summary": "User committed to verifying the deployment tomorrow morning.",
-        "tags": ["deployment"],
+        "tags": [
+          "deployment"
+        ],
         "namespace": "project:clio",
         "importance": 4,
         "confidence": 0.95,
@@ -19,7 +21,11 @@
           "due_at": "2026-07-30T09:00:00Z"
         }
       },
-      "expect": { "stored": true, "attention_open": true, "review_queued": false }
+      "expect": {
+        "stored": true,
+        "attention_open": true,
+        "review_queued": false
+      }
     },
     {
       "name": "named_decision_required",
@@ -29,7 +35,9 @@
         "kind": "task",
         "title": "Decide spool encryption approach",
         "summary": "A named decision the user must make before shipping.",
-        "tags": ["security"],
+        "tags": [
+          "security"
+        ],
         "namespace": "project:clio",
         "importance": 5,
         "confidence": 0.9,
@@ -40,7 +48,11 @@
           "completion_condition": "An encryption decision is recorded"
         }
       },
-      "expect": { "stored": true, "attention_open": true, "review_queued": false }
+      "expect": {
+        "stored": true,
+        "attention_open": true,
+        "review_queued": false
+      }
     },
     {
       "name": "deferred_verification",
@@ -50,7 +62,9 @@
         "kind": "task",
         "title": "Verify migration against production snapshot",
         "summary": "Verification the user explicitly deferred until the backup completes.",
-        "tags": ["migration"],
+        "tags": [
+          "migration"
+        ],
         "namespace": "project:clio",
         "importance": 4,
         "confidence": 0.9,
@@ -61,7 +75,11 @@
           "completion_condition": "Migration verified against the snapshot"
         }
       },
-      "expect": { "stored": true, "attention_open": true, "review_queued": false }
+      "expect": {
+        "stored": true,
+        "attention_open": true,
+        "review_queued": false
+      }
     },
     {
       "name": "waiting_for_external",
@@ -71,7 +89,9 @@
         "kind": "task",
         "title": "Awaiting Atlas key rotation window",
         "summary": "Blocked on an external reply from Marcus.",
-        "tags": ["atlas"],
+        "tags": [
+          "atlas"
+        ],
         "namespace": "project:clio",
         "importance": 3,
         "confidence": 0.9,
@@ -81,7 +101,11 @@
           "waiting_on": "Marcus: rotation window"
         }
       },
-      "expect": { "stored": true, "attention_open": true, "review_queued": false }
+      "expect": {
+        "stored": true,
+        "attention_open": true,
+        "review_queued": false
+      }
     },
     {
       "name": "assistant_suggestion_stays_reviewable",
@@ -91,7 +115,9 @@
         "kind": "task",
         "title": "Possible memory_events index",
         "summary": "Assistant suggestion, not a user commitment.",
-        "tags": ["performance"],
+        "tags": [
+          "performance"
+        ],
         "namespace": "project:clio",
         "importance": 2,
         "confidence": 0.9,
@@ -100,7 +126,11 @@
           "owner": "user"
         }
       },
-      "expect": { "stored": false, "attention_open": false, "review_queued": true }
+      "expect": {
+        "stored": false,
+        "attention_open": false,
+        "review_queued": true
+      }
     },
     {
       "name": "unknown_explicitness_treated_as_suggested",
@@ -110,7 +140,9 @@
         "kind": "task",
         "title": "Revisit retry backoff",
         "summary": "Vague possibility with no commitment.",
-        "tags": ["reliability"],
+        "tags": [
+          "reliability"
+        ],
         "namespace": "project:clio",
         "importance": 2,
         "confidence": 0.8,
@@ -119,7 +151,11 @@
           "owner": "user"
         }
       },
-      "expect": { "stored": false, "attention_open": false, "review_queued": true }
+      "expect": {
+        "stored": false,
+        "attention_open": false,
+        "review_queued": true
+      }
     },
     {
       "name": "routine_step_is_plain_memory",
@@ -129,12 +165,18 @@
         "kind": "decision",
         "title": "SQLite stays the system of record",
         "summary": "Architecture decision.",
-        "tags": ["architecture"],
+        "tags": [
+          "architecture"
+        ],
         "namespace": "project:clio",
         "importance": 4,
         "confidence": 0.95
       },
-      "expect": { "stored": true, "attention_open": false, "review_queued": false }
+      "expect": {
+        "stored": true,
+        "attention_open": false,
+        "review_queued": false
+      }
     },
     {
       "name": "stable_id_resolution",
@@ -144,13 +186,20 @@
         "kind": "receipt",
         "title": "Deployment verified",
         "summary": "Explicit completion of a known open loop.",
-        "tags": ["receipt"],
+        "tags": [
+          "receipt"
+        ],
         "namespace": "project:clio",
         "importance": 2,
         "confidence": 0.9,
         "resolves": "__TARGET_MEMORY_ID__"
       },
-      "expect": { "stored": true, "attention_open": false, "review_queued": false, "resolves_target": true }
+      "expect": {
+        "stored": true,
+        "attention_open": false,
+        "review_queued": false,
+        "resolution_candidate": true
+      }
     },
     {
       "name": "fuzzy_resolution_leaves_state_unchanged",
@@ -160,13 +209,20 @@
         "kind": "note",
         "title": "Deployment believed resolved",
         "summary": "Vague resolution with no stable identifier.",
-        "tags": ["deployment"],
+        "tags": [
+          "deployment"
+        ],
         "namespace": "project:clio",
         "importance": 2,
         "confidence": 0.6,
         "resolves": "no-such-stable-id"
       },
-      "expect": { "stored": true, "attention_open": false, "review_queued": false, "resolves_target": false }
+      "expect": {
+        "stored": true,
+        "attention_open": false,
+        "review_queued": false,
+        "resolution_candidate": false
+      }
     }
   ]
 }

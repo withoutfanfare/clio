@@ -155,6 +155,31 @@ pub fn resolve_attention(conn: &Connection, id: &str) -> Result<AttentionItem> {
     }
 }
 
+/// Parse an RFC3339 timestamp and normalise it to whole-second UTC `Z` form,
+/// so later lexicographic comparisons against stored timestamps are sound
+/// regardless of the offset or precision the caller supplied.
+fn normalise_timestamp(value: &str, field: &str) -> Result<String> {
+    use time::format_description::well_known::Rfc3339;
+    let parsed = time::OffsetDateTime::parse(value, &Rfc3339).map_err(|_| {
+        ClioError::Validation(format!(
+            "{field} must be an RFC3339 timestamp, e.g. 2026-08-01T09:00:00Z (got '{value}')"
+        ))
+    })?;
+    let utc = parsed
+        .to_offset(time::UtcOffset::UTC)
+        .replace_nanosecond(0)
+        .expect("zero nanosecond is valid");
+    utc.format(&Rfc3339)
+        .map_err(|e| ClioError::Validation(format!("could not format {field}: {e}")))
+}
+
+fn normalise_optional(value: &Option<String>, field: &str) -> Result<Option<String>> {
+    match value.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
+        Some(raw) => Ok(Some(normalise_timestamp(raw, field)?)),
+        None => Ok(None),
+    }
+}
+
 /// Open attention on a memory. Idempotent: if the memory already has an
 /// attention item (any status), that item is returned unchanged. The row and
 /// its initial event commit atomically.
@@ -162,6 +187,8 @@ pub fn create_attention(conn: &Connection, input: &AttentionInput) -> Result<Att
     if input.memory_id.is_empty() {
         return Err(ClioError::Validation("memory_id is required.".into()));
     }
+    let due_at = normalise_optional(&input.due_at, "due_at")?;
+    let remind_at = normalise_optional(&input.remind_at, "remind_at")?;
 
     let owns_transaction = conn.is_autocommit();
     conn.execute_batch(if owns_transaction {
@@ -191,8 +218,8 @@ pub fn create_attention(conn: &Connection, input: &AttentionInput) -> Result<Att
                 input.memory_id,
                 memory.namespace,
                 input.owner,
-                input.due_at,
-                input.remind_at,
+                due_at,
+                remind_at,
                 input.trigger,
                 input.waiting_on,
                 input.completion_condition,
@@ -326,6 +353,7 @@ pub fn snooze(
     if until.is_empty() {
         return Err(ClioError::Validation("snooze time is required.".into()));
     }
+    let until = normalise_timestamp(until, "snooze until")?;
     transition(
         conn,
         id,
@@ -334,7 +362,7 @@ pub fn snooze(
         ", remind_at = ?4",
         &[&until],
         events::EVENT_SNOOZED,
-        Some(until),
+        Some(&until),
         actor,
     )
 }
@@ -429,11 +457,15 @@ pub fn attach_external(
             "external system and reference are required.".into(),
         ));
     }
+    // Preserve the current status: routing an item externally must not
+    // silently cancel a snooze.
+    let current = resolve_attention(conn, id)?;
+    let keep_status = current.status.clone();
     transition(
         conn,
-        id,
+        &current.id,
         &[STATUS_OPEN, STATUS_SNOOZED],
-        STATUS_OPEN,
+        &keep_status,
         ", external_system = ?4, external_ref = ?5",
         &[&system, &external_ref],
         events::EVENT_EXTERNAL_ATTACHED,
@@ -922,6 +954,68 @@ mod tests {
             overview.consolidation_stale, None,
             "no singleton means no freshness claim"
         );
+    }
+
+    #[test]
+    fn attach_external_preserves_a_snooze() {
+        let conn = test_conn();
+        let memory = remember(&conn, "Snoozed then routed");
+        let item = open_attention(&conn, &memory.id);
+        snooze(&conn, &item.id, "2999-01-01T00:00:00Z", None).unwrap();
+
+        let attached = attach_external(&conn, &item.id, "things", "t-1", None).unwrap();
+        assert_eq!(
+            attached.status, STATUS_SNOOZED,
+            "routing must not wake a snooze"
+        );
+        assert_eq!(attached.remind_at.as_deref(), Some("2999-01-01T00:00:00Z"));
+    }
+
+    #[test]
+    fn timestamps_are_validated_and_normalised_to_utc() {
+        let conn = test_conn();
+        let memory = remember(&conn, "Offset due date");
+
+        // Garbage is rejected at the boundary.
+        let bad = create_attention(
+            &conn,
+            &AttentionInput {
+                memory_id: memory.id.clone(),
+                due_at: Some("tomorrow-ish".into()),
+                ..AttentionInput::default()
+            },
+        );
+        assert!(bad.is_err());
+
+        // An offset timestamp is normalised to UTC so lexicographic
+        // comparisons against `now` are sound.
+        let item = create_attention(
+            &conn,
+            &AttentionInput {
+                memory_id: memory.id.clone(),
+                due_at: Some("2026-07-29T13:00:00+01:00".into()),
+                ..AttentionInput::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(item.due_at.as_deref(), Some("2026-07-29T12:00:00Z"));
+
+        // 12:00Z is past at 12:30Z — an unnormalised "+01:00" string would
+        // have compared as still-future.
+        let items = eligible(
+            &conn,
+            &EligibilityContext {
+                namespace: None,
+                scope: None,
+                now: "2026-07-29T12:30:00Z".into(),
+                dormant_days: 0,
+            },
+        )
+        .unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].reason, EligibilityReason::Overdue);
+
+        assert!(snooze(&conn, &item.id, "not a time", None).is_err());
     }
 
     #[test]

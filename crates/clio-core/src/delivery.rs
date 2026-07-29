@@ -101,19 +101,14 @@ pub fn enqueue_delivery(
     }
 
     let delivery_key = format!("{destination}:{}", attention.id);
-    let existing = {
-        let sql = format!("SELECT {COLUMNS} FROM delivery_outbox WHERE delivery_key = ?1");
-        conn.query_row(&sql, params![delivery_key], row_to_item)
-            .optional()?
-    };
-    if let Some(item) = existing {
-        return Ok(item);
-    }
 
+    // Race-safe idempotency: let the unique key arbitrate, then read back the
+    // canonical row — a concurrent duplicate approval replays it instead of
+    // surfacing a constraint error.
     let id = new_id();
     let now = now_utc();
     conn.execute(
-        "INSERT INTO delivery_outbox
+        "INSERT OR IGNORE INTO delivery_outbox
             (id, delivery_key, attention_id, destination, payload_json, created_at, updated_at)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)",
         params![
@@ -125,7 +120,10 @@ pub fn enqueue_delivery(
             now,
         ],
     )?;
-    get_delivery(conn, &id)
+    let sql = format!("SELECT {COLUMNS} FROM delivery_outbox WHERE delivery_key = ?1");
+    conn.query_row(&sql, params![delivery_key], row_to_item)
+        .optional()?
+        .ok_or_else(|| ClioError::Storage(format!("delivery {delivery_key} vanished after insert")))
 }
 
 /// Mark one attempt as started (before the adapter calls the destination).
@@ -232,18 +230,33 @@ pub fn fail_delivery(conn: &Connection, id: &str, error: &str) -> Result<Deliver
     get_delivery(conn, id)
 }
 
-/// Return a failed (or stuck `delivering`) record to pending for another
-/// attempt. Delivered records are never retried.
+/// Return a failed record to pending for another attempt.
+///
+/// A crash-stuck `delivering` row is deliberately NOT retryable here: the
+/// external create may have succeeded without its read-back, and another
+/// attempt would create a duplicate external item. The adapter (or operator)
+/// must first reconcile against the destination — read back by the request's
+/// idempotent payload/lookup — then either `confirm_delivery` with the found
+/// external ID or `fail_delivery` with evidence that nothing was created.
+/// Delivered records are never retried.
 pub fn retry_delivery(conn: &Connection, id: &str) -> Result<DeliveryItem> {
     let now = now_utc();
     let changed = conn.execute(
         "UPDATE delivery_outbox
          SET status = 'pending', updated_at = ?1
-         WHERE id = ?2 AND status IN ('failed', 'delivering')",
+         WHERE id = ?2 AND status = 'failed'",
         params![now, id],
     )?;
     if changed == 0 {
         let current = get_delivery(conn, id)?;
+        if current.status == STATUS_DELIVERING {
+            return Err(ClioError::Validation(
+                "delivery is mid-attempt (possibly crashed after the external create); \
+                 reconcile with the destination first, then confirm_delivery or \
+                 fail_delivery before retrying"
+                    .into(),
+            ));
+        }
         return Err(ClioError::Validation(format!(
             "cannot retry delivery from status '{}'",
             current.status
@@ -461,12 +474,33 @@ mod tests {
         assert_eq!(stuck.status, STATUS_DELIVERING);
         assert_eq!(stuck.attempts, 1);
 
-        // Recovery retries; the adapter's next read-back can then confirm.
-        retry_delivery(&conn, &item.id).unwrap();
-        begin_attempt(&conn, &item.id).unwrap();
+        // A blind retry is refused: the external create may have succeeded,
+        // and another attempt would duplicate it.
+        assert!(retry_delivery(&conn, &item.id).is_err());
+
+        // Reconciliation path A: the destination has the item — confirm with
+        // the found external ID; no second create ever happens.
         let delivered =
             confirm_delivery(&conn, &item.id, "things-xyz", &serde_json::json!({})).unwrap();
         assert_eq!(delivered.status, STATUS_DELIVERED);
+        assert_eq!(delivered.attempts, 1);
+    }
+
+    #[test]
+    fn crash_reconciled_as_not_created_can_then_retry() {
+        let conn = test_conn();
+        let attention = open_item(&conn);
+        let item = enqueue_delivery(&conn, &attention.id, "things", &payload()).unwrap();
+        begin_attempt(&conn, &item.id).unwrap();
+
+        // Reconciliation path B: the destination shows nothing was created —
+        // record that finding, then retry becomes legitimate.
+        fail_delivery(&conn, &item.id, "reconciled: no external item found").unwrap();
+        let retried = retry_delivery(&conn, &item.id).unwrap();
+        assert_eq!(retried.status, STATUS_PENDING);
+        begin_attempt(&conn, &item.id).unwrap();
+        let delivered =
+            confirm_delivery(&conn, &item.id, "things-second", &serde_json::json!({})).unwrap();
         assert_eq!(delivered.attempts, 2);
     }
 

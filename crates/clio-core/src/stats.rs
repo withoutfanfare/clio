@@ -465,21 +465,25 @@ pub fn effectiveness(
         }
     }
 
-    let attention_stale: i64 = match namespace {
-        Some(ns) => conn.query_row(
-            "SELECT COUNT(*) FROM attention_items
+    let attention_stale: i64 = if dormant_days == 0 {
+        0 // dormancy surfacing disabled
+    } else {
+        match namespace {
+            Some(ns) => conn.query_row(
+                "SELECT COUNT(*) FROM attention_items
              WHERE status = 'open' AND namespace = ?1
                AND julianday('now') - julianday(updated_at) > ?2",
-            rusqlite::params![ns, f64::from(dormant_days)],
-            |row| row.get(0),
-        )?,
-        None => conn.query_row(
-            "SELECT COUNT(*) FROM attention_items
+                rusqlite::params![ns, f64::from(dormant_days)],
+                |row| row.get(0),
+            )?,
+            None => conn.query_row(
+                "SELECT COUNT(*) FROM attention_items
              WHERE status = 'open'
                AND julianday('now') - julianday(updated_at) > ?1",
-            rusqlite::params![f64::from(dormant_days)],
-            |row| row.get(0),
-        )?,
+                rusqlite::params![f64::from(dormant_days)],
+                |row| row.get(0),
+            )?,
+        }
     };
 
     let mut events = std::collections::BTreeMap::new();
@@ -539,9 +543,18 @@ pub fn effectiveness(
 
     let mut deliveries = std::collections::BTreeMap::new();
     {
-        let mut stmt =
-            conn.prepare("SELECT status, COUNT(*) FROM delivery_outbox GROUP BY status")?;
-        let rows = stmt.query_map([], |row| {
+        // Deliveries are scoped through their attention item's namespace so a
+        // project report never leaks another project's operational state.
+        let mut stmt = conn.prepare(&format!(
+            "SELECT d.status, COUNT(*) FROM delivery_outbox d
+             JOIN attention_items a ON a.id = d.attention_id
+             WHERE 1=1{} GROUP BY d.status",
+            match namespace {
+                Some(_) => " AND a.namespace = ?1",
+                None => "",
+            }
+        ))?;
+        let rows = stmt.query_map(refs.as_slice(), |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
         })?;
         for row in rows {
@@ -550,7 +563,17 @@ pub fn effectiveness(
         }
     }
 
-    let review_pending = crate::review::review_stats(conn)?.pending;
+    let review_pending: u32 = conn.query_row(
+        &format!(
+            "SELECT COUNT(*) FROM review_queue WHERE status = 'pending'{}",
+            match namespace {
+                Some(_) => " AND suggested_namespace = ?1",
+                None => "",
+            }
+        ),
+        refs.as_slice(),
+        |row| row.get(0),
+    )?;
 
     let corrupt_rows: i64 = conn.query_row(
         "SELECT

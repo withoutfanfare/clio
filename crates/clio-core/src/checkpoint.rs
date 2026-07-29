@@ -132,6 +132,28 @@ pub fn store_checkpoint(
             return Ok(existing);
         }
 
+        // Cursors are monotonic per session. An older cursor arriving after a
+        // newer one committed means stale or overlapping client state (e.g. a
+        // lost spool) — reject it visibly rather than re-applying old deltas.
+        let latest: Option<i64> = conn
+            .query_row(
+                "SELECT MAX(cursor) FROM session_checkpoints
+                 WHERE source = ?1 AND session_id = ?2",
+                params![req.source, req.session_id],
+                |row| row.get(0),
+            )
+            .ok()
+            .flatten();
+        if let Some(latest) = latest {
+            if req.cursor < latest {
+                return Err(ClioError::Validation(format!(
+                    "cursor {} is behind this session's latest committed cursor {latest}; \
+                     stale delta rejected",
+                    req.cursor
+                )));
+            }
+        }
+
         let mut stored_memory_ids = Vec::new();
         let mut queued_review_ids = Vec::new();
 
@@ -242,11 +264,10 @@ pub fn store_checkpoint(
                             },
                         )?;
                     }
-                    // An explicit, stable-ID resolution completes the target
-                    // with this memory as evidence. Unknown or terminal
-                    // targets leave state unchanged — never guess.
+                    // A model-asserted resolution is a reviewable candidate,
+                    // never an automatic completion (untrusted transcript).
                     if let Some(target) = &memory.resolves {
-                        resolve_stable_target(conn, target, &m.id, &req.source);
+                        record_resolution_candidate(conn, target, &m.id, &req.source);
                     }
                     stored_memory_ids.push(m.id);
                 }
@@ -300,34 +321,47 @@ pub fn store_checkpoint(
     }
 }
 
-/// Attempt to complete a known open loop from an explicit transcript
-/// resolution. Only a stable identifier that resolves to an open or snoozed
-/// attention item may auto-complete; anything else leaves state unchanged.
-/// Never fails the checkpoint.
-fn resolve_stable_target(conn: &Connection, target: &str, evidence_id: &str, source: &str) {
+/// Record a model-asserted resolution as a REVIEWABLE candidate.
+///
+/// The `resolves` field is model output distilled from an untrusted
+/// transcript: acting on it directly would let prompt injection or model
+/// error close real work. So no state changes here — the target stays open
+/// and a `resolution_candidate` event (with the storing memory as proposed
+/// evidence) makes the claim visible in the item's history and the
+/// Needs-attention surface for a human decision. Never fails the checkpoint.
+fn record_resolution_candidate(conn: &Connection, target: &str, evidence_id: &str, source: &str) {
     match crate::attention::resolve_attention(conn, target) {
         Ok(item)
             if item.status == crate::attention::STATUS_OPEN
                 || item.status == crate::attention::STATUS_SNOOZED =>
         {
-            if let Err(e) = crate::attention::complete(
+            crate::events::log_event(
                 conn,
-                &item.id,
-                Some(evidence_id),
-                Some("explicit transcript resolution"),
-                Some(&format!("agent:{source}")),
-            ) {
-                tracing::debug!("checkpoint resolution of {target} skipped: {e}");
-            }
+                &crate::events::EventInput {
+                    idempotency_key: Some(format!(
+                        "resolution-candidate:{}:{evidence_id}",
+                        item.memory_id
+                    )),
+                    memory_id: Some(item.memory_id.clone()),
+                    namespace: Some(item.namespace.clone()),
+                    actor: Some(format!("agent:{source}")),
+                    event_type: crate::events::EVENT_RESOLUTION_CANDIDATE.into(),
+                    reason: Some(format!(
+                        "transcript claims this is complete; proposed evidence {evidence_id} — \
+                         review and complete manually"
+                    )),
+                    ..crate::events::EventInput::default()
+                },
+            );
         }
         Ok(item) => {
             tracing::debug!(
-                "checkpoint resolution target {target} is already '{}'; leaving unchanged",
+                "resolution candidate for {target} ignored: already '{}'",
                 item.status
             );
         }
         Err(_) => {
-            tracing::debug!("checkpoint resolution target {target} not found; leaving unchanged");
+            tracing::debug!("resolution target {target} not found; leaving state unchanged");
         }
     }
 }
@@ -498,6 +532,27 @@ mod tests {
         assert!(!later.replayed);
         assert_eq!(memory_count(&conn), 2);
         assert_eq!(checkpoint_count(&conn), 2);
+    }
+
+    #[test]
+    fn stale_cursor_behind_the_session_head_is_rejected() {
+        let conn = test_conn();
+        let settings = Settings::default();
+
+        store_checkpoint(&conn, &request(20), &[atom("newer delta")], &settings).unwrap();
+
+        // A previously unseen OLDER cursor is stale client state, not a
+        // replay — rejecting it visibly beats re-applying overlapping data.
+        let stale = store_checkpoint(&conn, &request(10), &[atom("old delta")], &settings);
+        assert!(stale.is_err());
+        assert_eq!(memory_count(&conn), 1, "stale delta stored nothing");
+
+        // The exact committed key still replays, and later cursors advance.
+        let replay = store_checkpoint(&conn, &request(20), &[atom("ignored")], &settings).unwrap();
+        assert!(replay.replayed);
+        let later =
+            store_checkpoint(&conn, &request(30), &[atom("next delta")], &settings).unwrap();
+        assert!(!later.replayed);
     }
 
     #[test]

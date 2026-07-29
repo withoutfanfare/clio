@@ -91,8 +91,9 @@ struct SourceMemory {
 }
 
 /// Load the atomic memories that should feed consolidation: live (non-archived)
-/// memories in the namespace, excluding the consolidated singleton itself and
-/// receipts (deterministic activity, not durable truth), ordered by importance
+/// memories in the namespace, excluding expired records, the consolidated
+/// singleton itself and receipts (deterministic activity, not durable truth),
+/// ordered by importance
 /// then recency.
 #[cfg(any(feature = "capture", test))]
 fn load_source_memories(conn: &Connection, namespace: &str) -> Result<Vec<SourceMemory>> {
@@ -101,6 +102,7 @@ fn load_source_memories(conn: &Connection, namespace: &str) -> Result<Vec<Source
          FROM memories
          WHERE namespace = ?1
            AND archived_at IS NULL
+           AND (valid_until IS NULL OR datetime(valid_until) > datetime('now'))
            AND kind != 'receipt'
            AND (source IS NULL OR source != ?2)
          ORDER BY importance DESC, updated_at DESC",

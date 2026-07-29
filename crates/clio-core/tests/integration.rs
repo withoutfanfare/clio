@@ -2602,23 +2602,25 @@ fn session_attention_cases_route_to_the_annotated_outcome() {
             );
         }
 
-        // Resolution expectations against the pre-created open loop.
+        // Resolution claims are review candidates, never automatic
+        // completions: the target ALWAYS stays open, and an explicit
+        // stable-ID claim records a visible candidate event.
         let target_state = attention::get_by_memory(&conn, &target_id)
             .unwrap()
             .unwrap();
-        if expect["resolves_target"].as_bool().unwrap_or(false) {
-            assert_eq!(
-                target_state.status, "resolved",
-                "case {name}: target resolved"
-            );
-            let links = repository::get_links(&conn, &target_state.memory_id).unwrap();
-            assert!(
-                links.iter().any(|l| l.relationship == "resolved_by"),
-                "case {name}: resolution evidence linked"
-            );
-        } else {
-            assert_eq!(target_state.status, "open", "case {name}: target untouched");
-        }
+        assert_eq!(
+            target_state.status, "open",
+            "case {name}: model output can never close real work"
+        );
+        let history = clio_core::events::list_events(&conn, &target_state.memory_id, 20).unwrap();
+        let has_candidate = history
+            .iter()
+            .any(|e| e.event_type == "resolution_candidate");
+        assert_eq!(
+            has_candidate,
+            expect["resolution_candidate"].as_bool().unwrap_or(false),
+            "case {name}: resolution candidate expectation"
+        );
     }
 }
 
@@ -2920,6 +2922,12 @@ fn effectiveness_report_is_untracked_and_dedupes_surfaced_events() {
     let before_events: i64 = conn
         .query_row("SELECT COUNT(*) FROM memory_events", [], |r| r.get(0))
         .unwrap();
+
+    let disabled = stats::effectiveness(&conn, Some("project:fx"), 0).unwrap();
+    assert_eq!(
+        disabled.attention_stale, 0,
+        "dormancy disabled reports zero stale items"
+    );
 
     let report = stats::effectiveness(&conn, Some("project:fx"), 14).unwrap();
     assert_eq!(
