@@ -12,7 +12,7 @@ set -e
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 cd "$ROOT"
 
-TARGETS="${@:-all}"
+TARGETS="${1:-all}"
 
 build_cli() {
   echo "Building clio CLI..."
@@ -30,19 +30,28 @@ build_daemon() {
 }
 
 restart_daemon() {
+  local PLIST="$HOME/Library/LaunchAgents/com.clio.daemon.plist"
+  local DOMAIN
+  DOMAIN="gui/$(id -u)"
+
+  if [ ! -f "$PLIST" ]; then
+    echo "clio-daemon LaunchAgent is not configured; built binary only."
+    return 0
+  fi
+
   echo "Restarting clio-daemon..."
-  launchctl stop com.clio.daemon 2>/dev/null || true
-  sleep 1
-  launchctl start com.clio.daemon
+  launchctl bootout "$DOMAIN" "$PLIST" 2>/dev/null || true
+  launchctl bootstrap "$DOMAIN" "$PLIST"
   sleep 2
 
   # Verify it came back
-  PID=$(launchctl list | grep com.clio.daemon | awk '{print $1}')
-  if [ "$PID" != "-" ] && [ -n "$PID" ]; then
+  PID=$(launchctl print "$DOMAIN/com.clio.daemon" 2>/dev/null | awk '/pid =/ {print $3; exit}')
+  if [ -n "$PID" ]; then
     echo "clio-daemon running (PID $PID)"
   else
     echo "WARNING: clio-daemon may not have started. Check logs:"
     echo "  tail -20 ~/Library/Logs/clio/clio-daemon.stderr.log"
+    return 1
   fi
 }
 
