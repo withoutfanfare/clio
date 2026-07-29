@@ -298,11 +298,7 @@ fn chat_request_body(
             { "role": "user", "content": user }
         ]
     });
-    if config.model.starts_with("gpt-5") {
-        body["reasoning_effort"] = serde_json::json!("none");
-    } else {
-        body["temperature"] = serde_json::json!(0.1);
-    }
+    crate::openai::apply_chat_parameters(&mut body, &config.model, 0.1, None);
     if json_mode {
         body["response_format"] = serde_json::json!({ "type": "json_object" });
     }

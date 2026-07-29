@@ -273,6 +273,8 @@ pub fn run() {
             commands::deduplication::cmd_preview_merge,
             commands::deduplication::cmd_merge_memories,
             commands::status::cmd_connection_status,
+            commands::settings::cmd_capture_preferences,
+            commands::settings::cmd_set_capture_model,
         ])
         .build(tauri::generate_context!())
         .expect("Failed to build Clio")

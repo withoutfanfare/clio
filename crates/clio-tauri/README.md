@@ -30,3 +30,8 @@ database maintenance, deduplication, and namespace administration remain local
 only; their UI controls are hidden. Remote mode requires a live SSH connection
 and has no offline cache or synchronisation. Restart the app to reconnect after
 the bridge process or SSH connection exits.
+
+The Settings view can change the shared capture model when the Atlas route was
+persisted with `clio settings use-remote`. Environment-only development mode
+does not modify operational settings; persist the route before testing that
+control.

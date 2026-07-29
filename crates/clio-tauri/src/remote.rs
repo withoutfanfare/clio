@@ -28,6 +28,7 @@ pub struct RemoteConfig {
     pub db_path: String,
     pub remote_binary: String,
     pub command: String,
+    pub settings_command: Option<String>,
 }
 
 impl RemoteConfig {
@@ -37,6 +38,7 @@ impl RemoteConfig {
             db_path: required_env(REMOTE_DB_ENV)?,
             remote_binary: required_env(REMOTE_BINARY_ENV)?,
             command: std::env::var(REMOTE_COMMAND_ENV).unwrap_or_else(|_| "clio".into()),
+            settings_command: None,
         })
     }
 
@@ -47,6 +49,7 @@ impl RemoteConfig {
             db_path: config.db_path.clone(),
             remote_binary: config.mcp_binary.clone(),
             command: config.bridge_command.clone(),
+            settings_command: Some(config.bridge_command.clone()),
         })
     }
 }
@@ -65,6 +68,7 @@ pub struct RemoteState {
     connected: Arc<AtomicBool>,
     last_error: Arc<Mutex<Option<String>>>,
     shutdown: Mutex<Option<rmcp::service::RunningServiceCancellationToken>>,
+    settings_command: Option<String>,
 }
 
 impl RemoteState {
@@ -73,6 +77,7 @@ impl RemoteState {
         let db_path = config.db_path.clone();
         let connected = Arc::new(AtomicBool::new(false));
         let last_error = Arc::new(Mutex::new(None));
+        let settings_command = config.settings_command.clone();
 
         let mut command = tokio::process::Command::new(&config.command);
         command.args([
@@ -115,13 +120,23 @@ impl RemoteState {
                     connected,
                     last_error,
                     shutdown: Mutex::new(Some(shutdown)),
+                    settings_command,
                 }
             }
-            Err(error) => Self::disconnected(host, db_path, error),
+            Err(error) => Self::disconnected_with_settings(host, db_path, error, settings_command),
         }
     }
 
     pub fn disconnected(host: String, db_path: String, error: String) -> Self {
+        Self::disconnected_with_settings(host, db_path, error, None)
+    }
+
+    fn disconnected_with_settings(
+        host: String,
+        db_path: String,
+        error: String,
+        settings_command: Option<String>,
+    ) -> Self {
         Self {
             host,
             db_path,
@@ -129,7 +144,55 @@ impl RemoteState {
             connected: Arc::new(AtomicBool::new(false)),
             last_error: Arc::new(Mutex::new(Some(error))),
             shutdown: Mutex::new(None),
+            settings_command,
         }
+    }
+
+    pub async fn capture_preferences(
+        &self,
+    ) -> Result<clio_core::settings::CapturePreferences, CommandError> {
+        self.run_capture_settings(["--json", "settings", "show-capture"])
+            .await
+    }
+
+    pub async fn set_capture_model(
+        &self,
+        model: &str,
+    ) -> Result<clio_core::settings::CapturePreferences, CommandError> {
+        self.run_capture_settings(["--json", "settings", "set-capture-model", model])
+            .await
+    }
+
+    async fn run_capture_settings<const N: usize>(
+        &self,
+        args: [&str; N],
+    ) -> Result<clio_core::settings::CapturePreferences, CommandError> {
+        let command = self.settings_command.as_ref().ok_or_else(|| {
+            CommandError::Config(
+                "Capture settings require a persisted Atlas route; run `clio settings use-remote` first"
+                    .into(),
+            )
+        })?;
+        let mut process = tokio::process::Command::new(command);
+        process.args(args).kill_on_drop(true);
+        let output = tokio::time::timeout(REMOTE_OPERATION_TIMEOUT, process.output())
+            .await
+            .map_err(|_| {
+                CommandError::Core(timeout_error(
+                    "capture settings command",
+                    REMOTE_OPERATION_TIMEOUT,
+                ))
+            })?
+            .map_err(|error| CommandError::Config(format!("failed to run {command}: {error}")))?;
+        if !output.status.success() {
+            let error = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            return Err(CommandError::Core(if error.is_empty() {
+                format!("Capture settings command exited with {}", output.status)
+            } else {
+                error
+            }));
+        }
+        serde_json::from_slice(&output.stdout).map_err(CommandError::from)
     }
 
     pub async fn call_json<T: DeserializeOwned>(
@@ -319,6 +382,42 @@ mod tests {
         let config = RemoteConfig::from_settings(&persisted).unwrap();
         assert_eq!(config.host, "atlas");
         assert_eq!(config.command, "/usr/local/bin/clio");
+        assert_eq!(
+            config.settings_command.as_deref(),
+            Some("/usr/local/bin/clio")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn capture_settings_command_reads_and_changes_remote_models() {
+        let directory = tempfile::tempdir().unwrap();
+        let script = directory.path().join("settings-command");
+        fs::write(
+            &script,
+            "#!/bin/sh\nmodel=gpt-5.6-terra\nif [ \"$3\" = \"set-capture-model\" ]; then model=$4; fi\nprintf '{\"enabled\":true,\"model\":\"%s\",\"review_threshold\":0.7}\\n' \"$model\"\n",
+        )
+        .unwrap();
+        let mut permissions = fs::metadata(&script).unwrap().permissions();
+        permissions.set_mode(0o700);
+        fs::set_permissions(&script, permissions).unwrap();
+        let state = RemoteState::disconnected_with_settings(
+            "atlas".into(),
+            "/srv/memory.db".into(),
+            "not connected".into(),
+            Some(script.to_string_lossy().into_owned()),
+        );
+
+        let current = tauri::async_runtime::block_on(state.capture_preferences()).unwrap();
+        assert_eq!(current.model, "gpt-5.6-terra");
+        assert_eq!(current.review_threshold, Some(0.7));
+
+        for model in ["gpt-4.1", "gpt-5.6-luna", "gpt-5.6-terra"] {
+            let changed = tauri::async_runtime::block_on(state.set_capture_model(model)).unwrap();
+            assert_eq!(changed.model, model);
+            assert!(changed.enabled);
+            assert_eq!(changed.review_threshold, Some(0.7));
+        }
     }
 
     #[cfg(unix)]
@@ -342,6 +441,7 @@ mod tests {
             db_path: pid_file.to_string_lossy().into_owned(),
             remote_binary: "unused".into(),
             command: script.to_string_lossy().into_owned(),
+            settings_command: None,
         }));
         assert!(state.last_error().unwrap().contains("timed out"));
 

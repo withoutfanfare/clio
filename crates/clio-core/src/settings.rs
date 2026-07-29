@@ -138,6 +138,24 @@ impl Default for CaptureConfig {
     }
 }
 
+/// Non-secret capture settings safe to display in user interfaces.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct CapturePreferences {
+    pub enabled: bool,
+    pub model: String,
+    pub review_threshold: Option<f64>,
+}
+
+impl From<&CaptureConfig> for CapturePreferences {
+    fn from(config: &CaptureConfig) -> Self {
+        Self {
+            enabled: config.enabled,
+            model: config.model.clone(),
+            review_threshold: config.review_threshold,
+        }
+    }
+}
+
 /// Configuration for automatic namespace detection from the working directory.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ContextConfig {
@@ -432,6 +450,35 @@ pub fn load(db_path: &Path) -> Result<Settings> {
     Ok(settings)
 }
 
+/// Return capture settings that are safe to expose without leaking credentials.
+pub fn capture_preferences(db_path: &Path) -> Result<CapturePreferences> {
+    Ok(CapturePreferences::from(&load(db_path)?.capture))
+}
+
+/// Normalise and validate an OpenAI-compatible capture model ID.
+pub fn normalise_capture_model(model: &str) -> Result<String> {
+    let model = model.trim();
+    if model.is_empty() {
+        return Err(ClioError::Validation(
+            "capture model cannot be empty".into(),
+        ));
+    }
+    if model.len() > 200 || model.chars().any(char::is_control) {
+        return Err(ClioError::Validation(
+            "capture model must be at most 200 characters and contain no control characters".into(),
+        ));
+    }
+    Ok(model.to_string())
+}
+
+/// Change only the capture model, preserving credentials and other settings.
+pub fn set_capture_model(db_path: &Path, model: &str) -> Result<CapturePreferences> {
+    let mut settings = load(db_path)?;
+    settings.capture.model = normalise_capture_model(model)?;
+    save(db_path, &settings)?;
+    Ok(CapturePreferences::from(&settings.capture))
+}
+
 /// Save settings to the file next to the database.
 ///
 /// Uses atomic write (temp file + rename) to prevent corruption on crash.
@@ -519,5 +566,35 @@ mod tests {
             bridge_command: "/usr/local/bin/clio".into(),
         };
         assert!(remote.validate().is_err());
+    }
+
+    #[test]
+    fn capture_model_update_preserves_credentials_and_trims_the_model() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("memory.db");
+        let mut settings = Settings::default();
+        settings.capture.enabled = true;
+        settings.capture.api_key = Some("secret".into());
+        settings.capture.base_url = "https://example.test/v1".into();
+        settings.capture.review_threshold = Some(0.7);
+        save(&db_path, &settings).unwrap();
+
+        for model in [
+            "gpt-4.1",
+            "gpt-5.6-luna",
+            " gpt-5.6-terra ",
+            "compatible-provider/new-model",
+        ] {
+            let preferences = set_capture_model(&db_path, model).unwrap();
+            let saved = load(&db_path).unwrap();
+
+            assert_eq!(preferences.model, model.trim());
+            assert_eq!(preferences.review_threshold, Some(0.7));
+            assert_eq!(saved.capture.api_key.as_deref(), Some("secret"));
+            assert_eq!(saved.capture.base_url, "https://example.test/v1");
+            assert_eq!(saved.auto_title_model(), model.trim());
+        }
+        assert!(set_capture_model(&db_path, "  ").is_err());
+        assert!(set_capture_model(&db_path, "bad\nmodel").is_err());
     }
 }

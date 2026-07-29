@@ -33,6 +33,11 @@ const router = createRouter({
       name: "context-builder",
       component: () => import("@/views/ContextBuilderView.vue"),
     },
+    {
+      path: "/settings",
+      name: "settings",
+      component: () => import("@/views/SettingsView.vue"),
+    },
   ],
 });
 

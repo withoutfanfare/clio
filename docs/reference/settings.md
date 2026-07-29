@@ -67,10 +67,38 @@ Change only the model, without replacing the API key or endpoint:
 clio settings set-capture-model gpt-5.6-luna
 ```
 
-On a Mac configured with `settings use-remote`, this command updates Atlas.
+Show the active shared capture configuration without displaying credentials:
+
+```sh
+clio settings show-capture
+```
+
+On a Mac configured with `settings use-remote`, both commands use Atlas. The
+desktop app exposes the same control under **Settings > Capture model** and
+preserves the API key, endpoint and review threshold. Its suggested values are
+the benchmarked `gpt-4.1`, `gpt-5.6-luna` and `gpt-5.6-terra` models, but the
+field accepts another OpenAI-compatible model ID for future comparisons.
+
+The Tauri app and the CLI see the change immediately. Other running MCP
+processes reload non-embedding settings within 30 seconds; they do not need a
+restart.
+
 Use `capture --model <model> --dry-run` or `distill --model <model> --dry-run`
 for a one-off comparison that does not change the active setting. Add
 `--metrics` to include latency and provider-reported token usage.
+
+### Desktop control suitability
+
+The desktop app currently changes only `capture.model`. Other suitable future
+controls are `capture.review_threshold`, auto-title behaviour, recall scoring,
+namespace auto-detection, consolidation thresholds and cleanup defaults. They
+are non-secret values with immediate, understandable effects.
+
+Keep API keys and provider endpoints out of the desktop interface. Embedding
+provider/model changes require client restarts and a vector backfill; remote
+route changes can disconnect the app; daemon settings are local-only and need a
+daemon restart. Those settings should remain guided CLI or deployment tasks
+unless the app also implements their full validation and recovery workflows.
 
 ## context
 

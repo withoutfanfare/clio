@@ -6,6 +6,7 @@ import type {
   CleanupCandidate,
   CleanupReport,
   CaptureResult,
+  CapturePreferences,
   ConnectionStatus,
   ConsolidationResult,
   DetectedContext,
@@ -27,6 +28,14 @@ import type {
 
 export async function connectionStatus(): Promise<ConnectionStatus> {
   return invoke<ConnectionStatus>("cmd_connection_status");
+}
+
+export async function capturePreferences(): Promise<CapturePreferences> {
+  return invoke<CapturePreferences>("cmd_capture_preferences");
+}
+
+export async function setCaptureModel(model: string): Promise<CapturePreferences> {
+  return invoke<CapturePreferences>("cmd_set_capture_model", { model });
 }
 
 export async function remember(input: RememberInput): Promise<Memory> {

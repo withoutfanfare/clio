@@ -156,6 +156,12 @@ export interface ConnectionStatus {
   detail: string | null;
 }
 
+export interface CapturePreferences {
+  enabled: boolean;
+  model: string;
+  review_threshold: number | null;
+}
+
 // Bulk operations
 export interface BulkResult {
   affected: number;

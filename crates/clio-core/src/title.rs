@@ -139,13 +139,7 @@ fn title_request_body(model: &str, content: &str) -> serde_json::Value {
             { "role": "user", "content": content }
         ]
     });
-    if model.starts_with("gpt-5") {
-        body["reasoning_effort"] = serde_json::json!("none");
-        body["max_completion_tokens"] = serde_json::json!(60);
-    } else {
-        body["temperature"] = serde_json::json!(0.3);
-        body["max_tokens"] = serde_json::json!(60);
-    }
+    crate::openai::apply_chat_parameters(&mut body, model, 0.3, Some(60));
     body
 }
 

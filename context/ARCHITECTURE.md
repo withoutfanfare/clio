@@ -185,13 +185,14 @@ Desktop UI crate. Vue 3 frontend with Tauri 2 backend for browse/edit/archive/in
 - `stats.rs` — memory statistics and analytics
 - `namespaces.rs` — namespace listing
 - `clipboard.rs` — native clipboard copy (osascript with pbcopy fallback)
+- `settings.rs` — non-secret capture preferences and model changes
 
 **Frontend** (`ui/src/`):
 - Vue 3 + Pinia (state) + Vue Router, built with Vite
 - Components: AppBar, MemoryPage, MemoryDrawer, ComposeArea, CommandPalette, SidePanel, DateGroup, TagInput, LinkList, KindSelector
 - Composables: useAutoSave, useDebounce, useGroupedMemories, useKeyboard
 - Store: `stores/memories.ts` — filtering, sorting, grouping with localStorage persistence
-- Views: HomeView (memory list/grid), StatsView
+- Views: HomeView (memory list/grid), StatsView, SettingsView
 
 ## Storage Engine
 

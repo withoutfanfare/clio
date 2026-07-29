@@ -237,6 +237,13 @@ async function createProject() {
         </svg>
         Tools
       </SSidebarLink>
+      <SSidebarLink @click="router.push({ name: 'settings' })">
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+          <circle cx="8" cy="8" r="2.2" stroke="currentColor" stroke-width="1.2"/>
+          <path d="M8 1.8v1.3M8 12.9v1.3M14.2 8h-1.3M3.1 8H1.8M12.4 3.6l-.9.9M4.5 11.5l-.9.9M12.4 12.4l-.9-.9M4.5 4.5l-.9-.9" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
+        </svg>
+        Settings
+      </SSidebarLink>
       <SSidebarLink @click="store.toggleCompose()">
         <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
           <path d="M8 3v10M3 8h10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>

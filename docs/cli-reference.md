@@ -383,6 +383,7 @@ clio settings use-openai --api-key sk-...  # higher quality, needs key
 
 # Capture pipeline
 clio settings use-capture --api-key sk-... --model gpt-4o-mini
+clio settings show-capture
 clio settings set-capture-model gpt-5.6-luna
 
 # Route shared operations through an SSH host
@@ -399,6 +400,10 @@ clio settings disable-remote
 
 After changing the embedding provider or model, restart MCP clients and run
 `clio embed backfill` until all stale vectors have been replaced.
+
+`settings show-capture` and `settings set-capture-model` follow a configured
+shared route, so they read or update Atlas when run from a connected Mac.
+`settings show` remains local because it also shows that Mac's route.
 
 ---
 

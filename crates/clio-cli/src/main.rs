@@ -680,6 +680,9 @@ enum SettingsSubcommand {
     /// Show current settings.
     Show,
 
+    /// Show non-secret capture settings from the active shared backend.
+    ShowCapture,
+
     /// Set the embedding provider to "local" (fastembed, offline).
     UseLocal,
 
@@ -920,7 +923,7 @@ fn run_with_routing(cli: Cli, raw_args: &[OsString]) -> Result<(), Box<dyn std::
 fn command_uses_shared_storage(command: &Command) -> bool {
     match command {
         Command::Settings(SettingsArgs {
-            command: SettingsSubcommand::SetCaptureModel { .. },
+            command: SettingsSubcommand::ShowCapture | SettingsSubcommand::SetCaptureModel { .. },
         }) => true,
         Command::Init(_)
         | Command::Context
@@ -1776,21 +1779,13 @@ fn cmd_search(
     Ok(())
 }
 
-fn normalise_capture_model(model: &str) -> Result<String, Box<dyn std::error::Error>> {
-    let model = model.trim();
-    if model.is_empty() {
-        return Err("capture model cannot be empty".into());
-    }
-    Ok(model.to_string())
-}
-
 fn capture_config_with_model(
     config: &settings::CaptureConfig,
     model: Option<&str>,
 ) -> Result<settings::CaptureConfig, Box<dyn std::error::Error>> {
     let mut config = config.clone();
     if let Some(model) = model {
-        config.model = normalise_capture_model(model)?;
+        config.model = settings::normalise_capture_model(model)?;
     }
     Ok(config)
 }
@@ -2262,6 +2257,22 @@ fn cmd_settings(
                 }
             }
         }
+        SettingsSubcommand::ShowCapture => {
+            let capture = settings::capture_preferences(&path)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&capture)?);
+            } else {
+                eprintln!(
+                    "Capture enabled: {}",
+                    if capture.enabled { "on" } else { "off" }
+                );
+                eprintln!("Capture model: {}", capture.model);
+                match capture.review_threshold {
+                    Some(threshold) => eprintln!("Review threshold: {threshold}"),
+                    None => eprintln!("Review threshold: off"),
+                }
+            }
+        }
         SettingsSubcommand::UseLocal => {
             let mut s = settings::load(&path)?;
             s.embeddings = embeddings::EmbeddingConfig::Local {
@@ -2314,10 +2325,12 @@ fn cmd_settings(
             eprintln!("Capture pipeline enabled.");
         }
         SettingsSubcommand::SetCaptureModel { model } => {
-            let mut s = settings::load(&path)?;
-            s.capture.model = normalise_capture_model(&model)?;
-            settings::save(&path, &s)?;
-            eprintln!("Capture model set to {}.", s.capture.model);
+            let capture = settings::set_capture_model(&path, &model)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&capture)?);
+            } else {
+                eprintln!("Capture model set to {}.", capture.model);
+            }
         }
         SettingsSubcommand::DisableCapture => {
             let mut s = settings::load(&path)?;
@@ -3703,8 +3716,12 @@ mod tests {
         let show = Command::Settings(SettingsArgs {
             command: SettingsSubcommand::Show,
         });
+        let show_capture = Command::Settings(SettingsArgs {
+            command: SettingsSubcommand::ShowCapture,
+        });
 
         assert!(command_uses_shared_storage(&setting));
+        assert!(command_uses_shared_storage(&show_capture));
         assert!(!command_uses_shared_storage(&show));
     }
 

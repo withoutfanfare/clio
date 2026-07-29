@@ -189,12 +189,23 @@ legacy directory.
 From a Mac configured to use Atlas, change only the shared capture model with:
 
 ```sh
+clio settings show-capture
 clio settings set-capture-model gpt-5.6-luna
 ```
 
-The command preserves Atlas's API key, endpoint and review threshold. GPT-5
-models use `reasoning_effort: none` and omit `temperature`; older models retain
-the existing `temperature: 0.1` behaviour.
+The command preserves Atlas's API key, endpoint and review threshold. The
+benchmarked GPT-5.6 Luna and Terra models use `reasoning_effort: none` and omit
+`temperature`; GPT-4.1, GPT-4o and GPT-4o mini use their supported temperature
+and token-limit parameters. Other recognised GPT-5 family models keep
+`max_completion_tokens` without assuming support for `reasoning_effort: none`.
+Genuinely unrecognised compatible models receive only common request fields
+until their capabilities are added explicitly.
+
+The signed desktop app provides the same switch under **Settings > Capture
+model**. It requires the persisted route created by `clio settings use-remote`;
+environment-only Tauri development routes remain read/write memory connections
+but do not authorise operational settings changes. Other MCP processes reload
+the capture model within 30 seconds.
 
 Compare models without changing the shared setting by running the same text
 through each model:
