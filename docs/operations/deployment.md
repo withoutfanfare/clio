@@ -345,6 +345,13 @@ default, and retains the DMG with the deployment backups. It runs locked
 installation fails or is interrupted after the previous app is moved aside,
 the installer restores that previous version.
 
+The current lockfile resolves the private `@stuntrocket/ui` package through the
+developer Mac's local Verdaccio registry. Start that existing registry before a
+`--with-app` build and stop it afterwards. A clean Mac or CI runner cannot yet
+reproduce the app build without access to the same package archive; this is
+tracked as `CLIO-REL-002` in the operational roadmap. CLI-only installs do not
+need the npm registry.
+
 For personal Macs, ad-hoc signing identifies the bundle consistently without
 requiring an Apple Developer certificate:
 

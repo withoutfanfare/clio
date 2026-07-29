@@ -236,7 +236,7 @@ install_app() {
   [[ ! -e "$dmg_destination" ]] || dmg_destination="$backup_dir/$(date -u +%Y%m%dT%H%M%SZ)-$(basename "$dmg")"
   cp -p "$dmg" "$dmg_destination"
   app_is_running && fail "Clio was opened during the build; quit it before installing."
-  install -d -m 755 "$(dirname "$CLIO_APP_PATH")"
+  [[ -d "$(dirname "$CLIO_APP_PATH")" ]] || install -d -m 755 "$(dirname "$CLIO_APP_PATH")"
   if [[ -d "$CLIO_APP_PATH" ]]; then
     app_backup="$backup_dir/Clio.$(date -u +%Y%m%dT%H%M%SZ).$$.app"
     mv "$CLIO_APP_PATH" "$app_backup"
