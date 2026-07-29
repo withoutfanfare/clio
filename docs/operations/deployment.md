@@ -211,7 +211,8 @@ clio --json distill - --dry-run --model gpt-5.6-luna --metrics \
 
 Dry runs call the provider but never write a memory. Keep the input and rubric
 unchanged between runs, and record model, latency, input/output/reasoning tokens,
-classification and confidence before changing the shared setting.
+classification and confidence before changing the shared setting. Compare the
+result with the [capture model benchmark baseline](capture-model-benchmark.md).
 
 `status` reports the resolved binary paths and SHA-256 hashes. It also counts
 running `clio-mcp` processes and identifies processes still using an older or

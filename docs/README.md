@@ -61,6 +61,7 @@ For AI agents using Clio via MCP:
 | [Desktop App (Tauri)](tauri-app.md) | Tauri commands, frontend architecture, design system |
 | [Security Review](security-review.md) | Codebase security audit findings |
 | [Deployment Runbook](operations/deployment.md) | Releasing Atlas and installing native Mac components |
+| [Capture Model Benchmark](operations/capture-model-benchmark.md) | Repeatable model comparison and current selection evidence |
 | [Operational Roadmap](operations/roadmap.md) | Prioritised deployment and infrastructure work still to complete |
 
 ### Project Context
