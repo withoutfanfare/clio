@@ -638,10 +638,9 @@ struct SuggestLinksArgs {
 
 #[derive(Parser)]
 struct AutoLinkArgs {
-    /// Only consider memories updated after this ISO-8601 timestamp. Omit to scan
-    /// every memory: the daemon keeps a watermark in memory between ticks, which a
-    /// one-shot run cannot, and a full scan is cheap because memories already at
-    /// `max_links_per_memory` are skipped before any similarity search.
+    /// Start from memories updated after this ISO-8601 timestamp instead of from the
+    /// beginning. The command iterates in `batch_size` steps until no memories
+    /// remain, so this is only needed to skip work already known to be done.
     #[arg(long)]
     since: Option<String>,
 
@@ -3179,13 +3178,14 @@ fn cmd_suggest_links(
     Ok(())
 }
 
-/// Run one auto-link inference pass.
+/// Run auto-link inference to completion.
 ///
-/// The daemon holds its watermark in memory between ticks; a scheduled one-shot
-/// cannot, so this defaults to scanning every memory. That is affordable because
-/// `auto_link_batch` skips a memory already at `max_links_per_memory` before doing
-/// any similarity search — the expensive part only runs for memories with room for
-/// more links. Pass `--since` to narrow the scan if a full pass ever gets slow.
+/// `auto_link_batch` processes at most `batch_size` memories and returns how far it
+/// reached. That bound is right for a daemon tick but useless on its own for a
+/// scheduled run: the daemon carries its watermark in memory between ticks, whereas
+/// a one-shot starting from the same place every time would churn the same oldest
+/// `batch_size` memories forever and never reach the rest. So this iterates,
+/// feeding each pass's watermark into the next, until a pass finds nothing new.
 fn cmd_auto_link(
     db_path: Option<&str>,
     json: bool,
@@ -3201,28 +3201,47 @@ fn cmd_auto_link(
     }
 
     let backend = embeddings::create_backend(&s.embeddings)?;
-    let report =
-        embeddings::auto_link_batch(&conn, backend.as_ref(), args.since.as_deref(), &config)?;
+    let mut watermark = args.since.clone();
+    let mut passes: u32 = 0;
+    let mut total_processed: u64 = 0;
+    let mut total_links: u64 = 0;
+
+    loop {
+        let report =
+            embeddings::auto_link_batch(&conn, backend.as_ref(), watermark.as_deref(), &config)?;
+        passes += 1;
+        total_processed += u64::from(report.memories_processed);
+        total_links += u64::from(report.links_created);
+
+        if report.memories_processed == 0 {
+            break;
+        }
+        // A pass that processed memories but did not move the watermark cannot make
+        // further progress, and repeating it would loop forever.
+        match report.last_watermark {
+            Some(next) if Some(&next) != watermark.as_ref() => watermark = Some(next),
+            _ => break,
+        }
+    }
 
     if json {
         println!(
             "{}",
             serde_json::to_string_pretty(&serde_json::json!({
-                "memories_processed": report.memories_processed,
-                "links_created": report.links_created,
-                "last_watermark": report.last_watermark,
+                "passes": passes,
+                "memories_processed": total_processed,
+                "links_created": total_links,
+                "last_watermark": watermark,
                 "threshold": config.threshold,
                 "max_links_per_memory": config.max_links_per_memory,
+                "batch_size": config.batch_size,
             }))?
         );
     } else {
         eprintln!(
-            "Auto-link pass: {} memory(ies) processed, {} link(s) created \
+            "Auto-link complete: {} memory(ies) over {} pass(es), {} link(s) created \
              (threshold {}, cap {} per memory).",
-            report.memories_processed,
-            report.links_created,
-            config.threshold,
-            config.max_links_per_memory,
+            total_processed, passes, total_links, config.threshold, config.max_links_per_memory,
         );
     }
     Ok(())
