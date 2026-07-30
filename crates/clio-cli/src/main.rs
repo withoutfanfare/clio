@@ -3326,9 +3326,7 @@ fn acquire_auto_link_lock(
 }
 
 #[cfg(not(unix))]
-fn acquire_auto_link_lock(
-    _db_path: &std::path::Path,
-) -> Result<(), Box<dyn std::error::Error>> {
+fn acquire_auto_link_lock(_db_path: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 

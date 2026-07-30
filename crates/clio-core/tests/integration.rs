@@ -1957,12 +1957,26 @@ fn capture_of_identical_content_does_not_duplicate() {
     };
 
     let first = stored_id(
-        capture_with_classification(&conn, body, &classification, None, None, &Settings::default())
-            .unwrap(),
+        capture_with_classification(
+            &conn,
+            body,
+            &classification,
+            None,
+            None,
+            &Settings::default(),
+        )
+        .unwrap(),
     );
     let second = stored_id(
-        capture_with_classification(&conn, body, &classification, None, None, &Settings::default())
-            .unwrap(),
+        capture_with_classification(
+            &conn,
+            body,
+            &classification,
+            None,
+            None,
+            &Settings::default(),
+        )
+        .unwrap(),
     );
 
     assert_eq!(
@@ -2019,12 +2033,20 @@ fn capture_and_distill_share_one_namespace_precedence() {
     // same classification landed in different namespaces depending on which
     // command stored it. Both now resolve through capture::resolve_namespace.
     assert_eq!(
-        capture_into(&classify_into("global", "applies everywhere"), None, Some("project:cwd")),
+        capture_into(
+            &classify_into("global", "applies everywhere"),
+            None,
+            Some("project:cwd")
+        ),
         "global",
         "the model's global promotion must beat the working-directory default"
     );
     assert_eq!(
-        capture_into(&classify_into("project:model-idea", "project fact"), None, Some("project:cwd")),
+        capture_into(
+            &classify_into("project:model-idea", "project fact"),
+            None,
+            Some("project:cwd")
+        ),
         "project:cwd",
         "a non-global suggestion yields to the working directory"
     );
@@ -2914,7 +2936,11 @@ fn auto_link_skips_multiple_excluded_kinds_as_source_and_target() {
 
     let conn = test_db();
     let note_a = remember_in(&conn, "project:x", "connection pooling enabled for the api");
-    let note_b = remember_in(&conn, "project:x", "pooling switched on for postgres connections");
+    let note_b = remember_in(
+        &conn,
+        "project:x",
+        "pooling switched on for postgres connections",
+    );
     let receipt = repository::remember(
         &conn,
         &RememberInput {
@@ -3011,7 +3037,10 @@ fn auto_link_cap_bounds_total_degree_and_binds() {
     };
     auto_link_batch(&conn, &SameVectorBackend, None, &config).unwrap();
 
-    let degrees: Vec<i64> = cluster.iter().map(|m| auto_link_degree(&conn, &m.id)).collect();
+    let degrees: Vec<i64> = cluster
+        .iter()
+        .map(|m| auto_link_degree(&conn, &m.id))
+        .collect();
     assert!(
         degrees.iter().all(|&d| d <= 5),
         "no memory may exceed the total-degree cap: {degrees:?}"
