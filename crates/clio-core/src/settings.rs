@@ -53,10 +53,11 @@ pub struct AutoLinkConfig {
     #[serde(default = "default_auto_link_interval")]
     pub interval_secs: u64,
 
-    /// Maximum inferred links a memory may hold in total, across all passes — not a
-    /// fresh allowance each pass. Note this bounds links *out of* a memory; because
-    /// recall walks edges in both directions, a memory that many others point at can
-    /// exceed this in total degree.
+    /// Maximum inferred links a memory may hold in **total degree** — counting
+    /// both directions, across all passes; not a fresh allowance each pass. A
+    /// link is only created while both of its endpoints are below this cap, since
+    /// recall walks edges both ways and total degree is what governs how much
+    /// context a memory drags into a brief.
     #[serde(default = "default_auto_link_max")]
     pub max_links_per_memory: u32,
 

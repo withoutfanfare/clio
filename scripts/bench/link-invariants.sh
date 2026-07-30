@@ -38,15 +38,31 @@ import sqlite3, sys
 print(sqlite3.connect('$DB').execute(sys.argv[1], sys.argv[2:]).fetchone()[0])
 " "$@"; }
 
-remember() { # remember <namespace> <title> <content>
+remember() { # remember <namespace> <title> <content> [kind]
   # --local keeps this off any configured shared route, so the test can never write
   # into live data even if settings say otherwise.
   if ! "$CLIO" --db-path "$DB" --local remember --content "$3" \
-      --namespace "$1" --title "$2" --kind note --json >"$WORK/last" 2>&1; then
+      --namespace "$1" --title "$2" --kind "${4:-note}" --json >"$WORK/last" 2>&1; then
     printf 'FIXTURE ERROR creating %s:\n' "$2"
     sed 's/^/    /' "$WORK/last"
     exit 1
   fi
+}
+
+total_degree_over() { # total_degree_over <cap> -> memories whose total auto-link degree exceeds cap
+  q "select count(*) from memories m where (
+       select count(*) from memory_links l
+       where l.relationship = ?1
+         and (l.from_memory_id = m.id or l.to_memory_id = m.id)
+     ) > ?2" "$AUTO" "$1"
+}
+
+max_total_degree() {
+  q "select coalesce(max((
+       select count(*) from memory_links l
+       where l.relationship = ?1
+         and (l.from_memory_id = m.id or l.to_memory_id = m.id)
+     )), 0) from memories m" "$AUTO"
 }
 
 # Production threshold and cap, so this tests the real configuration.
@@ -61,12 +77,17 @@ EOF
 
 "$CLIO" --db-path "$DB" --local init >/dev/null 2>&1
 
-# Cluster: paraphrases of one idea, which should link to each other.
+# Cluster: paraphrases of one idea, which should link to each other. SEVEN members
+# against a cap of five: an uncapped run would give every member total degree six,
+# so the cap invariants below actually bind. A cluster smaller than the cap passes
+# them with the cap logic deleted, which is exactly what this suite once did.
 remember "project:alpha" "pool-1" "Database connection pooling was enabled to stop the API exhausting Postgres connections under load."
 remember "project:alpha" "pool-2" "We turned on connection pooling for the database because the API was running Postgres out of available connections."
 remember "project:alpha" "pool-3" "Postgres kept running out of connections, so pooling was introduced in front of the database for the API."
 remember "project:alpha" "pool-4" "Connection pooling now fronts Postgres; without it the API exhausted the connection limit during traffic spikes."
 remember "project:alpha" "pool-5" "To avoid exhausting Postgres connection limits from the API, database connection pooling was switched on."
+remember "project:alpha" "pool-6" "The API was draining the Postgres connection limit, so database connection pooling was brought in."
+remember "project:alpha" "pool-7" "Pooling database connections stopped the API running Postgres out of connections when traffic spiked."
 
 # Control: unrelated subject, same namespace. Should attract nothing.
 remember "project:alpha" "unrelated" "The office coffee machine needs descaling every fortnight or it starts leaking onto the counter."
@@ -79,14 +100,20 @@ remember "project:alpha" "archived-dupe" "Enabling database connection pooling p
 ARCHIVED_ID="$(q "select id from memories where title = ?" "archived-dupe")"
 "$CLIO" --db-path "$DB" --local archive "$ARCHIVED_ID" >/dev/null 2>&1
 
+# Control: near-duplicate with an excluded kind. The settings exclude receipts, so
+# this must link in neither direction — the fixture that proves exclude_kinds does
+# anything at all.
+remember "project:alpha" "receipt-dupe" "Session receipt: database connection pooling was enabled to stop the API exhausting Postgres connections." "receipt"
+
 FIXTURES="$(q "select count(*) from memories")"
 ARCHIVED="$(q "select count(*) from memories where archived_at is not null")"
 EMBEDDED="$(q "select count(*) from memory_embeddings")"
-echo "Fixtures: $FIXTURES memories, $ARCHIVED archived, $EMBEDDED embedded"
+RECEIPTS="$(q "select count(*) from memories where kind = 'receipt'")"
+echo "Fixtures: $FIXTURES memories, $ARCHIVED archived, $RECEIPTS receipt, $EMBEDDED embedded"
 
 # Guard: with no fixtures every "no unwanted link" assertion passes trivially and the
 # suite reports success while proving nothing. Refuse to continue.
-if [[ "$FIXTURES" -ne 8 || "$ARCHIVED" -ne 1 || "$EMBEDDED" -eq 0 ]]; then
+if [[ "$FIXTURES" -ne 11 || "$ARCHIVED" -ne 1 || "$RECEIPTS" -ne 1 || "$EMBEDDED" -eq 0 ]]; then
   echo "ABORT: fixtures did not build, so the invariants would pass vacuously."
   exit 1
 fi
@@ -119,15 +146,18 @@ check "archived memories are never link targets" 0 \
   "$(q "select count(*) from memory_links l join memories b on b.id = l.to_memory_id
         where l.relationship = ? and b.archived_at is not null" "$AUTO")"
 
-check "max_links_per_memory is respected" 0 \
-  "$(q "select count(*) from (select from_memory_id, count(*) n from memory_links
-        where relationship = ? group by from_memory_id having n > 5)" "$AUTO")"
+check "the excluded kind links in neither direction" 0 \
+  "$(q "select count(*) from memory_links l join memories m
+        on m.id in (l.from_memory_id, l.to_memory_id)
+        where m.kind = 'receipt' and l.relationship = ?" "$AUTO")"
 
-# Degree must be counted in both directions. Memories are processed oldest-first, so
-# the newest member of a cluster typically has zero OUTGOING links — everything
-# already linked to it, and suggest_links excludes existing pairs. Recall traverses
-# edges both ways, so an incoming-only memory is fully reachable.
-check "every clustered memory is connected (either direction)" 5 \
+check "no memory exceeds the total-degree cap of 5" 0 "$(total_degree_over 5)"
+
+# Without this, the cap assertions pass vacuously on any fixture too small or too
+# loosely connected for the cap to matter — delete the cap logic and nothing fails.
+check "the cap binds in this fixture (max total degree is exactly 5)" 5 "$(max_total_degree)"
+
+check "every clustered memory is connected (either direction)" 7 \
   "$(q "select count(*) from memories m where m.title like ?
         and exists (select 1 from memory_links l where l.relationship = ?
                     and (l.from_memory_id = m.id or l.to_memory_id = m.id))" "pool-%" "$AUTO")"
@@ -136,11 +166,31 @@ check "a second run is idempotent" 0 \
   "$("$CLIO" --db-path "$DB" --local auto-link --json 2>/dev/null |
      python3 -c 'import json,sys; print(json.load(sys.stdin)["links_created"])')"
 
+# The cap is cumulative across runs, not a fresh allowance per run. Reproduce the
+# regression that once let capped memories keep gaining links on every timed pass:
+# add a new similar memory and re-run — nothing may go over cap, and members
+# already at the cap must not move.
+remember "project:alpha" "pool-8" "Connection pooling for the database was the fix for the API exhausting Postgres connections."
+"$CLIO" --db-path "$DB" --local auto-link >/dev/null 2>&1
+
+check "a later run against new similar memories breaches no cap" 0 "$(total_degree_over 5)"
+check "the cap still binds after the later run" 5 "$(max_total_degree)"
+
+# At-cap candidates must not consume the newcomer's suggestion slots: pool-8 has
+# under-cap neighbours (the cluster cannot saturate all seven members), so it must
+# connect to at least one of them rather than end up isolated.
+check "a newcomer to a saturated cluster still connects" yes \
+  "$(if [[ "$(q "select count(*) from memory_links l join memories m
+                 on m.id in (l.from_memory_id, l.to_memory_id)
+                 where m.title = 'pool-8' and l.relationship = ?" "$AUTO")" -gt 0 ]]; then
+       echo yes; else echo no; fi)"
+
 echo
 echo "Degree per clustered memory (outgoing / incoming / total):"
-echo "  The cap bounds OUTGOING links only. Because recall walks edges both ways,"
-echo "  total degree is what governs how much context a recall pulls in, and it is"
-echo "  not bounded by max_links_per_memory."
+echo "  max_links_per_memory bounds TOTAL degree — both directions — because recall"
+echo "  walks edges both ways, so total degree is what governs how much context a"
+echo "  memory drags into a brief. A link is created only while both endpoints are"
+echo "  below the cap."
 python3 - "$DB" "$AUTO" <<'PY'
 import sqlite3, sys
 conn = sqlite3.connect(sys.argv[1])

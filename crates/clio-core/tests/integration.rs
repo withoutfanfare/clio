@@ -2913,6 +2913,131 @@ fn auto_link_skips_multiple_excluded_kinds_as_source_and_target() {
 }
 
 #[test]
+fn auto_link_cap_bounds_total_degree_and_binds() {
+    use clio_core::embeddings::{EmbeddingBackend, auto_link_batch, store_embedding};
+    use clio_core::settings::AutoLinkConfig;
+
+    struct SameVectorBackend;
+    impl EmbeddingBackend for SameVectorBackend {
+        fn model_name(&self) -> &str {
+            "model-a"
+        }
+        fn dimensions(&self) -> usize {
+            2
+        }
+        fn embed_one(&self, _text: &str) -> clio_core::error::Result<Vec<f32>> {
+            Ok(vec![1.0, 0.0])
+        }
+        fn embed_batch(&self, texts: &[String]) -> clio_core::error::Result<Vec<Vec<f32>>> {
+            Ok(texts.iter().map(|_| vec![1.0, 0.0]).collect())
+        }
+    }
+
+    let conn = test_db();
+    // Seven mutually similar memories against a cap of five: an uncapped run
+    // would give every memory degree six, so the cap must actually bind here —
+    // unlike a cluster smaller than the cap, where these assertions pass with
+    // the cap logic deleted.
+    let cluster: Vec<_> = (0..7)
+        .map(|i| remember_in(&conn, "project:x", &format!("pooling memory number {i}")))
+        .collect();
+    for m in &cluster {
+        store_embedding(&conn, &m.id, "model-a", 2, &[1.0, 0.0]).unwrap();
+    }
+
+    let config = AutoLinkConfig {
+        enabled: true,
+        threshold: 0.5,
+        max_links_per_memory: 5,
+        ..Default::default()
+    };
+    auto_link_batch(&conn, &SameVectorBackend, None, &config).unwrap();
+
+    let degrees: Vec<i64> = cluster.iter().map(|m| auto_link_degree(&conn, &m.id)).collect();
+    assert!(
+        degrees.iter().all(|&d| d <= 5),
+        "no memory may exceed the total-degree cap: {degrees:?}"
+    );
+    assert_eq!(
+        degrees.iter().max(),
+        Some(&5),
+        "the cap must bind in this fixture, or the assertions prove nothing: {degrees:?}"
+    );
+
+    // A second run must add nothing: every pair is either linked or blocked by
+    // the cap, and the cap is a cumulative total, not a per-run allowance.
+    let second = auto_link_batch(&conn, &SameVectorBackend, None, &config).unwrap();
+    assert_eq!(second.links_created, 0, "second run must be idempotent");
+}
+
+#[test]
+fn auto_link_never_lifts_a_memory_already_over_its_cap() {
+    use clio_core::embeddings::{EmbeddingBackend, auto_link_batch, store_embedding};
+    use clio_core::models::LinkInput;
+    use clio_core::settings::AutoLinkConfig;
+
+    struct SameVectorBackend;
+    impl EmbeddingBackend for SameVectorBackend {
+        fn model_name(&self) -> &str {
+            "model-a"
+        }
+        fn dimensions(&self) -> usize {
+            2
+        }
+        fn embed_one(&self, _text: &str) -> clio_core::error::Result<Vec<f32>> {
+            Ok(vec![1.0, 0.0])
+        }
+        fn embed_batch(&self, texts: &[String]) -> clio_core::error::Result<Vec<Vec<f32>>> {
+            Ok(texts.iter().map(|_| vec![1.0, 0.0]).collect())
+        }
+    }
+
+    let conn = test_db();
+    // A memory already over cap (degree 6 against a cap of 5): legacy state from
+    // before the cumulative cap existed. It must neither gain links, panic the
+    // budget arithmetic, nor be pushed further over as a target.
+    let over = remember_in(&conn, "project:x", "memory already over its cap");
+    let newcomer = remember_in(&conn, "project:x", "new memory similar to the over-cap one");
+    store_embedding(&conn, &over.id, "model-a", 2, &[1.0, 0.0]).unwrap();
+    store_embedding(&conn, &newcomer.id, "model-a", 2, &[1.0, 0.0]).unwrap();
+    for i in 0..6 {
+        // Each dummy lives in its own namespace, so auto-link can never suggest
+        // them — to each other or to `over` — and only the pre-made links exist.
+        let dummy = remember_in(&conn, &format!("project:dummy-{i}"), &format!("dummy {i}"));
+        store_embedding(&conn, &dummy.id, "model-a", 2, &[0.0, 1.0]).unwrap();
+        repository::link(
+            &conn,
+            &LinkInput {
+                from_memory_id: over.id.clone(),
+                to_memory_id: dummy.id.clone(),
+                relationship: "auto:relates_to".into(),
+                metadata: serde_json::json!({}),
+            },
+        )
+        .unwrap();
+    }
+    assert_eq!(auto_link_degree(&conn, &over.id), 6);
+
+    let config = AutoLinkConfig {
+        enabled: true,
+        threshold: 0.5,
+        max_links_per_memory: 5,
+        ..Default::default()
+    };
+    let report = auto_link_batch(&conn, &SameVectorBackend, None, &config).unwrap();
+
+    assert_eq!(
+        report.links_created, 0,
+        "the newcomer's only similar candidate is over cap and must be skipped as a target"
+    );
+    assert_eq!(
+        auto_link_degree(&conn, &over.id),
+        6,
+        "an over-cap memory must not move: no new links out of it or into it"
+    );
+}
+
+#[test]
 fn auto_link_reports_unembeddable_memories_as_skipped_not_processed() {
     use clio_core::embeddings::{EmbeddingBackend, auto_link_batch};
     use clio_core::error::ClioError;

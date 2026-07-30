@@ -152,7 +152,7 @@ unless the app also implements their full validation and recovery workflows.
 | `enabled` | bool | `false` | Whether auto-link inference is active |
 | `threshold` | float | `0.80` | Cosine similarity threshold for linking |
 | `interval_secs` | int | `3600` | Seconds between inference passes |
-| `max_links_per_memory` | int | `3` | Maximum inferred links a memory may hold in **total**, not per pass. Bounds links *out of* a memory; recall walks edges both ways, so total degree can exceed it |
+| `max_links_per_memory` | int | `3` | Maximum inferred links a memory may hold in **total degree** — both directions, across all passes. A link is created only while both endpoints are below the cap; recall walks edges both ways, so total degree is what the cap must bound |
 | `batch_size` | int | `50` | Memories processed per pass |
 | `exclude_kinds` | string[] | `["receipt"]` | Memory kinds skipped as both source and target — see below |
 

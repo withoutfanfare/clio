@@ -19,9 +19,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `suggest_links` is unchanged for explicit callers; auto-linking uses a new
   `suggest_links_excluding_kinds`, which filters in SQL so excluded candidates
   cannot consume slots from the per-memory limit.
-- Corrected the `max_links_per_memory` documentation: it is a total per memory, not
-  a per-pass allowance, and it bounds outgoing links only — recall traverses edges
-  in both directions, so total degree can exceed it.
+- `max_links_per_memory` now bounds **total degree** — inferred links in both
+  directions — rather than outgoing links only. Recall traverses edges both ways,
+  so an inbound link costs recall exactly what an outbound one does, and the old
+  outgoing-only count let heavily-pointed-at memories grow without bound (observed
+  at total degree 23 against a configured cap of 5). A link is now created only
+  while both of its endpoints are below the cap; memories already over it gain
+  nothing further. Existing over-cap links are left in place.
 
 ### Added
 

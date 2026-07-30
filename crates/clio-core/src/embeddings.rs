@@ -860,15 +860,19 @@ pub fn suggest_links(
     threshold: f64,
     limit: u32,
 ) -> Result<Vec<(Memory, f64)>> {
-    suggest_links_excluding_kinds(conn, memory_id, backend, threshold, limit, &[])
+    suggest_links_excluding_kinds(conn, memory_id, backend, threshold, limit, &[], None)
 }
 
 /// As [`suggest_links`], but skips candidates whose `kind` appears in
-/// `exclude_kinds`.
+/// `exclude_kinds`, and — when `max_target_degree` is set — candidates already
+/// holding that many inferred links in total.
 ///
-/// Auto-linking uses this to keep boilerplate kinds out of the graph, while an
-/// explicit `suggest-links` request still sees every candidate — a person asking
-/// for suggestions should not have results silently withheld.
+/// Auto-linking uses both filters: excluded kinds keep boilerplate out of the
+/// graph, and the degree filter stops at-cap candidates consuming `limit` slots —
+/// otherwise a newcomer to a saturated cluster has its whole suggestion budget
+/// eaten by memories it is not allowed to link to, and connects to nothing. An
+/// explicit `suggest-links` request passes neither: a person asking for
+/// suggestions should not have results silently withheld.
 pub fn suggest_links_excluding_kinds(
     conn: &Connection,
     memory_id: &str,
@@ -876,6 +880,7 @@ pub fn suggest_links_excluding_kinds(
     threshold: f64,
     limit: u32,
     exclude_kinds: &[String],
+    max_target_degree: Option<u32>,
 ) -> Result<Vec<(Memory, f64)>> {
     // Get the embedding for the target memory (generate if needed).
     let target_embedding =
@@ -917,6 +922,20 @@ pub fn suggest_links_excluding_kinds(
         format!(" AND m.kind NOT IN ({})", placeholders.join(", "))
     };
 
+    // Numbered after the kind placeholders, matching the binding order below.
+    let degree_cap = max_target_degree.map(i64::from);
+    let degree_filter = if degree_cap.is_some() {
+        format!(
+            " AND (SELECT COUNT(*) FROM memory_links l
+               WHERE l.relationship = '{AUTO_LINK_RELATIONSHIP}'
+                 AND (l.from_memory_id = e.memory_id OR l.to_memory_id = e.memory_id)
+             ) < ?{}",
+            5 + exclude_kinds.len()
+        )
+    } else {
+        String::new()
+    };
+
     let sql = format!(
         "SELECT e.memory_id, e.embedding
          FROM memory_embeddings e
@@ -931,7 +950,7 @@ pub fn suggest_links_excluding_kinds(
                SELECT to_memory_id FROM memory_links WHERE from_memory_id = ?1
                UNION
                SELECT from_memory_id FROM memory_links WHERE to_memory_id = ?1
-           ){kind_filter}"
+           ){kind_filter}{degree_filter}"
     );
     // prepare_cached: this runs once per memory in the auto-link loop, and the SQL
     // varies only with the number of excluded kinds, so the cache hits every time.
@@ -943,6 +962,9 @@ pub fn suggest_links_excluding_kinds(
         vec![&memory_id, &model_name, &dimensions, &source_namespace];
     for kind in exclude_kinds {
         bindings.push(kind);
+    }
+    if let Some(ref cap) = degree_cap {
+        bindings.push(cap);
     }
 
     let rows = stmt.query_map(bindings.as_slice(), |row| {
@@ -1006,11 +1028,15 @@ pub struct AutoLinkReport {
 /// removed without touching deliberate ones.
 pub const AUTO_LINK_RELATIONSHIP: &str = "auto:relates_to";
 
-/// Count the inferred links already leaving a memory, so `max_links_per_memory` can
-/// be enforced as a total rather than as a fresh allowance on every timed run.
+/// Count the inferred links touching a memory in either direction, so
+/// `max_links_per_memory` bounds total degree — what actually governs how much
+/// context a recall pulls in, since recall walks edges both ways. Counting only
+/// outgoing links let a memory that many others point at grow without bound
+/// (observed at total degree 23 against a configured cap of 5).
 fn count_auto_links(conn: &Connection, memory_id: &str) -> Result<u32> {
     let count: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM memory_links WHERE from_memory_id = ?1 AND relationship = ?2",
+        "SELECT COUNT(*) FROM memory_links
+         WHERE (from_memory_id = ?1 OR to_memory_id = ?1) AND relationship = ?2",
         rusqlite::params![memory_id, AUTO_LINK_RELATIONSHIP],
         |row| row.get(0),
     )?;
@@ -1148,11 +1174,11 @@ pub fn auto_link_batch(
             continue;
         }
 
-        // `max_links_per_memory` is a total, not a per-run allowance. This loop runs
-        // on a timer, so requesting the full quota every pass let auto-links
-        // accumulate without bound — memories were observed holding 17 of them
-        // against a configured 3. Budget against what already exists, and skip a
-        // memory that is already at its cap.
+        // `max_links_per_memory` is a total-degree bound, not a per-run allowance.
+        // This loop runs on a timer, so requesting the full quota every pass let
+        // auto-links accumulate without bound — memories were observed holding 17
+        // against a configured 3. Budget against what already exists (in both
+        // directions), and skip a memory that is already at its cap.
         let existing_auto_links = count_auto_links(conn, memory_id).unwrap_or(0);
         let remaining = config
             .max_links_per_memory
@@ -1163,7 +1189,8 @@ pub fn auto_link_batch(
             continue;
         }
 
-        // Find similar memories above threshold.
+        // Find similar memories above threshold. At-cap candidates are filtered
+        // in SQL so they cannot consume suggestion slots from `remaining`.
         match suggest_links_excluding_kinds(
             conn,
             memory_id,
@@ -1171,9 +1198,18 @@ pub fn auto_link_batch(
             config.threshold,
             remaining,
             &config.exclude_kinds,
+            Some(config.max_links_per_memory),
         ) {
             Ok(suggestions) => {
                 for (target_memory, _similarity) in suggestions {
+                    // A link raises the target's degree too. The suggestion query
+                    // already filters at-cap targets; re-check here because links
+                    // created earlier in this same pass can move a target to its
+                    // cap after the query ran.
+                    let target_degree = count_auto_links(conn, &target_memory.id).unwrap_or(0);
+                    if target_degree >= config.max_links_per_memory {
+                        continue;
+                    }
                     let link_input = crate::models::LinkInput {
                         from_memory_id: memory_id.clone(),
                         to_memory_id: target_memory.id.clone(),
@@ -1370,10 +1406,12 @@ mod tests {
     }
 
     #[test]
-    fn auto_link_count_ignores_human_links_and_other_sources() {
-        // The per-memory cap is a total across timed runs, so it is budgeted against
-        // links that already exist. Counting the wrong things would either exhaust a
-        // memory's quota with deliberate links or let inferred ones grow unbounded.
+    fn auto_link_count_ignores_human_links_and_counts_both_directions() {
+        // The per-memory cap is a total-degree budget across timed runs, so it is
+        // counted against inferred links in BOTH directions — recall walks edges
+        // both ways, so an inbound link costs recall exactly what an outbound one
+        // does. Human links must never count, or deliberate curation would exhaust
+        // a memory's inference quota.
         let conn = crate::db::open_in_memory().unwrap();
         let a = insert_memory(&conn, "source memory");
         let b = insert_memory(&conn, "target one");
@@ -1383,15 +1421,19 @@ mod tests {
         add_link(&conn, &a.id, &b.id, AUTO_LINK_RELATIONSHIP);
         add_link(&conn, &a.id, &c.id, AUTO_LINK_RELATIONSHIP);
         add_link(&conn, &a.id, &d.id, "relates_to"); // human link, must not count
-        add_link(&conn, &d.id, &b.id, AUTO_LINK_RELATIONSHIP); // different source
+        add_link(&conn, &d.id, &b.id, AUTO_LINK_RELATIONSHIP); // inbound for b
 
         assert_eq!(
             count_auto_links(&conn, &a.id).unwrap(),
             2,
-            "only inferred links leaving this memory count toward its cap",
+            "inferred links count toward the cap; the human link must not",
         );
         assert_eq!(count_auto_links(&conn, &d.id).unwrap(), 1);
-        assert_eq!(count_auto_links(&conn, &b.id).unwrap(), 0);
+        assert_eq!(
+            count_auto_links(&conn, &b.id).unwrap(),
+            2,
+            "inbound inferred links count toward total degree",
+        );
     }
 
     #[test]
@@ -1414,16 +1456,9 @@ mod tests {
         assert_eq!(config.max_links_per_memory, 3, "other defaults still apply");
     }
 
-    #[test]
-    fn remaining_budget_never_underflows_when_already_over_cap() {
-        // Existing data already exceeds the cap (memories were observed with 17
-        // links against a configured 3), so the subtraction must saturate rather
-        // than wrap into a huge allowance.
-        let cap: u32 = 3;
-        assert_eq!(cap.saturating_sub(17), 0);
-        assert_eq!(cap.saturating_sub(3), 0);
-        assert_eq!(cap.saturating_sub(1), 2);
-    }
+    // The cap itself (budgeting, saturation on over-cap data, target-side
+    // enforcement) is tested through `auto_link_batch` in tests/integration.rs —
+    // a unit test here could only re-assert the standard library.
 
     #[test]
     fn encode_decode_round_trip() {
