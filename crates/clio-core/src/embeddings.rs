@@ -963,11 +963,28 @@ pub struct AutoLinkReport {
     pub last_watermark: Option<String>,
 }
 
+/// Relationship recorded for links inferred from embedding similarity. The prefix
+/// keeps them distinguishable from links a human created, so they can be audited or
+/// removed without touching deliberate ones.
+pub const AUTO_LINK_RELATIONSHIP: &str = "auto:relates_to";
+
+/// Count the inferred links already leaving a memory, so `max_links_per_memory` can
+/// be enforced as a total rather than as a fresh allowance on every timed run.
+fn count_auto_links(conn: &Connection, memory_id: &str) -> Result<u32> {
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM memory_links WHERE from_memory_id = ?1 AND relationship = ?2",
+        rusqlite::params![memory_id, AUTO_LINK_RELATIONSHIP],
+        |row| row.get(0),
+    )?;
+    Ok(count.max(0) as u32)
+}
+
 /// Run a batch of automatic link inference.
 ///
 /// Processes memories updated since `since` (or all if None), generates
 /// embeddings if missing, finds similar memories above the threshold, and
-/// creates links with the "auto:relates_to" relationship.
+/// creates links with the [`AUTO_LINK_RELATIONSHIP`] relationship, up to
+/// `max_links_per_memory` in total per memory across all runs.
 ///
 /// Unembedded memories are batch-fetched and batch-embedded in a single pass
 /// to avoid N sequential round-trips to the embedding backend.
@@ -1074,20 +1091,29 @@ pub fn auto_link_batch(
             continue;
         }
 
+        // `max_links_per_memory` is a total, not a per-run allowance. This loop runs
+        // on a timer, so requesting the full quota every pass let auto-links
+        // accumulate without bound — memories were observed holding 17 of them
+        // against a configured 3. Budget against what already exists, and skip a
+        // memory that is already at its cap.
+        let existing_auto_links = count_auto_links(conn, memory_id).unwrap_or(0);
+        let remaining = config
+            .max_links_per_memory
+            .saturating_sub(existing_auto_links);
+        if remaining == 0 {
+            last_watermark = Some(updated_at.clone());
+            memories_processed += 1;
+            continue;
+        }
+
         // Find similar memories above threshold.
-        match suggest_links(
-            conn,
-            memory_id,
-            backend,
-            config.threshold,
-            config.max_links_per_memory,
-        ) {
+        match suggest_links(conn, memory_id, backend, config.threshold, remaining) {
             Ok(suggestions) => {
                 for (target_memory, _similarity) in suggestions {
                     let link_input = crate::models::LinkInput {
                         from_memory_id: memory_id.clone(),
                         to_memory_id: target_memory.id.clone(),
-                        relationship: "auto:relates_to".to_string(),
+                        relationship: AUTO_LINK_RELATIONSHIP.to_string(),
                         metadata: serde_json::json!({}),
                     };
                     match crate::repository::link(conn, &link_input) {
@@ -1240,6 +1266,75 @@ pub fn list_embeddings_needing_refresh(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn insert_memory(conn: &Connection, content: &str) -> crate::models::Memory {
+        let input = crate::models::RememberInput {
+            namespace: "project:test".into(),
+            kind: "note".into(),
+            title: Some("t".into()),
+            summary: None,
+            content: content.into(),
+            tags: vec![],
+            source: None,
+            source_ref: None,
+            confidence: None,
+            importance: 3,
+            metadata: serde_json::json!({}),
+            valid_from: None,
+            valid_until: None,
+            upsert: false,
+        };
+        crate::repository::remember(conn, &input, &crate::settings::Settings::default()).unwrap()
+    }
+
+    fn add_link(conn: &Connection, from: &str, to: &str, relationship: &str) {
+        crate::repository::link(
+            conn,
+            &crate::models::LinkInput {
+                from_memory_id: from.to_string(),
+                to_memory_id: to.to_string(),
+                relationship: relationship.to_string(),
+                metadata: serde_json::json!({}),
+            },
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn auto_link_count_ignores_human_links_and_other_sources() {
+        // The per-memory cap is a total across timed runs, so it is budgeted against
+        // links that already exist. Counting the wrong things would either exhaust a
+        // memory's quota with deliberate links or let inferred ones grow unbounded.
+        let conn = crate::db::open_in_memory().unwrap();
+        let a = insert_memory(&conn, "source memory");
+        let b = insert_memory(&conn, "target one");
+        let c = insert_memory(&conn, "target two");
+        let d = insert_memory(&conn, "unrelated source");
+
+        add_link(&conn, &a.id, &b.id, AUTO_LINK_RELATIONSHIP);
+        add_link(&conn, &a.id, &c.id, AUTO_LINK_RELATIONSHIP);
+        add_link(&conn, &a.id, &d.id, "relates_to"); // human link, must not count
+        add_link(&conn, &d.id, &b.id, AUTO_LINK_RELATIONSHIP); // different source
+
+        assert_eq!(
+            count_auto_links(&conn, &a.id).unwrap(),
+            2,
+            "only inferred links leaving this memory count toward its cap",
+        );
+        assert_eq!(count_auto_links(&conn, &d.id).unwrap(), 1);
+        assert_eq!(count_auto_links(&conn, &b.id).unwrap(), 0);
+    }
+
+    #[test]
+    fn remaining_budget_never_underflows_when_already_over_cap() {
+        // Existing data already exceeds the cap (memories were observed with 17
+        // links against a configured 3), so the subtraction must saturate rather
+        // than wrap into a huge allowance.
+        let cap: u32 = 3;
+        assert_eq!(cap.saturating_sub(17), 0);
+        assert_eq!(cap.saturating_sub(3), 0);
+        assert_eq!(cap.saturating_sub(1), 2);
+    }
 
     #[test]
     fn encode_decode_round_trip() {

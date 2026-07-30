@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+### Fixed
+
+**Auto-link cap and dry-run namespaces (2026-07-30)**
+- `daemon.auto_link.max_links_per_memory` is now a total per memory rather than a
+  fresh allowance on every timed run. The auto-linker requested the full quota each
+  pass, so inferred links accumulated without bound — memories were observed holding
+  17 against a configured 3. The budget is now computed against existing inferred
+  links, and a memory already at its cap is skipped.
+- `capture --dry-run` and `distill --dry-run` report the namespace a memory would
+  actually be stored under, instead of the model's raw suggestion which storage
+  overrides. `distill`'s text output now shows the namespace, which it never did.
+  `resolve_distill_namespace` is public so the preview reuses the storage rule
+  rather than reimplementing it.
+- Added `AUTO_LINK_RELATIONSHIP` so the `auto:relates_to` marker is defined once.
+
 **Prompt cache visibility (2026-07-30)**
 - Capture usage now records `cached_input_tokens` from the provider's
   `prompt_tokens_details.cached_tokens`, surfaced by `--metrics` and included in the
