@@ -462,6 +462,38 @@ Complete this after an Atlas or client release:
 - [ ] The optional app, if installed, passes `codesign --verify --deep --strict`.
 - [ ] No background build, development server or unexpected service remains.
 
+## Scheduled work on Atlas and its liveness signal
+
+Two cron entries run as `ubuntu`. Both are hand-installed and are **not yet managed
+by Ansible**, which matters because Ansible already owns part of this crontab — see
+roadmap item CLIO-OPS-003.
+
+| When | Command | Log |
+|---|---|---|
+| `:17` hourly | `clio auto-link` | `~/.local/share/clio/auto-link.log` |
+| `:47` hourly | `clio-healthcheck` | `~/.local/share/clio/healthcheck.log` |
+
+Auto-linking runs from the CLI rather than the daemon, so `atlas-release.sh` keeps it
+current: a separately installed daemon would drift out of step, which is how link
+inference came to be dead for roughly a week in July 2026 without anyone noticing.
+
+`clio-healthcheck` exists because of that incident. It checks that auto-link has run
+recently, that **its own cron entry still exists**, that SQLite integrity passes, that
+live-memory and link counts are non-zero, and — where a capture spool is present — that
+nothing has dead-lettered and the queue is draining.
+
+It is silent when healthy and alerts to Slack **only on a state change**, so a
+persistent fault does not repeat hourly and recovery is reported once. The webhook
+lives in `~/.config/clio/alerting.env` at mode `0600` and is read by the script; it is
+never passed on a command line. Send a deliberate test with:
+
+```sh
+clio-healthcheck --test
+```
+
+Alerts currently go to a shared alerts channel borrowed from another application.
+CLIO-OPS-006 covers moving Clio onto its own channel.
+
 ## Backup gap
 
 The deployment backup currently remains on Atlas. It protects against a bad
