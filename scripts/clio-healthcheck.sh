@@ -27,7 +27,10 @@ CLIO_AUTOLINK_LOG="${CLIO_AUTOLINK_LOG:-$DB_DIR/auto-link.log}"
 CLIO_AUTOLINK_MAX_AGE="${CLIO_AUTOLINK_MAX_AGE:-7800}"
 CLIO_STATE_FILE="${CLIO_STATE_FILE:-$DB_DIR/healthcheck-state}"
 CLIO_ALERT_ENV_FILE="${CLIO_ALERT_ENV_FILE:-$HOME/.config/clio/alerting.env}"
-CLIO_SPOOL="${CLIO_SPOOL:-$HOME/Library/Application Support/clio/capture-spool}"
+# The capture spool exists only on capture clients (the hook scripts write it, at a
+# macOS path); hosts that merely hold the database — Atlas — have none, and section
+# 4 self-skips there by design. CLIO_CAPTURE_SPOOL matches the hooks' own override.
+CLIO_SPOOL="${CLIO_SPOOL:-${CLIO_CAPTURE_SPOOL:-$HOME/Library/Application Support/clio/capture-spool}}"
 
 problems=()
 
@@ -35,6 +38,9 @@ if [[ -z "${CLIO_SLACK_WEBHOOK:-}" && -r "$CLIO_ALERT_ENV_FILE" ]]; then
   # shellcheck disable=SC1090
   . "$CLIO_ALERT_ENV_FILE"
 fi
+# The env file may assign without `export`, which sets a shell variable the
+# python child in notify() cannot see. Export whatever we ended up with.
+[[ -z "${CLIO_SLACK_WEBHOOK:-}" ]] || export CLIO_SLACK_WEBHOOK
 
 notify() { # notify <text>
   if [[ -z "${CLIO_SLACK_WEBHOOK:-}" ]]; then
@@ -71,13 +77,23 @@ fi
 # --- 1. Did the scheduled auto-link pass actually run? ---------------------------
 if [[ -f "$CLIO_AUTOLINK_LOG" ]]; then
   now="$(date +%s)"
-  mtime="$(date -r "$CLIO_AUTOLINK_LOG" +%s 2>/dev/null || stat -c %Y "$CLIO_AUTOLINK_LOG")"
-  age=$((now - mtime))
-  if [[ "$age" -gt "$CLIO_AUTOLINK_MAX_AGE" ]]; then
-    problems+=("auto-link has not run for $((age / 60)) minutes (limit $((CLIO_AUTOLINK_MAX_AGE / 60)))")
+  mtime="$(date -r "$CLIO_AUTOLINK_LOG" +%s 2>/dev/null || stat -c %Y "$CLIO_AUTOLINK_LOG" 2>/dev/null || true)"
+  if [[ -z "$mtime" ]]; then
+    problems+=("cannot read the auto-link log's mtime (date -r and stat -c both failed)")
+  else
+    age=$((now - mtime))
+    if [[ "$age" -gt "$CLIO_AUTOLINK_MAX_AGE" ]]; then
+      problems+=("auto-link has not run for $((age / 60)) minutes (limit $((CLIO_AUTOLINK_MAX_AGE / 60)))")
+    fi
   fi
-  if tail -5 "$CLIO_AUTOLINK_LOG" | grep -qiE "error|panic|failed"; then
-    problems+=("auto-link log shows errors: $(tail -2 "$CLIO_AUTOLINK_LOG" | tr '\n' ' ' | cut -c1-160)")
+  # Require the success signal rather than grepping for failure words: a run can
+  # fail without printing any of them (a missing binary, a whole batch skipped for
+  # want of embeddings), and error lines scroll out of any fixed tail window. Every
+  # healthy run ends with its summary line, so its absence at the end of the log IS
+  # the fault signal. Requires the cron entry to run plain `clio auto-link` (not
+  # --json) with stderr redirected into the log — see docs/operations/deployment.md.
+  if ! tail -1 "$CLIO_AUTOLINK_LOG" | grep -q "Auto-link complete"; then
+    problems+=("auto-link's last run did not finish cleanly: $(tail -2 "$CLIO_AUTOLINK_LOG" | tr '\n' ' ' | cut -c1-160)")
   fi
 else
   problems+=("auto-link log missing at $CLIO_AUTOLINK_LOG — has it ever run?")
@@ -128,8 +144,13 @@ fi
 host="$(hostname -s)"
 if [[ "${#problems[@]}" -eq 0 ]]; then
   if [[ -s "$CLIO_STATE_FILE" ]]; then
-    notify ":white_check_mark: Clio on ${host}: background work healthy again." || true
-    : > "$CLIO_STATE_FILE"
+    # Clear the state only when the recovery message was delivered, so a message
+    # lost to a transient webhook failure is retried on the next healthy run.
+    if notify ":white_check_mark: Clio on ${host}: background work healthy again."; then
+      : > "$CLIO_STATE_FILE"
+    else
+      echo "recovery notice FAILED to send; will retry next run" >&2
+    fi
   fi
   echo "healthy"
   exit 0
@@ -145,8 +166,13 @@ if [[ "$signature" != "$previous" ]]; then
   message=":rotating_light: *Clio background work is unhealthy* on \`${host}\`"$'\n'
   for p in "${problems[@]}"; do message+="• ${p}"$'\n'; done
   message+="_Silent failure is the failure mode here — auto-linking was dead for a week in July before anyone noticed._"
-  notify "$message" || true
-  printf '%s' "$signature" > "$CLIO_STATE_FILE"
+  # Record the state only when the alert was actually delivered: an undelivered
+  # alert recorded as sent would match every later run and never be heard.
+  if notify "$message"; then
+    printf '%s' "$signature" > "$CLIO_STATE_FILE"
+  else
+    echo "alert delivery FAILED; will retry next run" >&2
+  fi
 else
   echo "(already alerted for this state; not repeating)"
 fi

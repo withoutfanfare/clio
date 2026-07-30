@@ -473,6 +473,19 @@ roadmap item CLIO-OPS-003.
 | `:17` hourly | `clio auto-link` | `~/.local/share/clio/auto-link.log` |
 | `:47` hourly | `clio-healthcheck` | `~/.local/share/clio/healthcheck.log` |
 
+The canonical entries, with binary paths adjusted to the install locations:
+
+```cron
+17 * * * * $HOME/.cargo/bin/clio auto-link >> $HOME/.local/share/clio/auto-link.log 2>&1
+47 * * * * $HOME/bin/clio-healthcheck >> $HOME/.local/share/clio/healthcheck.log 2>&1
+```
+
+The `2>&1` on the auto-link entry is load-bearing: the CLI writes its summary and
+warnings to stderr, and the healthcheck decides "did the last run finish cleanly?"
+by requiring the summary line at the end of that log. Run it plain, not `--json`.
+`scripts/clio-healthcheck-selftest.sh` exercises the healthcheck's alert state
+machine (delivery failure, retry, dedup, recovery) against a local fake webhook.
+
 Auto-linking runs from the CLI rather than the daemon, so `atlas-release.sh` keeps it
 current: a separately installed daemon would drift out of step, which is how link
 inference came to be dead for roughly a week in July 2026 without anyone noticing.
