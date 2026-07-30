@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+**One namespace precedence for capture and distill (2026-07-30)**
+- `capture` now resolves namespaces through the same rule as `distill`: explicit
+  override → the model's `global` promotion → the working directory → the model's
+  suggestion. Previously the working directory silently overrode a model's `global`
+  promotion for `capture` only, so the same classification could land in different
+  namespaces depending on which command stored it. `capture --dry-run` reports the
+  model's raw `suggested_namespace` alongside the resolved one.
+
 **Auto-link excludes boilerplate kinds (2026-07-30)**
 - New `daemon.auto_link.exclude_kinds`, default `["receipt"]`: excluded kinds are
   skipped as both link source and link target. Measured on live data at threshold
@@ -42,6 +50,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   value for one run.
 
 ### Fixed
+
+**30 July review fixes (2026-07-30)**
+- `clio-healthcheck` no longer records an alert as sent when the Slack delivery
+  failed — a fault during a webhook outage was previously never reported at all.
+  It now also requires auto-link's success line at the end of the log instead of
+  grepping a five-line tail for failure words, which missed a dead binary and a
+  fully skipped batch. A self-test (`clio-healthcheck-selftest.sh`) drives the
+  alert state machine against a local fake webhook.
+- `clio auto-link` honours `daemon.auto_link.enabled` (with `--force` to
+  override), exits non-zero when memories were skipped because no embedding could
+  be produced instead of reporting a clean empty run, keeps walking the corpus
+  past a wholly skipped batch, and takes an advisory lock so the hourly cron pass
+  and a manual run cannot interleave. Link-write failures log at warn rather than
+  debug, so lock contention no longer looks like a quiet run.
+- Provider keys from the environment are trimmed before use (a trailing newline
+  from `KEY=$(cat file)` produced an opaque 401) and can no longer appear in
+  `Debug` output.
+- `dial-in.sh` asserts its relink the way it asserts its link-clear, copies
+  WAL-mode databases with `.backup` instead of `cp`, and `recall-eval.py` scores
+  its two arms as pairs, reports failed invocations, and refuses the live
+  database path. The recorded threshold/cap sweep is annotated with its measured
+  noise floor; the settings chosen from it are marked plausible, not confirmed.
 
 **Release drains MCP sessions (2026-07-30)**
 - `atlas-release.sh deploy` and `rollback` now send SIGTERM to lingering `clio-mcp`

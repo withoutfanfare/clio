@@ -377,7 +377,7 @@ The daemon runs a periodic background task that finds semantically similar memor
 | `enabled` | bool | — | whether auto-linking is active |
 | `threshold` | f64 | 0.80 | minimum cosine similarity to create a link |
 | `interval_secs` | u64 | 3600 | seconds between inference passes |
-| `max_links_per_memory` | usize | 3 | maximum auto-links created per memory per pass |
+| `max_links_per_memory` | usize | 3 | cap on a memory's **total auto-link degree** (both directions, cumulative across passes); links are created only while both endpoints are below it |
 | `batch_size` | usize | 50 | memories processed per pass |
 
 - Links are created with relationship `auto:relates_to`
