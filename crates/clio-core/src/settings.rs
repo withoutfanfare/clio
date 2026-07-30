@@ -53,13 +53,28 @@ pub struct AutoLinkConfig {
     #[serde(default = "default_auto_link_interval")]
     pub interval_secs: u64,
 
-    /// Max links to create per memory per pass.
+    /// Maximum inferred links a memory may hold in total, across all passes — not a
+    /// fresh allowance each pass. Note this bounds links *out of* a memory; because
+    /// recall walks edges in both directions, a memory that many others point at can
+    /// exceed this in total degree.
     #[serde(default = "default_auto_link_max")]
     pub max_links_per_memory: u32,
 
     /// Memories to process per pass.
     #[serde(default = "default_auto_link_batch")]
     pub batch_size: u32,
+
+    /// Memory kinds excluded from auto-linking, as both source and target.
+    ///
+    /// Defaults to `["receipt"]`. Receipts are per-session write-ups of what was
+    /// done; they share a great deal of boilerplate phrasing, so they attract each
+    /// other strongly on similarity while carrying little conceptual content.
+    /// Measured on live data at threshold 0.6, receipts averaged 4.86 links each
+    /// against 2.03 for `fact` — the most substantive kind was the least connected,
+    /// and receipts consumed roughly a third of all link mass. Excluding them keeps
+    /// the graph about ideas rather than about sessions.
+    #[serde(default = "default_auto_link_exclude_kinds")]
+    pub exclude_kinds: Vec<String>,
 }
 
 fn default_auto_link_threshold() -> f64 {
@@ -78,6 +93,10 @@ fn default_auto_link_batch() -> u32 {
     50
 }
 
+fn default_auto_link_exclude_kinds() -> Vec<String> {
+    vec!["receipt".to_string()]
+}
+
 impl Default for AutoLinkConfig {
     fn default() -> Self {
         Self {
@@ -86,6 +105,7 @@ impl Default for AutoLinkConfig {
             interval_secs: default_auto_link_interval(),
             max_links_per_memory: default_auto_link_max(),
             batch_size: default_auto_link_batch(),
+            exclude_kinds: default_auto_link_exclude_kinds(),
         }
     }
 }

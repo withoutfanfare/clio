@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+**Auto-link excludes boilerplate kinds (2026-07-30)**
+- New `daemon.auto_link.exclude_kinds`, default `["receipt"]`: excluded kinds are
+  skipped as both link source and link target. Measured on live data at threshold
+  0.6, receipts averaged 4.86 links each against 2.03 for `fact` — the most
+  substantive kind was the least connected, and 807 receipts consumed roughly a
+  third of all link mass, because session write-ups share phrasing and so attract
+  each other on similarity while carrying little conceptual content.
+- `suggest_links` is unchanged for explicit callers; auto-linking uses a new
+  `suggest_links_excluding_kinds`, which filters in SQL so excluded candidates
+  cannot consume slots from the per-memory limit.
+- Corrected the `max_links_per_memory` documentation: it is a total per memory, not
+  a per-pass allowance, and it bounds outgoing links only — recall traverses edges
+  in both directions, so total degree can exceed it.
+
 ### Added
 
 **Scheduled auto-linking (2026-07-30)**

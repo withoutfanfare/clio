@@ -152,8 +152,19 @@ unless the app also implements their full validation and recovery workflows.
 | `enabled` | bool | `false` | Whether auto-link inference is active |
 | `threshold` | float | `0.80` | Cosine similarity threshold for linking |
 | `interval_secs` | int | `3600` | Seconds between inference passes |
-| `max_links_per_memory` | int | `3` | Max links created per memory per pass |
+| `max_links_per_memory` | int | `3` | Maximum inferred links a memory may hold in **total**, not per pass. Bounds links *out of* a memory; recall walks edges both ways, so total degree can exceed it |
 | `batch_size` | int | `50` | Memories processed per pass |
+| `exclude_kinds` | string[] | `["receipt"]` | Memory kinds skipped as both source and target — see below |
+
+`exclude_kinds` keeps boilerplate out of the link graph. Receipts are per-session
+write-ups of what was done; they share a great deal of phrasing, so they attract
+each other on similarity while carrying little conceptual content. Measured on live
+data at threshold 0.6, receipts averaged 4.86 links each against 2.03 for `fact` —
+the most substantive kind was the least connected, and receipts accounted for
+roughly a third of all link mass.
+
+An explicit `clio suggest-links` request is unaffected and still considers every
+candidate: a person asking for suggestions should not have results withheld.
 
 ### daemon.maintenance
 

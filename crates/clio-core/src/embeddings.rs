@@ -860,6 +860,23 @@ pub fn suggest_links(
     threshold: f64,
     limit: u32,
 ) -> Result<Vec<(Memory, f64)>> {
+    suggest_links_excluding_kinds(conn, memory_id, backend, threshold, limit, &[])
+}
+
+/// As [`suggest_links`], but skips candidates whose `kind` appears in
+/// `exclude_kinds`.
+///
+/// Auto-linking uses this to keep boilerplate kinds out of the graph, while an
+/// explicit `suggest-links` request still sees every candidate — a person asking
+/// for suggestions should not have results silently withheld.
+pub fn suggest_links_excluding_kinds(
+    conn: &Connection,
+    memory_id: &str,
+    backend: &dyn EmbeddingBackend,
+    threshold: f64,
+    limit: u32,
+    exclude_kinds: &[String],
+) -> Result<Vec<(Memory, f64)>> {
     // Get the embedding for the target memory (generate if needed).
     let target_embedding =
         match get_stored_embedding(conn, memory_id, backend.model_name(), backend.dimensions())? {
@@ -888,7 +905,19 @@ pub fn suggest_links(
     // Find similar memories, excluding the source memory and any already linked
     // (in either direction). Filtering at the SQL level avoids pulling linked
     // rows into memory and decoding their embeddings.
-    let mut stmt = conn.prepare(
+    // Excluded kinds are filtered in SQL rather than after scoring, so they cannot
+    // consume slots from `limit` — which is applied further down, once candidates are
+    // ranked by similarity.
+    let kind_filter = if exclude_kinds.is_empty() {
+        String::new()
+    } else {
+        let placeholders: Vec<String> = (0..exclude_kinds.len())
+            .map(|i| format!("?{}", i + 5))
+            .collect();
+        format!(" AND m.kind NOT IN ({})", placeholders.join(", "))
+    };
+
+    let sql = format!(
         "SELECT e.memory_id, e.embedding
          FROM memory_embeddings e
          JOIN memories m ON m.id = e.memory_id
@@ -902,21 +931,23 @@ pub fn suggest_links(
                SELECT to_memory_id FROM memory_links WHERE from_memory_id = ?1
                UNION
                SELECT from_memory_id FROM memory_links WHERE to_memory_id = ?1
-           )",
-    )?;
-    let rows = stmt.query_map(
-        params![
-            memory_id,
-            backend.model_name(),
-            backend.dimensions() as i64,
-            source_namespace
-        ],
-        |row| {
-            let mid: String = row.get(0)?;
-            let blob: Vec<u8> = row.get(1)?;
-            Ok((mid, blob))
-        },
-    )?;
+           ){kind_filter}"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+
+    let dimensions = backend.dimensions() as i64;
+    let model_name = backend.model_name();
+    let mut bindings: Vec<&dyn rusqlite::ToSql> =
+        vec![&memory_id, &model_name, &dimensions, &source_namespace];
+    for kind in exclude_kinds {
+        bindings.push(kind);
+    }
+
+    let rows = stmt.query_map(bindings.as_slice(), |row| {
+        let mid: String = row.get(0)?;
+        let blob: Vec<u8> = row.get(1)?;
+        Ok((mid, blob))
+    })?;
 
     let mut candidates: Vec<(String, f64)> = Vec::new();
     for row_result in rows {
@@ -1082,6 +1113,24 @@ pub fn auto_link_batch(
     let mut last_watermark: Option<String> = None;
 
     for (memory_id, updated_at) in &candidates {
+        // Excluded kinds are skipped as sources as well as targets, so a boilerplate
+        // memory neither gathers links nor is gathered. Advance the watermark so the
+        // pass still makes progress past it.
+        if !config.exclude_kinds.is_empty() {
+            let kind: Option<String> = conn
+                .query_row(
+                    "SELECT kind FROM memories WHERE id = ?1",
+                    params![memory_id],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            if kind.is_some_and(|k| config.exclude_kinds.contains(&k)) {
+                last_watermark = Some(updated_at.clone());
+                memories_processed += 1;
+                continue;
+            }
+        }
+
         // Skip if embedding is still missing (e.g. both batch and fallback failed).
         if !has_embedding_for_space(conn, memory_id, backend.model_name(), backend.dimensions())
             .unwrap_or(false)
@@ -1107,7 +1156,14 @@ pub fn auto_link_batch(
         }
 
         // Find similar memories above threshold.
-        match suggest_links(conn, memory_id, backend, config.threshold, remaining) {
+        match suggest_links_excluding_kinds(
+            conn,
+            memory_id,
+            backend,
+            config.threshold,
+            remaining,
+            &config.exclude_kinds,
+        ) {
             Ok(suggestions) => {
                 for (target_memory, _similarity) in suggestions {
                     let link_input = crate::models::LinkInput {
@@ -1323,6 +1379,26 @@ mod tests {
         );
         assert_eq!(count_auto_links(&conn, &d.id).unwrap(), 1);
         assert_eq!(count_auto_links(&conn, &b.id).unwrap(), 0);
+    }
+
+    #[test]
+    fn excluded_kinds_default_to_receipts_only() {
+        // The default must exclude receipts, since that is the measured problem
+        // (mean degree 4.86 against 2.03 for `fact`), and must not quietly exclude
+        // anything else — dropping a substantive kind would lose real connections.
+        let config = crate::settings::AutoLinkConfig::default();
+        assert_eq!(config.exclude_kinds, vec!["receipt".to_string()]);
+    }
+
+    #[test]
+    fn exclude_kinds_survives_a_settings_file_written_before_the_field_existed() {
+        // Existing installs have no exclude_kinds key. Deserialising must fall back to
+        // the default rather than an empty list, or upgrading would silently keep
+        // linking receipts.
+        let json = r#"{"enabled": true, "threshold": 0.6}"#;
+        let config: crate::settings::AutoLinkConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.exclude_kinds, vec!["receipt".to_string()]);
+        assert_eq!(config.max_links_per_memory, 3, "other defaults still apply");
     }
 
     #[test]
