@@ -127,9 +127,11 @@ money — the discount is not the same across model families.
 
 The 29 July comparison judged namespace scoping from `--dry-run`, which at the time
 reported the **model's raw suggestion**. Storage does not use that value directly:
-`resolve_distill_namespace` applies explicit `--namespace` → the model's `"global"`
-promotion → the working directory's namespace → and only then the model's
-suggestion. In practice the working directory almost always wins.
+`resolve_namespace` (named `resolve_distill_namespace` when this was written; since
+30 July it is the shared rule for capture as well as distill) applies explicit
+`--namespace` → the model's `"global"` promotion → the working directory's
+namespace → and only then the model's suggestion. In practice the working
+directory almost always wins.
 
 So the differentiator the original decision leaned on — "Luna twice promoted every
 substantive-session memory to `global`; Terra kept the project decision scoped" —

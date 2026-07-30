@@ -107,7 +107,7 @@ Defaults defined in `crates/clio-core/src/settings.rs`. All four values are conf
 |---|---|---|
 | Batch size | 50 memories per pass | `daemon.auto_link.batch_size` |
 | Interval | 3,600 seconds (1 hour) | `daemon.auto_link.interval_secs` |
-| Max links per memory per pass | 3 | `daemon.auto_link.max_links_per_memory` |
+| Max auto-link degree per memory (total, both directions, cumulative across passes) | 3 | `daemon.auto_link.max_links_per_memory` |
 | Similarity threshold | 0.80 | `daemon.auto_link.threshold` |
 
 Auto-link inference is **disabled by default** (`daemon.auto_link.enabled = false`).
