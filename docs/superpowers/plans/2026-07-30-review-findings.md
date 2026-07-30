@@ -319,6 +319,17 @@ greater than the last because the query demands `updated_at > watermark`.
   They are not shown to be *wrong*, either; re-run with seeds and spread before
   tuning further.
 
+## Addendum — fixed the same day
+
+Everything below was addressed in commits `41cc054..ad75604` (see the Unreleased
+CHANGELOG for the user-facing summary). Deliberately not done: the seeded
+benchmark re-runs (the tools are fixed; the sweep itself is hours of compute and
+a separate decision), and any change to live machines — the fixed binaries and
+scripts take effect on the Mac and Atlas only when next built and deployed. The
+duplicate `has_embedding_for_space` call remains, per the project's rule against
+speculative performance work; the inbound-heavy rescan cost is resolved by the
+total-degree cap itself.
+
 ## Recommended fix order
 
 1. B1 — gate the state-file write on `notify` success (3 lines, closes the
