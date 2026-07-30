@@ -49,7 +49,7 @@ A two-repeat targeted rerun then produced:
 | GPT-5.6 Luna | All three in one run; all three still `global` in one run |
 | GPT-5.6 Terra | All three memories in both runs |
 
-## Decision
+## Decision (29 July 2026 — superseded, see below)
 
 Use **GPT-5.6 Terra** for shared Clio capture, distillation and consolidation.
 It matched GPT-4.1's namespace reliability in this corpus, used fewer output
@@ -60,3 +60,65 @@ absolute difference was under one cent.
 Do not switch to Luna until a representative rerun shows reliable project
 scoping. This baseline is deliberately small and synthetic; rerun it after a
 prompt change, model snapshot change, or material increase in Clio API spend.
+
+## Revision: GPT-4.1 (30 July 2026)
+
+The clause above — rerun after a material increase in spend — triggered the day
+after the baseline was set. Live volume turned out to be nothing like the ten
+synthetic calls: 119 distillations in a day, a 361-memory day, and 21
+consolidations against 1–4 on previous days. At that volume Terra's output price
+of $15/M against GPT-4.1's $8/M stopped being "under one cent".
+
+**The active capture model is now `gpt-4.1`.** The reasoning is cost at volume,
+not quality: this benchmark had already found GPT-4.1 namespace-reliable in both
+targeted runs, equal to Terra, so the property the original decision turned on is
+preserved. GPT-4.1's known cost is 40% more output tokens than Terra, which the
+lower output price more than offsets.
+
+What this revision did **not** do is rerun the five cases. The switch rests on the
+existing table, which is legitimate for GPT-4.1 because it was measured here — but
+it means no cheap model has been assessed. `gpt-4o-mini` in particular remains
+**unbenchmarked**, so it should not be adopted on price alone: namespace scoping is
+the property that separated these models, and nothing suggests a mini-class model
+holds it.
+
+Two things changed alongside the model, both of which alter the arithmetic for any
+future rerun:
+
+- Capture usage now records `cached_input_tokens`. The distillation system prompt is
+  a ~1,200-token stable prefix on every call — 34% of input, larger than the median
+  payload — so a rerun should compare cached versus uncached input, not just nominal
+  token counts.
+- `consolidate.auto_threshold` moved from 10 to 50. Consolidation sends up to
+  `MAX_INPUT_CHARS` (60,000 chars, ~15,000 tokens), so it was contributing on the
+  order of a third of total spend at the old threshold.
+
+Rerun the five cases including a cheap candidate before changing model again.
+
+## Prompt caching, measured (30 July 2026)
+
+Taken with `clio distill - --dry-run --metrics` against `gpt-4.1` on Atlas,
+repeating an identical payload back to back:
+
+| Total input tokens | Cached on first call | Cached on repeat |
+|---:|---:|---:|
+| 1,233 | 0 | 0 — never cached |
+| 2,875 | 0 | 2,688 (93%) |
+
+Caching populates on the first call and hits from the second, but only once total
+input clears roughly two thousand tokens; at 1,233 it never engaged, despite the
+provider's documented 1,024-token minimum. Treat ~2,000 as the practical floor.
+
+Two consequences:
+
+- **Do not shorten the distillation system prompt.** It is ~1,200 tokens, and with
+  the median digest at ~1,180 a typical call lands near 2,400 total — inside the
+  working range, so most of that prefix is billed at the reduced cached rate.
+  Trimming the prompt would drop calls under the floor and lose the discount on
+  everything, which costs more than the tokens saved.
+- **Compare cached and uncached input separately in any rerun.** Nominal token
+  counts overstate the cost of a large stable prefix. The first call of a session
+  cluster pays full price; the rest largely do not.
+
+Check the provider's current cached-input rate before turning these counts into
+money — the discount is not the same across model families.
