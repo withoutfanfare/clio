@@ -12,9 +12,13 @@ against a copy of a database and never modify live data.
 ## link-invariants.sh
 
 A regression test on controlled synthetic fixtures, using the production threshold
-and cap. Eight invariants: similar memories link, unrelated ones do not, links never
-cross a namespace, archived memories are never targets, the per-memory cap holds,
-every member of a cluster is reachable, and a second pass is idempotent.
+and cap. Thirteen checks: similar memories link, unrelated ones do not, links never
+cross a namespace, archived memories are never targets, an excluded kind links in
+neither direction, the total-degree cap holds **and provably binds** (the cluster
+is larger than the cap, so the assertions cannot pass with the cap logic deleted),
+every member of a cluster is reachable, a second pass is idempotent, a later pass
+against new similar memories breaches no cap, and a newcomer to a saturated
+cluster still connects to its under-cap members.
 
 ```sh
 scripts/bench/link-invariants.sh
@@ -36,9 +40,13 @@ adds to a brief, what fraction are relevant?** Above the chance baseline, links 
 contributing; at chance, they are padding briefs regardless of how tidy the graph is.
 
 ```sh
-cp "$LIVE_DB" /tmp/eval.db && cp settings.json /tmp/clio-settings.json
+sqlite3 "$LIVE_DB" ".backup /tmp/eval.db" && cp settings.json /tmp/clio-settings.json
 scripts/bench/recall-eval.py /tmp/eval.db 110
 ```
+
+Arms are scored as pairs (both invocations must succeed and return something) and
+failed invocations are counted and reported. The script refuses the live database
+path — briefs bump access counts, which are scoring inputs.
 
 Baseline recorded 2026-07-30 against 3,842 live memories at threshold 0.6, cap 5,
 receipts excluded:
@@ -70,6 +78,20 @@ Findings from 2026-07-30 (110 queries) that set the current configuration:
 threshold buys purer links but fewer of them and worse ranking; lowering it dilutes.
 On the cap at 0.60: 3 gave 58.7%/0.737, 5 gave 59.0%/0.749, and 8 gave 58.6%/0.749
 with 1,134 more links for no gain.
+
+**Noise floor — read before trusting any row above.** The 2026-07-30 run measured
+threshold 0.60 / cap 5 twice (once in each sweep) and got different answers: 59.6%
+precision / MRR 0.712 against 59.0% / 0.749. Same configuration, so that gap —
+0.6pp precision, 0.037 MRR — is run-to-run noise, and every difference the table
+was used to decide (0.60 vs 0.65 at 0.1pp; cap 3 vs 5 vs 8 spanning 0.4pp) sits
+inside it. The added-precision column, the figure this README calls decisive,
+rises monotonically with threshold and favours 0.65. The 0.70 sweep ran but was
+never recorded. The one conclusion outside the noise is negative: cap 8 buys ~1,100
+extra links for no measurable gain. Before treating any of these settings as
+chosen on evidence, re-run each configuration over at least three `CLIO_SEED`
+values and compare the spread to the differences; note also that these sweeps
+relink from empty (a single-pass cap), while production applies the cap
+cumulatively across timed runs.
 
 ## The caveat that applies to all of this
 
