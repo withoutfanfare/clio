@@ -49,8 +49,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `current` symlink does not affect a running process — it keeps the executable it
   already loaded — so a long-lived session previously served superseded code
   indefinitely, with the mismatch invisible from the client. Set
-  `CLIO_KEEP_MCP_SESSIONS=1` to opt out. No escalation to SIGKILL: a server mid-write
-  is left to finish rather than risk a torn operation.
+  `CLIO_KEEP_MCP_SESSIONS=1` to opt out. The match is exact on the process name and
+  scoped to the invoking user. Note SIGTERM here is an immediate termination —
+  `clio-mcp` installs no signal handler. The database stays consistent (WAL rollback,
+  and the OS releases the advisory lock), but a request in flight at that instant is
+  lost; its client sees a transport error and reconnects into the new release.
 
 **Auto-link cap and dry-run namespaces (2026-07-30)**
 - `daemon.auto_link.max_links_per_memory` is now a total per memory rather than a
