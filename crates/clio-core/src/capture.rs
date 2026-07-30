@@ -604,7 +604,13 @@ pub fn is_session_noise(title: &str) -> bool {
 /// `override_ns` (explicit `--namespace`) → the model's `"global"` promotion →
 /// `default_ns` (the working directory's namespace) → the model's suggestion.
 /// See [`distill_and_store`] for the rationale.
-pub(crate) fn resolve_distill_namespace(
+///
+/// Public so that preview paths (`--dry-run`) can report the namespace a memory
+/// would actually be stored under. Showing the model's raw suggestion instead
+/// misrepresents the outcome, because storage almost always overrides it — and a
+/// preview that disagrees with the real path is worse than no preview, since it
+/// invites conclusions about model behaviour that production does not exhibit.
+pub fn resolve_distill_namespace(
     override_ns: Option<&str>,
     llm_choice: &str,
     default_ns: Option<&str>,

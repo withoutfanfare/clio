@@ -2029,6 +2029,17 @@ fn cmd_capture(
     let elapsed_ms = started.elapsed().as_millis();
 
     if args.dry_run {
+        // Match what storing would do: an explicit --namespace, else the working
+        // directory's namespace, else the model's suggestion. Previewing the raw
+        // suggestion misreports where the memory would land.
+        let mut classification = classification;
+        if let Some(resolved) = args
+            .namespace
+            .clone()
+            .or_else(|| s.context.auto_detect.then(current_namespace).flatten())
+        {
+            classification.namespace = resolved;
+        }
         if json {
             let output = if args.metrics {
                 serde_json::json!({
@@ -2175,8 +2186,21 @@ fn cmd_distill(
 
     if args.dry_run {
         let started = std::time::Instant::now();
-        let (memories, usage) = clio_core::capture::distill_with_usage(&text, &capture_config)?;
+        let (mut memories, usage) = clio_core::capture::distill_with_usage(&text, &capture_config)?;
         let elapsed_ms = started.elapsed().as_millis();
+
+        // Report the namespace each memory would actually be stored under, not the
+        // model's raw suggestion — storage applies the same resolution, so a
+        // preview showing the unresolved value invites false conclusions about
+        // where memories land.
+        let default_namespace = s.context.auto_detect.then(current_namespace).flatten();
+        for m in &mut memories {
+            m.namespace = clio_core::capture::resolve_distill_namespace(
+                args.namespace.as_deref(),
+                &m.namespace,
+                default_namespace.as_deref(),
+            );
+        }
         if json {
             let output = if args.metrics {
                 serde_json::json!({
@@ -2194,7 +2218,10 @@ fn cmd_distill(
         } else {
             eprintln!("Dry run — {} memory(ies) distilled:", memories.len());
             for m in &memories {
-                eprintln!("  [{}] {} (importance {})", m.kind, m.title, m.importance);
+                eprintln!(
+                    "  [{}] {} (importance {}, namespace {})",
+                    m.kind, m.title, m.importance, m.namespace
+                );
             }
         }
         if args.metrics && !json {

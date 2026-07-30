@@ -122,3 +122,25 @@ Two consequences:
 
 Check the provider's current cached-input rate before turning these counts into
 money — the discount is not the same across model families.
+
+## Correction: the namespace findings above graded unresolved output
+
+The 29 July comparison judged namespace scoping from `--dry-run`, which at the time
+reported the **model's raw suggestion**. Storage does not use that value directly:
+`resolve_distill_namespace` applies explicit `--namespace` → the model's `"global"`
+promotion → the working directory's namespace → and only then the model's
+suggestion. In practice the working directory almost always wins.
+
+So the differentiator the original decision leaned on — "Luna twice promoted every
+substantive-session memory to `global`; Terra kept the project decision scoped" —
+was measuring something production largely discards. A model naming
+`project:wrong-guess` and a model naming `project:right-guess` are stored
+identically when a working-directory namespace is available. Only `"global"`
+promotion genuinely survives, because it is honoured ahead of the default.
+
+`--dry-run` now resolves the namespace the same way storage does, so a future rerun
+grades what would actually be stored. The narrower question a rerun should ask is
+whether a model over- or under-uses `"global"`, since that is the one namespace
+decision the model still controls.
+
+This does not change the GPT-4.1 decision, which rests on cost at volume.
