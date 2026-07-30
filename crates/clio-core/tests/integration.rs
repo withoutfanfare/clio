@@ -2822,6 +2822,141 @@ fn suggest_links_stays_in_namespace_and_skips_hidden_candidates() {
     );
 }
 
+/// Count auto-links touching a memory in either direction.
+fn auto_link_degree(conn: &rusqlite::Connection, id: &str) -> i64 {
+    conn.query_row(
+        "SELECT COUNT(*) FROM memory_links
+         WHERE (from_memory_id = ?1 OR to_memory_id = ?1) AND relationship = 'auto:relates_to'",
+        [id],
+        |r| r.get(0),
+    )
+    .unwrap()
+}
+
+#[test]
+fn auto_link_skips_multiple_excluded_kinds_as_source_and_target() {
+    use clio_core::embeddings::{EmbeddingBackend, auto_link_batch, store_embedding};
+    use clio_core::settings::AutoLinkConfig;
+
+    struct SameVectorBackend;
+    impl EmbeddingBackend for SameVectorBackend {
+        fn model_name(&self) -> &str {
+            "model-a"
+        }
+        fn dimensions(&self) -> usize {
+            2
+        }
+        fn embed_one(&self, _text: &str) -> clio_core::error::Result<Vec<f32>> {
+            Ok(vec![1.0, 0.0])
+        }
+        fn embed_batch(&self, texts: &[String]) -> clio_core::error::Result<Vec<Vec<f32>>> {
+            Ok(texts.iter().map(|_| vec![1.0, 0.0]).collect())
+        }
+    }
+
+    let conn = test_db();
+    let note_a = remember_in(&conn, "project:x", "connection pooling enabled for the api");
+    let note_b = remember_in(&conn, "project:x", "pooling switched on for postgres connections");
+    let receipt = repository::remember(
+        &conn,
+        &RememberInput {
+            namespace: "project:x".into(),
+            kind: "receipt".into(),
+            ..base_input("session receipt describing the pooling work")
+        },
+        &Settings::default(),
+    )
+    .unwrap();
+    let summary = repository::remember(
+        &conn,
+        &RememberInput {
+            namespace: "project:x".into(),
+            kind: "summary".into(),
+            ..base_input("session summary describing the pooling work")
+        },
+        &Settings::default(),
+    )
+    .unwrap();
+
+    for m in [&note_a, &note_b, &receipt, &summary] {
+        store_embedding(&conn, &m.id, "model-a", 2, &[1.0, 0.0]).unwrap();
+    }
+
+    // Two excluded kinds, so the dynamically numbered placeholders (?5, ?6) are
+    // both exercised — the case the hand-numbering could get wrong.
+    let config = AutoLinkConfig {
+        enabled: true,
+        threshold: 0.5,
+        max_links_per_memory: 10,
+        exclude_kinds: vec!["receipt".into(), "summary".into()],
+        ..Default::default()
+    };
+    let report = auto_link_batch(&conn, &SameVectorBackend, None, &config).unwrap();
+
+    assert_eq!(
+        report.memories_processed, 4,
+        "excluded kinds are passed over but still count as processed"
+    );
+    assert_eq!(report.memories_skipped, 0);
+    assert!(report.links_created > 0, "the two notes should link");
+    assert!(auto_link_degree(&conn, &note_a.id) > 0);
+    assert_eq!(
+        auto_link_degree(&conn, &receipt.id),
+        0,
+        "an excluded kind must not link in either direction"
+    );
+    assert_eq!(
+        auto_link_degree(&conn, &summary.id),
+        0,
+        "an excluded kind must not link in either direction"
+    );
+}
+
+#[test]
+fn auto_link_reports_unembeddable_memories_as_skipped_not_processed() {
+    use clio_core::embeddings::{EmbeddingBackend, auto_link_batch};
+    use clio_core::error::ClioError;
+    use clio_core::settings::AutoLinkConfig;
+
+    struct FailingBackend;
+    impl EmbeddingBackend for FailingBackend {
+        fn model_name(&self) -> &str {
+            "model-a"
+        }
+        fn dimensions(&self) -> usize {
+            2
+        }
+        fn embed_one(&self, _text: &str) -> clio_core::error::Result<Vec<f32>> {
+            Err(ClioError::Storage("backend down".into()))
+        }
+        fn embed_batch(&self, _texts: &[String]) -> clio_core::error::Result<Vec<Vec<f32>>> {
+            Err(ClioError::Storage("backend down".into()))
+        }
+    }
+
+    let conn = test_db();
+    remember_in(&conn, "project:x", "first memory with no embedding");
+    remember_in(&conn, "project:x", "second memory with no embedding");
+
+    let config = AutoLinkConfig {
+        enabled: true,
+        threshold: 0.5,
+        ..Default::default()
+    };
+    let report = auto_link_batch(&conn, &FailingBackend, None, &config).unwrap();
+
+    // The driver distinguishes "corpus finished" (processed == 0 AND skipped == 0)
+    // from "backend broken" (skipped > 0), and must be able to keep walking past a
+    // broken batch — so the watermark still advances.
+    assert_eq!(report.memories_processed, 0);
+    assert_eq!(report.memories_skipped, 2);
+    assert_eq!(report.links_created, 0);
+    assert!(
+        report.last_watermark.is_some(),
+        "watermark advances past unembeddable memories"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Occurrences through the checkpoint path (Task 9)
 // ---------------------------------------------------------------------------

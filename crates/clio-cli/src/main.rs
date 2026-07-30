@@ -648,6 +648,12 @@ struct AutoLinkArgs {
     /// `daemon.auto_link.threshold`.
     #[arg(long)]
     threshold: Option<f64>,
+
+    /// Run even when `daemon.auto_link.enabled` is false. Without this, a machine
+    /// with auto-linking switched off refuses to write links — e.g. a secondary
+    /// copy of a shared database that must not diverge from the primary.
+    #[arg(long)]
+    force: bool,
 }
 
 #[derive(Parser)]
@@ -3192,7 +3198,6 @@ fn cmd_auto_link(
     args: AutoLinkArgs,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let path = resolve_db_path(db_path)?;
-    let conn = db::open(&path)?;
     let s = settings::load(&path)?;
 
     let mut config = s.daemon.auto_link.clone();
@@ -3200,11 +3205,29 @@ fn cmd_auto_link(
         config.threshold = threshold;
     }
 
+    // The daemon honours this switch; a one-shot run must too, or "disabled"
+    // machines (e.g. a secondary copy of a shared database) silently diverge.
+    if !config.enabled && !args.force {
+        return Err(format!(
+            "auto-link is disabled on this machine (daemon.auto_link.enabled = false in {}). \
+             Pass --force to run anyway.",
+            settings::settings_path(&path).display(),
+        )
+        .into());
+    }
+
+    // One run at a time: the hourly cron pass has unbounded runtime, and an
+    // overlapping second pass loses its link writes to SQLITE_BUSY, which looks
+    // like a clean run that created nothing.
+    let _lock = acquire_auto_link_lock(&path)?;
+
+    let conn = db::open(&path)?;
     let backend = embeddings::create_backend(&s.embeddings)?;
     let mut watermark = args.since.clone();
     let mut passes: u32 = 0;
     let mut total_processed: u64 = 0;
     let mut total_links: u64 = 0;
+    let mut total_skipped: u64 = 0;
 
     loop {
         let report =
@@ -3212,11 +3235,16 @@ fn cmd_auto_link(
         passes += 1;
         total_processed += u64::from(report.memories_processed);
         total_links += u64::from(report.links_created);
+        total_skipped += u64::from(report.memories_skipped);
 
-        if report.memories_processed == 0 {
+        // Stop only when a pass saw nothing at all. A batch that was wholly
+        // skipped (no embeddings could be produced) still advanced the
+        // watermark, and stopping there would silently abandon the rest of
+        // the corpus.
+        if report.memories_processed == 0 && report.memories_skipped == 0 {
             break;
         }
-        // A pass that processed memories but did not move the watermark cannot make
+        // A pass that saw memories but did not move the watermark cannot make
         // further progress, and repeating it would loop forever.
         match report.last_watermark {
             Some(next) if Some(&next) != watermark.as_ref() => watermark = Some(next),
@@ -3231,6 +3259,7 @@ fn cmd_auto_link(
                 "passes": passes,
                 "memories_processed": total_processed,
                 "links_created": total_links,
+                "memories_skipped": total_skipped,
                 "last_watermark": watermark,
                 "threshold": config.threshold,
                 "max_links_per_memory": config.max_links_per_memory,
@@ -3244,6 +3273,50 @@ fn cmd_auto_link(
             total_processed, passes, total_links, config.threshold, config.max_links_per_memory,
         );
     }
+
+    // Fail loudly after reporting: a skipped memory means no embedding could be
+    // produced for it, and a run that shrugs that off exits 0 with nothing linked
+    // — indistinguishable from health to anything watching the exit code.
+    if total_skipped > 0 {
+        return Err(format!(
+            "{total_skipped} memory(ies) skipped because no embedding could be produced; \
+             the embedding backend may be broken — see warnings above."
+        )
+        .into());
+    }
+    Ok(())
+}
+
+/// Hold an exclusive advisory lock for the duration of an auto-link run, so the
+/// hourly cron pass and a manual run cannot interleave. Released when the
+/// returned handle drops, including on panic or process exit.
+#[cfg(unix)]
+fn acquire_auto_link_lock(
+    db_path: &std::path::Path,
+) -> Result<std::fs::File, Box<dyn std::error::Error>> {
+    use std::os::unix::io::AsRawFd;
+    let lock_path = format!("{}.auto-link.lock", db_path.display());
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .open(&lock_path)?;
+    // SAFETY: flock on a file descriptor this process owns; the OS releases the
+    // lock when the descriptor closes.
+    let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+    if rc != 0 {
+        return Err(format!(
+            "another auto-link run already holds {lock_path}; not starting a second — \
+             overlapping passes contend for the same rows."
+        )
+        .into());
+    }
+    Ok(file)
+}
+
+#[cfg(not(unix))]
+fn acquire_auto_link_lock(
+    _db_path: &std::path::Path,
+) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 

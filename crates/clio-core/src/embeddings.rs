@@ -933,7 +933,9 @@ pub fn suggest_links_excluding_kinds(
                SELECT from_memory_id FROM memory_links WHERE to_memory_id = ?1
            ){kind_filter}"
     );
-    let mut stmt = conn.prepare(&sql)?;
+    // prepare_cached: this runs once per memory in the auto-link loop, and the SQL
+    // varies only with the number of excluded kinds, so the cache hits every time.
+    let mut stmt = conn.prepare_cached(&sql)?;
 
     let dimensions = backend.dimensions() as i64;
     let model_name = backend.model_name();
@@ -991,6 +993,11 @@ pub fn suggest_links_excluding_kinds(
 pub struct AutoLinkReport {
     pub memories_processed: u32,
     pub links_created: u32,
+    /// Memories passed over because no embedding could be produced for them.
+    /// Kept distinct from `memories_processed` so a driver can fail loudly on a
+    /// broken embedding backend instead of mistaking it for a finished corpus.
+    #[serde(default)]
+    pub memories_skipped: u32,
     pub last_watermark: Option<String>,
 }
 
@@ -1025,8 +1032,11 @@ pub fn auto_link_batch(
     since: Option<&str>,
     config: &crate::settings::AutoLinkConfig,
 ) -> Result<AutoLinkReport> {
-    // Query memories updated since the watermark.
-    let mut sql = String::from("SELECT id, updated_at FROM memories WHERE archived_at IS NULL");
+    // Query memories updated since the watermark. `id` breaks timestamp ties so
+    // the processing order — and therefore the resulting link graph — is
+    // reproducible from the same data and settings.
+    let mut sql =
+        String::from("SELECT id, updated_at, kind FROM memories WHERE archived_at IS NULL");
     let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
 
     if let Some(watermark) = since {
@@ -1035,7 +1045,7 @@ pub fn auto_link_batch(
         param_values.push(Box::new(watermark.to_string()));
     }
 
-    sql.push_str(" ORDER BY updated_at ASC");
+    sql.push_str(" ORDER BY updated_at ASC, id ASC");
     let idx = param_values.len() + 1;
     sql.push_str(&format!(" LIMIT ?{idx}"));
     param_values.push(Box::new(config.batch_size));
@@ -1047,16 +1057,18 @@ pub fn auto_link_batch(
     let rows = stmt.query_map(param_refs.as_slice(), |row| {
         let id: String = row.get(0)?;
         let updated_at: String = row.get(1)?;
-        Ok((id, updated_at))
+        let kind: String = row.get(2)?;
+        Ok((id, updated_at, kind))
     })?;
 
-    let candidates: Vec<(String, String)> = rows.collect::<std::result::Result<Vec<_>, _>>()?;
+    let candidates: Vec<(String, String, String)> =
+        rows.collect::<std::result::Result<Vec<_>, _>>()?;
 
     // --- Batch embed unembedded candidates ---
     // Collect IDs that lack embeddings.
     let unembedded_ids: Vec<String> = candidates
         .iter()
-        .filter_map(|(id, _)| {
+        .filter_map(|(id, _, _)| {
             match has_embedding_for_space(conn, id, backend.model_name(), backend.dimensions()) {
                 Ok(false) => Some(id.clone()),
                 _ => None,
@@ -1110,33 +1122,29 @@ pub fn auto_link_batch(
     // --- Link inference ---
     let mut memories_processed: u32 = 0;
     let mut links_created: u32 = 0;
+    let mut memories_skipped: u32 = 0;
     let mut last_watermark: Option<String> = None;
 
-    for (memory_id, updated_at) in &candidates {
+    for (memory_id, updated_at, kind) in &candidates {
         // Excluded kinds are skipped as sources as well as targets, so a boilerplate
         // memory neither gathers links nor is gathered. Advance the watermark so the
         // pass still makes progress past it.
-        if !config.exclude_kinds.is_empty() {
-            let kind: Option<String> = conn
-                .query_row(
-                    "SELECT kind FROM memories WHERE id = ?1",
-                    params![memory_id],
-                    |row| row.get(0),
-                )
-                .optional()?;
-            if kind.is_some_and(|k| config.exclude_kinds.contains(&k)) {
-                last_watermark = Some(updated_at.clone());
-                memories_processed += 1;
-                continue;
-            }
+        if config.exclude_kinds.contains(kind) {
+            last_watermark = Some(updated_at.clone());
+            memories_processed += 1;
+            continue;
         }
 
         // Skip if embedding is still missing (e.g. both batch and fallback failed).
+        // Counted as skipped, not processed: a whole batch of these means the
+        // embedding backend is broken, and a driver must be able to tell that
+        // apart from an exhausted corpus.
         if !has_embedding_for_space(conn, memory_id, backend.model_name(), backend.dimensions())
             .unwrap_or(false)
         {
             tracing::warn!(memory_id, "auto-link: skipping — no embedding available");
             last_watermark = Some(updated_at.clone());
+            memories_skipped += 1;
             continue;
         }
 
@@ -1175,10 +1183,13 @@ pub fn auto_link_batch(
                     match crate::repository::link(conn, &link_input) {
                         Ok(_) => links_created += 1,
                         Err(e) => {
-                            tracing::debug!(
+                            // warn, not debug: a run of these (SQLITE_BUSY from a
+                            // concurrent pass) is the only symptom of contention,
+                            // and the CLI's default filter hides debug output.
+                            tracing::warn!(
                                 from = memory_id,
                                 to = target_memory.id,
-                                "auto-link: skipped ({})",
+                                "auto-link: link not created ({})",
                                 e
                             );
                         }
@@ -1197,12 +1208,14 @@ pub fn auto_link_batch(
     tracing::info!(
         memories_processed,
         links_created,
+        memories_skipped,
         "auto-link batch complete"
     );
 
     Ok(AutoLinkReport {
         memories_processed,
         links_created,
+        memories_skipped,
         last_watermark,
     })
 }

@@ -51,10 +51,11 @@ pub async fn run(
 
                 match result {
                     Ok(Ok(report)) => {
-                        if report.memories_processed > 0 {
+                        if report.memories_processed > 0 || report.memories_skipped > 0 {
                             tracing::info!(
                                 processed = report.memories_processed,
                                 links = report.links_created,
+                                skipped = report.memories_skipped,
                                 "auto-link pass complete"
                             );
                         } else {
