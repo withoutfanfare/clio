@@ -3310,6 +3310,7 @@ fn acquire_auto_link_lock(
     let lock_path = format!("{}.auto-link.lock", db_path.display());
     let file = std::fs::OpenOptions::new()
         .create(true)
+        .truncate(false) // the file carries no content; only the flock matters
         .write(true)
         .open(&lock_path)?;
     // SAFETY: flock on a file descriptor this process owns; the OS releases the
