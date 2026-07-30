@@ -416,12 +416,23 @@ pub const CLIO_API_KEY_ENV: &str = "OPENAI_API_KEY_CLIO";
 pub const SHARED_API_KEY_ENV: &str = "OPENAI_API_KEY";
 
 /// Which environment variable supplied a key.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub enum EnvKeySource {
     /// From `OPENAI_API_KEY_CLIO` — the preferred, attributable key.
     Clio(String),
     /// From `OPENAI_API_KEY` — shared with other tools on the machine.
     Shared(String),
+}
+
+/// Hand-written so a `{:?}` in a log or error can never print the key itself —
+/// the derive would.
+impl std::fmt::Debug for EnvKeySource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Clio(_) => write!(f, "EnvKeySource::Clio(<redacted>)"),
+            Self::Shared(_) => write!(f, "EnvKeySource::Shared(<redacted>)"),
+        }
+    }
 }
 
 impl EnvKeySource {
@@ -439,7 +450,14 @@ impl EnvKeySource {
 /// process environment is global, and mutating it inside Rust's parallel test
 /// runner makes results depend on test ordering.
 fn pick_env_key(clio: Option<String>, shared: Option<String>) -> Option<EnvKeySource> {
-    let non_empty = |value: Option<String>| value.filter(|v| !v.trim().is_empty());
+    // Trim what we return, not just what we test: `KEY=$(cat file)` leaves a
+    // trailing newline, and a key sent with stray whitespace fails at the
+    // provider as an opaque 401.
+    let non_empty = |value: Option<String>| {
+        value
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty())
+    };
     match (non_empty(clio), non_empty(shared)) {
         (Some(key), _) => Some(EnvKeySource::Clio(key)),
         (None, Some(key)) => Some(EnvKeySource::Shared(key)),
@@ -665,6 +683,27 @@ mod tests {
         );
         assert_eq!(pick_env_key(Some(String::new()), None), None);
         assert_eq!(pick_env_key(None, None), None);
+    }
+
+    #[test]
+    fn keys_are_trimmed_before_use() {
+        // `KEY=$(cat file)` leaves a trailing newline; sent verbatim it fails at
+        // the provider as an opaque 401.
+        assert_eq!(
+            pick_env_key(Some("  the-key\n".into()), None),
+            Some(EnvKeySource::Clio("the-key".into())),
+        );
+    }
+
+    #[test]
+    fn debug_output_never_contains_the_key() {
+        let debug = format!(
+            "{:?} {:?}",
+            EnvKeySource::Clio("sk-secret-value".into()),
+            EnvKeySource::Shared("sk-secret-value".into()),
+        );
+        assert!(!debug.contains("secret"), "Debug must redact: {debug}");
+        assert!(debug.contains("redacted"));
     }
 
     #[test]
