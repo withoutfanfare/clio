@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+**Attributable provider keys (2026-07-30)**
+- `OPENAI_API_KEY_CLIO` is now preferred over the shared `OPENAI_API_KEY` wherever a
+  provider key falls back to the environment (capture/distillation, OpenAI embeddings,
+  auto-title). Resolution order is `api_key` in settings, then `OPENAI_API_KEY_CLIO`,
+  then `OPENAI_API_KEY`.
+- Falling back to the shared key logs a warning naming the caller, so a key reused
+  across tools — which makes per-application billing attribution impossible — is
+  visible rather than silent. Existing installs continue to work unchanged.
+- A variable exported as an empty string is treated as absent, so a blank export falls
+  through instead of sending an unauthenticated request.
+
 **Dependable Workflow Memory (2026-07-29)**
 - Exact-once session checkpoints (`clio checkpoint`, MCP `memory_session_checkpoint`, migration `009_session_checkpoints`): a session delta commits atomically under `source + session + cursor`; retries replay the stored result instead of duplicating atoms, and an empty extraction is a successful checkpoint.
 - Follow-up attention lifecycle (`clio action`, MCP `memory_action`, migration `010_attention_and_events`): open/snoozed/resolved/cancelled items with due/reminder/trigger/waiting context, machine-readable eligibility reasons, evidence-backed completion via `resolved_by` links, and an append-only `memory_events` ledger with idempotency keys.

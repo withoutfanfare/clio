@@ -229,16 +229,17 @@ pub fn classify_with_usage(
     Ok((parse_classification(&response.content)?, response.usage))
 }
 
-/// Resolve the API key from config or the `OPENAI_API_KEY` environment variable.
+/// Resolve the API key from config, then `OPENAI_API_KEY_CLIO`, then the shared
+/// `OPENAI_API_KEY`.
 #[cfg(feature = "capture")]
 fn resolve_api_key(config: &CaptureConfig) -> Result<String> {
     match &config.api_key {
         Some(key) if !key.is_empty() => Ok(key.clone()),
-        _ => std::env::var("OPENAI_API_KEY").map_err(|_| {
-            ClioError::Config(
-                "capture API key required: set OPENAI_API_KEY or configure capture.api_key in settings"
-                    .into(),
-            )
+        _ => crate::settings::api_key_from_env("capture").ok_or_else(|| {
+            ClioError::Config(format!(
+                "capture API key required: set {} or configure capture.api_key in settings",
+                crate::settings::CLIO_API_KEY_ENV
+            ))
         }),
     }
 }

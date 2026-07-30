@@ -31,7 +31,8 @@ pub enum EmbeddingConfig {
     /// OpenAI API embeddings.
     #[serde(rename = "openai")]
     OpenAi {
-        /// API key. If absent, reads from OPENAI_API_KEY env var.
+        /// API key. If absent, reads OPENAI_API_KEY_CLIO, then the shared
+        /// OPENAI_API_KEY (with a warning).
         #[serde(default)]
         api_key: Option<String>,
         /// Model to use. Default: "text-embedding-3-small".
@@ -186,11 +187,11 @@ impl OpenAiBackend {
     pub fn new(api_key: Option<&str>, model: &str, base_url: Option<&str>) -> Result<Self> {
         let api_key = match api_key {
             Some(key) if !key.is_empty() => key.to_string(),
-            _ => std::env::var("OPENAI_API_KEY").map_err(|_| {
-                ClioError::Config(
-                    "OpenAI API key required: set OPENAI_API_KEY or configure api_key in settings"
-                        .into(),
-                )
+            _ => crate::settings::api_key_from_env("openai embeddings").ok_or_else(|| {
+                ClioError::Config(format!(
+                    "OpenAI API key required: set {} or configure api_key in settings",
+                    crate::settings::CLIO_API_KEY_ENV
+                ))
             })?,
         };
 

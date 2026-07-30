@@ -896,7 +896,8 @@ enum SettingsSubcommand {
 
     /// Set the embedding provider to "openai".
     UseOpenai {
-        /// OpenAI API key. If omitted, OPENAI_API_KEY env var will be used at runtime.
+        /// OpenAI API key. If omitted, OPENAI_API_KEY_CLIO is used at runtime,
+        /// falling back to the shared OPENAI_API_KEY with a warning.
         #[arg(long)]
         api_key: Option<String>,
 

@@ -383,6 +383,68 @@ fn default_true() -> bool {
     true
 }
 
+/// Environment variable holding a Clio-specific provider key. Preferred over the
+/// shared key so Clio's spend lands on its own key and can be attributed in
+/// provider billing without every other tool on the machine sharing one key.
+pub const CLIO_API_KEY_ENV: &str = "OPENAI_API_KEY_CLIO";
+
+/// The shared provider key. Still honoured, so existing installs keep working,
+/// but falling back to it is warned about: a key shared across tools makes
+/// per-application cost attribution impossible, and the reuse is otherwise
+/// invisible.
+pub const SHARED_API_KEY_ENV: &str = "OPENAI_API_KEY";
+
+/// Which environment variable supplied a key.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EnvKeySource {
+    /// From `OPENAI_API_KEY_CLIO` — the preferred, attributable key.
+    Clio(String),
+    /// From `OPENAI_API_KEY` — shared with other tools on the machine.
+    Shared(String),
+}
+
+impl EnvKeySource {
+    /// The key itself, regardless of which variable held it.
+    pub fn into_key(self) -> String {
+        match self {
+            Self::Clio(key) | Self::Shared(key) => key,
+        }
+    }
+}
+
+/// Choose between a Clio-specific and a shared key, preferring the former.
+///
+/// Kept free of environment access so the precedence rule is testable: the
+/// process environment is global, and mutating it inside Rust's parallel test
+/// runner makes results depend on test ordering.
+fn pick_env_key(clio: Option<String>, shared: Option<String>) -> Option<EnvKeySource> {
+    let non_empty = |value: Option<String>| value.filter(|v| !v.trim().is_empty());
+    match (non_empty(clio), non_empty(shared)) {
+        (Some(key), _) => Some(EnvKeySource::Clio(key)),
+        (None, Some(key)) => Some(EnvKeySource::Shared(key)),
+        (None, None) => None,
+    }
+}
+
+/// Read a provider key from the environment, preferring `OPENAI_API_KEY_CLIO`.
+///
+/// `purpose` names the caller (for example "capture") so the warning about
+/// falling back to the shared key says which part of Clio it applies to.
+pub fn api_key_from_env(purpose: &str) -> Option<String> {
+    let source = pick_env_key(
+        std::env::var(CLIO_API_KEY_ENV).ok(),
+        std::env::var(SHARED_API_KEY_ENV).ok(),
+    )?;
+    if matches!(source, EnvKeySource::Shared(_)) {
+        tracing::warn!(
+            "{purpose}: using the shared {SHARED_API_KEY_ENV}, which other tools \
+             also use — provider billing cannot attribute this spend to Clio. \
+             Set {CLIO_API_KEY_ENV} to a Clio-only key."
+        );
+    }
+    Some(source.into_key())
+}
+
 impl Default for Settings {
     fn default() -> Self {
         Self {
@@ -408,7 +470,7 @@ impl Settings {
             .api_key
             .clone()
             .or_else(|| self.capture.api_key.clone())
-            .or_else(|| std::env::var("OPENAI_API_KEY").ok())
+            .or_else(|| api_key_from_env("auto-title"))
     }
 
     /// Resolve the base URL for auto-title, falling back to capture config.
@@ -552,6 +614,36 @@ mod tests {
     fn older_settings_default_to_local_mode() {
         let settings: Settings = serde_json::from_str("{}").unwrap();
         assert!(settings.remote.is_none());
+    }
+
+    #[test]
+    fn clio_specific_key_wins_over_the_shared_one() {
+        assert_eq!(
+            pick_env_key(Some("clio-key".into()), Some("shared-key".into())),
+            Some(EnvKeySource::Clio("clio-key".into())),
+        );
+    }
+
+    #[test]
+    fn shared_key_is_used_but_flagged_as_shared() {
+        assert_eq!(
+            pick_env_key(None, Some("shared-key".into())),
+            Some(EnvKeySource::Shared("shared-key".into())),
+            "existing installs must keep working, but the source is distinguishable \
+             so the caller can warn",
+        );
+    }
+
+    #[test]
+    fn blank_keys_are_treated_as_absent() {
+        // A variable exported as "" is a common shell accident; taking it as a key
+        // sends an unauthenticated request instead of falling through.
+        assert_eq!(
+            pick_env_key(Some("   ".into()), Some("shared-key".into())),
+            Some(EnvKeySource::Shared("shared-key".into())),
+        );
+        assert_eq!(pick_env_key(Some(String::new()), None), None);
+        assert_eq!(pick_env_key(None, None), None);
     }
 
     #[test]

@@ -31,7 +31,7 @@ Three variants (tagged by `provider`):
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `provider` | string | `"openai"` | Backend type |
-| `api_key` | string? | `null` | API key (falls back to `OPENAI_API_KEY` env var) |
+| `api_key` | string? | `null` | API key (falls back to the environment — see [API key resolution](#api-key-resolution)) |
 | `model` | string | `"text-embedding-3-small"` | Model name (1,536 dimensions) |
 | `base_url` | string? | `null` | Optional base URL override for proxies |
 
@@ -57,10 +57,29 @@ repeat it with an appropriate `--batch-size` until every memory is refreshed.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `enabled` | bool | `false` | Whether the capture pipeline is active |
-| `api_key` | string? | `null` | OpenAI-compatible API key |
+| `api_key` | string? | `null` | OpenAI-compatible API key (falls back to the environment — see [API key resolution](#api-key-resolution)) |
 | `base_url` | string | `"https://api.openai.com/v1"` | API endpoint |
 | `model` | string | `"gpt-4o-mini"` | Classification model |
 | `review_threshold` | float? | `null` | Confidence below this routes to review queue; `null` disables review |
+
+## API key resolution
+
+Every setting that takes an `api_key` resolves it in this order, using the first
+value that is present and not blank:
+
+1. The `api_key` in settings.
+2. `OPENAI_API_KEY_CLIO` — a key used only by Clio.
+3. `OPENAI_API_KEY` — the shared key, **with a warning** on stderr.
+
+Prefer `OPENAI_API_KEY_CLIO`. A key shared with other tools cannot be attributed
+in provider billing, so there is no way to tell what Clio itself is costing. Step
+3 exists so existing installs keep working; the warning names the caller
+(`capture`, `openai embeddings`, `auto-title`) so it is clear which part of Clio
+reached for the shared key.
+
+A variable exported as an empty string is treated as absent rather than as a key,
+so a blank export falls through to the next step instead of sending an
+unauthenticated request.
 
 Change only the model, without replacing the API key or endpoint:
 

@@ -789,7 +789,7 @@ Capture is controlled by the `capture` section of `clio-settings.json`:
 | Field | Default | Notes |
 |---|---|---|
 | `enabled` | `false` | must be `true` for the tool to work |
-| `api_key` | null | falls back to `OPENAI_API_KEY` env var |
+| `api_key` | null | falls back to `OPENAI_API_KEY_CLIO`, then the shared `OPENAI_API_KEY` with a warning — see [settings](settings.md#api-key-resolution) |
 | `base_url` | `https://api.openai.com/v1` | override for proxies or compatible APIs |
 | `model` | `gpt-4o-mini` | any OpenAI-compatible chat model |
 
