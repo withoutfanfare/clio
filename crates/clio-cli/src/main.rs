@@ -151,6 +151,11 @@ enum Command {
     /// Suggest potential links based on embedding similarity.
     SuggestLinks(SuggestLinksArgs),
 
+    /// Run one auto-link inference pass, creating links between similar memories.
+    /// Intended for a scheduler (systemd timer, cron) as an alternative to running
+    /// the daemon.
+    AutoLink(AutoLinkArgs),
+
     /// Import memories from other AI tools (Claude, ChatGPT).
     Migrate(MigrateArgs),
 
@@ -629,6 +634,21 @@ struct SuggestLinksArgs {
     /// Maximum number of suggestions.
     #[arg(long, default_value_t = 5)]
     limit: u32,
+}
+
+#[derive(Parser)]
+struct AutoLinkArgs {
+    /// Only consider memories updated after this ISO-8601 timestamp. Omit to scan
+    /// every memory: the daemon keeps a watermark in memory between ticks, which a
+    /// one-shot run cannot, and a full scan is cheap because memories already at
+    /// `max_links_per_memory` are skipped before any similarity search.
+    #[arg(long)]
+    since: Option<String>,
+
+    /// Minimum similarity threshold. Defaults to the configured
+    /// `daemon.auto_link.threshold`.
+    #[arg(long)]
+    threshold: Option<f64>,
 }
 
 #[derive(Parser)]
@@ -1175,6 +1195,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         Command::Effectiveness(args) => cmd_effectiveness(cli.db_path.as_deref(), cli.json, args),
         Command::Activity(args) => cmd_activity(cli.db_path.as_deref(), cli.json, args),
         Command::SuggestLinks(args) => cmd_suggest_links(cli.db_path.as_deref(), cli.json, args),
+        Command::AutoLink(args) => cmd_auto_link(cli.db_path.as_deref(), cli.json, args),
         Command::Embed(args) => cmd_embed(cli.db_path.as_deref(), args),
         Command::Migrate(args) => cmd_migrate(cli.db_path.as_deref(), cli.json, args),
         Command::Settings(args) => cmd_settings(cli.db_path.as_deref(), cli.json, args),
@@ -3155,6 +3176,55 @@ fn cmd_suggest_links(
         print_suggestions(&suggestions);
     }
 
+    Ok(())
+}
+
+/// Run one auto-link inference pass.
+///
+/// The daemon holds its watermark in memory between ticks; a scheduled one-shot
+/// cannot, so this defaults to scanning every memory. That is affordable because
+/// `auto_link_batch` skips a memory already at `max_links_per_memory` before doing
+/// any similarity search — the expensive part only runs for memories with room for
+/// more links. Pass `--since` to narrow the scan if a full pass ever gets slow.
+fn cmd_auto_link(
+    db_path: Option<&str>,
+    json: bool,
+    args: AutoLinkArgs,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let path = resolve_db_path(db_path)?;
+    let conn = db::open(&path)?;
+    let s = settings::load(&path)?;
+
+    let mut config = s.daemon.auto_link.clone();
+    if let Some(threshold) = args.threshold {
+        config.threshold = threshold;
+    }
+
+    let backend = embeddings::create_backend(&s.embeddings)?;
+    let report =
+        embeddings::auto_link_batch(&conn, backend.as_ref(), args.since.as_deref(), &config)?;
+
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "memories_processed": report.memories_processed,
+                "links_created": report.links_created,
+                "last_watermark": report.last_watermark,
+                "threshold": config.threshold,
+                "max_links_per_memory": config.max_links_per_memory,
+            }))?
+        );
+    } else {
+        eprintln!(
+            "Auto-link pass: {} memory(ies) processed, {} link(s) created \
+             (threshold {}, cap {} per memory).",
+            report.memories_processed,
+            report.links_created,
+            config.threshold,
+            config.max_links_per_memory,
+        );
+    }
     Ok(())
 }
 

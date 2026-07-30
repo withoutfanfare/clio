@@ -9,7 +9,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+**Scheduled auto-linking (2026-07-30)**
+- New `clio auto-link` runs a single auto-link inference pass, so link inference can
+  be driven by a systemd timer or cron instead of requiring the daemon. Intended for
+  hosts that hold the shared database but run no daemon: the release process already
+  updates the `clio` binary, so a timer cannot drift out of step the way an
+  separately-installed daemon would.
+- Defaults to scanning every memory, because the daemon's in-memory watermark has no
+  equivalent in a one-shot run. This is affordable since a memory already at
+  `max_links_per_memory` is skipped before any similarity search; `--since` narrows
+  the scan if a full pass ever becomes slow. `--threshold` overrides the configured
+  value for one run.
+
 ### Fixed
+
+**Release drains MCP sessions (2026-07-30)**
+- `atlas-release.sh deploy` and `rollback` now send SIGTERM to lingering `clio-mcp`
+  processes so clients reconnect against the release just activated. Swapping the
+  `current` symlink does not affect a running process — it keeps the executable it
+  already loaded — so a long-lived session previously served superseded code
+  indefinitely, with the mismatch invisible from the client. Set
+  `CLIO_KEEP_MCP_SESSIONS=1` to opt out. No escalation to SIGKILL: a server mid-write
+  is left to finish rather than risk a torn operation.
 
 **Auto-link cap and dry-run namespaces (2026-07-30)**
 - `daemon.auto_link.max_links_per_memory` is now a total per memory rather than a
