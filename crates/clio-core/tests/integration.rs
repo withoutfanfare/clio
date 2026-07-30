@@ -1957,11 +1957,11 @@ fn capture_of_identical_content_does_not_duplicate() {
     };
 
     let first = stored_id(
-        capture_with_classification(&conn, body, &classification, None, &Settings::default())
+        capture_with_classification(&conn, body, &classification, None, None, &Settings::default())
             .unwrap(),
     );
     let second = stored_id(
-        capture_with_classification(&conn, body, &classification, None, &Settings::default())
+        capture_with_classification(&conn, body, &classification, None, None, &Settings::default())
             .unwrap(),
     );
 
@@ -1979,6 +1979,64 @@ fn capture_of_identical_content_does_not_duplicate() {
     )
     .unwrap();
     assert_eq!(res.total, 1, "no duplicate row should be created");
+}
+
+#[test]
+fn capture_and_distill_share_one_namespace_precedence() {
+    use clio_core::capture::{CaptureResult, ClassificationResult, capture_with_classification};
+
+    let conn = test_db();
+    let classify_into = |ns: &str, title: &str| ClassificationResult {
+        kind: "fact".into(),
+        title: title.into(),
+        summary: "s".into(),
+        tags: vec![],
+        namespace: ns.into(),
+        importance: 3,
+        confidence: 0.9,
+    };
+    let capture_into = |classification: &ClassificationResult,
+                        override_ns: Option<&str>,
+                        default_ns: Option<&str>|
+     -> String {
+        match capture_with_classification(
+            &conn,
+            &format!("body for {}", classification.title),
+            classification,
+            override_ns,
+            default_ns,
+            &Settings::default(),
+        )
+        .unwrap()
+        {
+            CaptureResult::Stored(m) => m.namespace,
+            CaptureResult::Queued(_) => panic!("expected Stored, got Queued"),
+        }
+    };
+
+    // The drift this guards against: capture once let the working directory
+    // override a model's `global` promotion while distill honoured it, so the
+    // same classification landed in different namespaces depending on which
+    // command stored it. Both now resolve through capture::resolve_namespace.
+    assert_eq!(
+        capture_into(&classify_into("global", "applies everywhere"), None, Some("project:cwd")),
+        "global",
+        "the model's global promotion must beat the working-directory default"
+    );
+    assert_eq!(
+        capture_into(&classify_into("project:model-idea", "project fact"), None, Some("project:cwd")),
+        "project:cwd",
+        "a non-global suggestion yields to the working directory"
+    );
+    assert_eq!(
+        capture_into(
+            &classify_into("global", "explicitly filed"),
+            Some("project:explicit"),
+            Some("project:cwd")
+        ),
+        "project:explicit",
+        "an explicit override beats everything, including a global promotion"
+    );
 }
 
 #[test]

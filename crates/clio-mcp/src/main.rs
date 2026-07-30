@@ -1871,11 +1871,11 @@ impl ClioServer {
         let settings = self.settings()?;
         tokio::task::spawn_blocking(move || {
             let conn = conn.lock().map_err(|e| format!("lock error: {e}"))?;
-            // Resolve namespace from cwd if not explicitly provided.
+            // The explicit namespace and the cwd-detected default stay separate:
+            // core resolves them with the same precedence as capture/distill
+            // everywhere else (override → model's global promotion → cwd → model).
             let cwd_path = params.cwd.as_deref().map(std::path::Path::new);
-            let ns_override = if params.namespace.is_some() {
-                params.namespace
-            } else if settings.context.auto_detect {
+            let default_ns = if settings.context.auto_detect {
                 params.clio_namespace.or_else(|| {
                     cwd_path
                         .and_then(clio_core::context::detect_namespace)
@@ -1889,7 +1889,8 @@ impl ClioServer {
                 &conn,
                 &params.text,
                 &settings.capture,
-                ns_override.as_deref(),
+                params.namespace.as_deref(),
+                default_ns.as_deref(),
                 &settings,
             )
             .map_err(|e| format_clio_error(&e))?;

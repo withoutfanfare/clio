@@ -175,6 +175,7 @@ async fn process_file(
                 &capture_content,
                 &capture_config,
                 None,
+                None,
                 &capture_settings,
             );
             (conn, result)

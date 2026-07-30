@@ -92,6 +92,14 @@ Auto-detection is controlled by `context.auto_detect` in settings (default `true
 
 Tools that accept `cwd`: `memory_remember`, `memory_recall`, `memory_capture`, `memory_search`, `memory_context`.
 
+**Exception — classified storage** (`memory_capture`, and distillation via
+`memory_session_checkpoint`): the model's classification may promote a memory to
+`global`, and that promotion ranks above the auto-detected `cwd` namespace:
+explicit `namespace` → model's `global` promotion → auto-detected from `cwd` →
+model's suggested namespace. This is one shared rule in core
+(`capture::resolve_namespace`) for every classified path, so capture and distill
+cannot disagree about where the same classification lands.
+
 ## Shared Types
 
 ### Memory record

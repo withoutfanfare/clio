@@ -412,6 +412,7 @@ pub async fn cmd_capture(
         &text,
         &app.settings.capture,
         namespace.as_deref(),
+        None,
         &app.settings,
     )?;
     Ok(result)

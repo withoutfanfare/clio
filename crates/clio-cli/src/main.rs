@@ -2054,28 +2054,35 @@ fn cmd_capture(
     let (classification, usage) = clio_core::capture::classify_with_usage(&text, &capture_config)?;
     let elapsed_ms = started.elapsed().as_millis();
 
+    // Same inputs for preview and storage: the explicit --namespace and the
+    // working directory's namespace, resolved by the shared core rule.
+    let default_ns = s.context.auto_detect.then(current_namespace).flatten();
+
     if args.dry_run {
-        // Match what storing would do: an explicit --namespace, else the working
-        // directory's namespace, else the model's suggestion. Previewing the raw
-        // suggestion misreports where the memory would land.
+        // Match what storing would do, via the same resolver storage uses.
+        // Previewing the raw suggestion misreports where the memory would land;
+        // the raw suggestion is still reported alongside, because it is the one
+        // namespace decision the model controls and would otherwise be
+        // unobservable when the working directory wins.
+        let suggested = classification.namespace.clone();
         let mut classification = classification;
-        if let Some(resolved) = args
-            .namespace
-            .clone()
-            .or_else(|| s.context.auto_detect.then(current_namespace).flatten())
-        {
-            classification.namespace = resolved;
-        }
+        classification.namespace = clio_core::capture::resolve_namespace(
+            args.namespace.as_deref(),
+            &suggested,
+            default_ns.as_deref(),
+        );
         if json {
+            let mut result = serde_json::to_value(&classification)?;
+            result["suggested_namespace"] = serde_json::Value::String(suggested.clone());
             let output = if args.metrics {
                 serde_json::json!({
                     "model": capture_config.model,
                     "elapsed_ms": elapsed_ms,
                     "usage": usage,
-                    "result": classification,
+                    "result": result,
                 })
             } else {
-                serde_json::to_value(&classification)?
+                result
             };
             println!("{}", serde_json::to_string_pretty(&output)?);
         } else {
@@ -2084,7 +2091,14 @@ fn cmd_capture(
             eprintln!("  title:      {}", classification.title);
             eprintln!("  summary:    {}", classification.summary);
             eprintln!("  tags:       {}", classification.tags.join(", "));
-            eprintln!("  namespace:  {}", classification.namespace);
+            if classification.namespace == suggested {
+                eprintln!("  namespace:  {}", classification.namespace);
+            } else {
+                eprintln!(
+                    "  namespace:  {} (model suggested {})",
+                    classification.namespace, suggested
+                );
+            }
             eprintln!("  importance: {}", classification.importance);
             eprintln!("  confidence: {:.2}", classification.confidence);
             if args.metrics {
@@ -2102,14 +2116,12 @@ fn cmd_capture(
         return Ok(());
     }
 
-    let namespace = args
-        .namespace
-        .or_else(|| s.context.auto_detect.then(current_namespace).flatten());
     let result = clio_core::capture::capture_with_classification(
         &conn,
         &text,
         &classification,
-        namespace.as_deref(),
+        args.namespace.as_deref(),
+        default_ns.as_deref(),
         &s,
     )?;
 
@@ -2221,7 +2233,7 @@ fn cmd_distill(
         // where memories land.
         let default_namespace = s.context.auto_detect.then(current_namespace).flatten();
         for m in &mut memories {
-            m.namespace = clio_core::capture::resolve_distill_namespace(
+            m.namespace = clio_core::capture::resolve_namespace(
                 args.namespace.as_deref(),
                 &m.namespace,
                 default_namespace.as_deref(),

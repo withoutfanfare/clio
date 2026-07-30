@@ -172,7 +172,7 @@ pub fn store_checkpoint(
                     classification.tags.push(tag);
                 }
             }
-            let namespace = crate::capture::resolve_distill_namespace(
+            let namespace = crate::capture::resolve_namespace(
                 req.namespace_override.as_deref(),
                 &classification.namespace,
                 req.default_namespace.as_deref(),

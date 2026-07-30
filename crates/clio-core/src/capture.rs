@@ -600,17 +600,23 @@ pub fn is_session_noise(title: &str) -> bool {
     NOISE_PHRASES.iter().any(|p| normalised.contains(p))
 }
 
-/// Resolve the namespace for a single distilled memory. Precedence:
+/// Resolve the namespace for a captured or distilled memory. Precedence:
 /// `override_ns` (explicit `--namespace`) → the model's `"global"` promotion →
 /// `default_ns` (the working directory's namespace) → the model's suggestion.
 /// See [`distill_and_store`] for the rationale.
+///
+/// The single resolver for every storage path — capture, distill, checkpoint —
+/// so the precedence cannot drift between them. It once did: capture let the
+/// working directory override a model's `global` promotion while distill
+/// honoured it, sending identical classifications to different namespaces
+/// depending on which command stored them.
 ///
 /// Public so that preview paths (`--dry-run`) can report the namespace a memory
 /// would actually be stored under. Showing the model's raw suggestion instead
 /// misrepresents the outcome, because storage almost always overrides it — and a
 /// preview that disagrees with the real path is worse than no preview, since it
 /// invites conclusions about model behaviour that production does not exhibit.
-pub fn resolve_distill_namespace(
+pub fn resolve_namespace(
     override_ns: Option<&str>,
     llm_choice: &str,
     default_ns: Option<&str>,
@@ -632,36 +638,53 @@ pub fn resolve_distill_namespace(
 
 /// Run the full capture pipeline: classify → route → store or queue.
 ///
-/// If `namespace_override` is provided it takes precedence over the LLM's
-/// suggestion. When `CaptureConfig::review_threshold` is set and the
-/// classification confidence falls below it, the item is routed to the
-/// review queue instead of being stored as a memory.
+/// Namespace precedence is [`resolve_namespace`]: an explicit override, else
+/// the model's `global` promotion, else `default_namespace` (the working
+/// directory), else the model's suggestion. When
+/// `CaptureConfig::review_threshold` is set and the classification confidence
+/// falls below it, the item is routed to the review queue instead of being
+/// stored as a memory.
 #[cfg(feature = "capture")]
 pub fn capture(
     conn: &rusqlite::Connection,
     text: &str,
     config: &CaptureConfig,
     namespace_override: Option<&str>,
+    default_namespace: Option<&str>,
     settings: &crate::settings::Settings,
 ) -> Result<CaptureResult> {
     let classification = classify(text, config)?;
-    capture_with_classification(conn, text, &classification, namespace_override, settings)
+    capture_with_classification(
+        conn,
+        text,
+        &classification,
+        namespace_override,
+        default_namespace,
+        settings,
+    )
 }
 
 /// Store a memory from a classification result, or route to the review
 /// queue if the confidence falls below the configured threshold.
 ///
 /// Separated out so that dry-run logic can call `classify` independently.
+/// Namespace precedence is [`resolve_namespace`] — the same rule as distill,
+/// deliberately: callers pass the explicit override and the working-directory
+/// default separately rather than pre-merging them, which is what previously
+/// let the two paths drift.
 pub fn capture_with_classification(
     conn: &rusqlite::Connection,
     text: &str,
     classification: &ClassificationResult,
     namespace_override: Option<&str>,
+    default_namespace: Option<&str>,
     settings: &crate::settings::Settings,
 ) -> Result<CaptureResult> {
-    let namespace = namespace_override
-        .map(String::from)
-        .unwrap_or_else(|| classification.namespace.clone());
+    let namespace = resolve_namespace(
+        namespace_override,
+        &classification.namespace,
+        default_namespace,
+    );
 
     store_or_queue(
         conn,
@@ -724,7 +747,7 @@ pub fn distill_and_store(
             importance: memory.importance,
             confidence: memory.confidence,
         };
-        let namespace = resolve_distill_namespace(
+        let namespace = resolve_namespace(
             namespace_override,
             &classification.namespace,
             default_namespace,
@@ -1184,7 +1207,7 @@ mod tests {
     #[test]
     fn resolve_namespace_explicit_override_always_wins() {
         assert_eq!(
-            resolve_distill_namespace(Some("project:x"), "global", Some("project:clio")),
+            resolve_namespace(Some("project:x"), "global", Some("project:clio")),
             "project:x"
         );
     }
@@ -1194,7 +1217,7 @@ mod tests {
         // The model promoted a cross-project fact; keep it global even though a
         // working-directory default is available.
         assert_eq!(
-            resolve_distill_namespace(None, "global", Some("project:clio")),
+            resolve_namespace(None, "global", Some("project:clio")),
             "global"
         );
     }
@@ -1203,7 +1226,7 @@ mod tests {
     fn resolve_namespace_default_overrides_llm_guess() {
         // The model guessed an unrelated project; the cwd namespace wins.
         assert_eq!(
-            resolve_distill_namespace(None, "project:notes", Some("project:clio")),
+            resolve_namespace(None, "project:notes", Some("project:clio")),
             "project:clio"
         );
     }
@@ -1211,7 +1234,7 @@ mod tests {
     #[test]
     fn resolve_namespace_falls_back_to_llm_when_no_default() {
         assert_eq!(
-            resolve_distill_namespace(None, "project:notes", None),
+            resolve_namespace(None, "project:notes", None),
             "project:notes"
         );
     }
