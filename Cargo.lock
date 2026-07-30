@@ -453,6 +453,7 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "clio-core",
+ "libc",
  "rusqlite",
  "serde",
  "serde_json",
