@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+**Prompt cache visibility (2026-07-30)**
+- Capture usage now records `cached_input_tokens` from the provider's
+  `prompt_tokens_details.cached_tokens`, surfaced by `--metrics` and included in the
+  JSON metrics output. The distillation system prompt is a ~1,200-token stable prefix
+  on every call, so whether it is being served from the provider's prompt cache is the
+  largest single influence on input cost — and was previously invisible. Providers that
+  do not report the field leave it at zero.
+
 **Attributable provider keys (2026-07-30)**
 - `OPENAI_API_KEY_CLIO` is now preferred over the shared `OPENAI_API_KEY` wherever a
   provider key falls back to the environment (capture/distillation, OpenAI embeddings,

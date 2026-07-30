@@ -2054,8 +2054,11 @@ fn cmd_capture(
                 eprintln!("  model:      {}", capture_config.model);
                 eprintln!("  latency:    {elapsed_ms} ms");
                 eprintln!(
-                    "  tokens:     {} input, {} output, {} reasoning",
-                    usage.input_tokens, usage.output_tokens, usage.reasoning_tokens
+                    "  tokens:     {} input ({} cached), {} output, {} reasoning",
+                    usage.input_tokens,
+                    usage.cached_input_tokens,
+                    usage.output_tokens,
+                    usage.reasoning_tokens
                 );
             }
         }
@@ -2198,8 +2201,11 @@ fn cmd_distill(
             eprintln!("  model:      {}", capture_config.model);
             eprintln!("  latency:    {elapsed_ms} ms");
             eprintln!(
-                "  tokens:     {} input, {} output, {} reasoning",
-                usage.input_tokens, usage.output_tokens, usage.reasoning_tokens
+                "  tokens:     {} input ({} cached), {} output, {} reasoning",
+                usage.input_tokens,
+                usage.cached_input_tokens,
+                usage.output_tokens,
+                usage.reasoning_tokens
             );
         }
         return Ok(());

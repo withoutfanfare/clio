@@ -52,6 +52,12 @@ pub struct CaptureUsage {
     pub input_tokens: u64,
     pub output_tokens: u64,
     pub reasoning_tokens: u64,
+    /// The portion of `input_tokens` served from the provider's prompt cache, and
+    /// therefore billed at a reduced rate. Recorded because the system prompt is a
+    /// large, stable prefix on every call: whether it is being cached is the single
+    /// biggest influence on input cost, and is otherwise invisible. Providers that
+    /// do not report this leave it at zero, which is indistinguishable from a miss.
+    pub cached_input_tokens: u64,
 }
 
 #[cfg(feature = "capture")]
@@ -336,6 +342,9 @@ async fn chat_async(
         input_tokens: json["usage"]["prompt_tokens"].as_u64().unwrap_or(0),
         output_tokens: json["usage"]["completion_tokens"].as_u64().unwrap_or(0),
         reasoning_tokens: json["usage"]["completion_tokens_details"]["reasoning_tokens"]
+            .as_u64()
+            .unwrap_or(0),
+        cached_input_tokens: json["usage"]["prompt_tokens_details"]["cached_tokens"]
             .as_u64()
             .unwrap_or(0),
     };
