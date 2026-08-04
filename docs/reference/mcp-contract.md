@@ -90,7 +90,9 @@ Auto-detection is controlled by `context.auto_detect` in settings (default `true
 2. Auto-detected namespace from `cwd`
 3. `global`
 
-Tools that accept `cwd`: `memory_remember`, `memory_recall`, `memory_capture`, `memory_search`, `memory_context`.
+Tools that accept `cwd`: `memory_remember`, `memory_recall`, `memory_capture`,
+`memory_session_checkpoint`, `memory_search`, `memory_context`, `memory_resume`,
+and `memory_action`.
 
 **Exception — classified storage** (`memory_capture`, and distillation via
 `memory_session_checkpoint`): the model's classification may promote a memory to
@@ -99,6 +101,20 @@ explicit `namespace` → model's `global` promotion → auto-detected from `cwd`
 model's suggested namespace. This is one shared rule in core
 (`capture::resolve_namespace`) for every classified path, so capture and distill
 cannot disagree about where the same classification lands.
+
+## Runtime Lifecycle and Concurrency
+
+One MCP process opens one SQLite connection, holds one bounded namespace-list
+cache, caches settings for 30 seconds, and creates its embedding backend once.
+Changing embedding settings therefore requires an MCP process restart; other
+settings are reloaded after the cache window.
+
+SQLite phases are serialised through one mutex. Slow provider phases run on the
+blocking pool without that mutex: semantic query embedding, capture
+classification, checkpoint distillation, and automatic embedding after a
+remember/update/capture/checkpoint write. A record vector generated after a write is
+stored only when the record's `updated_at` is still unchanged, so releasing the
+mutex cannot let a stale vector overwrite a newer edit.
 
 ## Shared Types
 
@@ -431,7 +447,7 @@ Fetch one memory by id.
 ## `memory_recent`
 
 **Deprecated** — use `memory_recall` with no `query` (it falls through to a
-recent-style listing). Retained as an alias for one release, then removed.
+recent-style listing). Retained for compatibility.
 
 Return recent memories with optional filtering and sorting.
 
@@ -840,7 +856,7 @@ Stop-hook capture retries after a lost response, a provider 429 or an outage. Wi
 ### Behaviour
 
 1. Preflight: if a checkpoint for `(source, session_id, cursor)` exists, return its stored result with `replayed: true` — the model is not called
-2. Otherwise distil `text` with the configured capture model (outside any write transaction)
+2. Otherwise distil `text` with the configured capture model outside both the write transaction and the shared SQLite mutex
 3. Open one write transaction, recheck the key under the lock, then store every extracted memory or review item and the checkpoint record atomically
 4. Any failure rolls back all writes — no partial session can persist; the key stays open for retry
 5. An empty extraction commits an empty checkpoint: success, never redistilled
@@ -1480,12 +1496,15 @@ Recommended annotation intent:
 | `memory_namespaces` | true | false | true |
 | `memory_get_links` | true | false | true |
 | `memory_capture` | false | false | false |
+| `memory_session_checkpoint` | false | false | true |
 | `memory_search` | true | false | true |
 | `memory_stats` | true | false | true |
 | `memory_activity` | true | false | true |
 | `memory_suggest_links` | true | false | false |
 | `memory_context` | true | false | true |
 | `memory_inbox` | false | false | false |
+| `memory_resume` | true | false | true |
+| `memory_action` | false | false | false |
 | `memory_cache_clear` | false | false | true |
 
 ## Output Discipline

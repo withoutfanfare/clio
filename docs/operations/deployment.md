@@ -344,6 +344,12 @@ Install the daemon only on a Mac that needs local inbox watching, local
 auto-linking or local maintenance. A daemon always uses local storage; keep it
 disabled on a Mac whose normal tooling should use Atlas.
 
+Inbox acknowledgement is durable: non-empty files within the 10 MiB limit move
+to `_processed/` only after capture/queueing or fallback note storage succeeds.
+Failed database writes leave the source file in place for retry. Daemon status
+reports enabled backup and integrity schedulers separately. The retained
+`http_port` setting is reserved and starts no listener.
+
 With `--with-daemon`, the installer reads an existing LaunchAgent to preserve
 its executable and database paths. It uses `launchctl bootout` before
 replacement, then `launchctl bootstrap` and Clio health checks. If the new
@@ -484,7 +490,8 @@ The `2>&1` on the auto-link entry is load-bearing: the CLI writes its summary an
 warnings to stderr, and the healthcheck decides "did the last run finish cleanly?"
 by requiring the summary line at the end of that log. Run it plain, not `--json`.
 `scripts/clio-healthcheck-selftest.sh` exercises the healthcheck's alert state
-machine (delivery failure, retry, dedup, recovery) against a local fake webhook.
+machine (delivery failure, retry, dedup, recovery) against a local fake webhook and
+verifies that provider/log details are not copied into Slack alerts.
 
 Auto-linking runs from the CLI rather than the daemon, so `atlas-release.sh` keeps it
 current: a separately installed daemon would drift out of step, which is how link

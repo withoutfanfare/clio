@@ -1,56 +1,44 @@
 # Performance Audit
 
-Date: 11 March 2026
+Original audit: 11 March 2026
+Current-source verification: 1 August 2026
 
 ## Scope
 
 This is a static source audit of the Rust core, daemon, MCP server, Tauri bridge, and Vue UI.
 
-No profiler, benchmark, build, or runtime memory tooling was used in this pass because the session was read-only. The findings below are therefore code-level observations and optimisation recommendations rather than measured benchmarks.
+The original pass was static. The 1 August refresh rechecked every finding
+against the current source and adds focused MCP concurrency tests; it is still
+not a whole-application profiler or benchmark report.
 
 ## Overall Verdict
 
 - No obvious classic unbounded memory leak was found.
-- The main risks are CPU churn, repeated allocation, broad locking, and several code paths that will scale poorly as the memory corpus grows.
-- The highest-value work is in the UI refresh strategy, Tauri locking model, linked-memory expansion, semantic search, and auto-link batching.
+- Several original findings are now fixed: polling comparisons are structural,
+  hidden-window polling pauses, autosave cleans itself up, linked recall batches
+  edge queries, and semantic ranking retains only top-K results.
+- The main remaining risks are full-corpus vector decoding, repeated auto-link
+  candidate scans, aggregate-stat recomputation, Tauri's broad local-state lock,
+  and daemon watcher backpressure.
 
 ## Highest-Impact Findings
 
-### 1. UI polling churn
+### 1. UI polling comparison — resolved
 
 File: `ui/src/stores/memories.ts`
 
-- `loadRecent()` fetches up to 50 records repeatedly.
-- The store compares old and new lists using `JSON.stringify(result.items) !== JSON.stringify(items.value)`.
-- This creates avoidable serialisation cost and garbage collection pressure, especially when records contain large `content` fields.
+- `loadRecent()` still fetches up to 50 records, but compares a compact
+  `id:updated_at` fingerprint rather than serialising complete records.
+- Event-driven refresh remains a possible future replacement for polling, not a
+  current correctness issue.
 
-Why it matters:
-
-- Polling plus full serialisation every few seconds will become visible as the dataset grows.
-- The comparison work scales with payload size, not just item count.
-
-Recommended improvement:
-
-- Replace the `JSON.stringify` comparison with a cheaper structural check using stable fields such as `id` and `updated_at`.
-- Better still, replace polling with event-driven refresh from Tauri when writes happen.
-
-### 2. Polling never backs off
+### 2. Hidden-window polling — resolved
 
 File: `ui/src/views/HomeView.vue`
 
-- The home view starts polling every 3 seconds on mount.
-- Polling only stops on unmount.
-- It does not pause when the app window is hidden, unfocused, or idle.
-
-Why it matters:
-
-- This burns CPU and keeps the app active even when the user is not interacting.
-- It also forces needless SQLite reads and UI reconciliation.
-
-Recommended improvement:
-
-- Pause polling when the window loses focus or becomes hidden.
-- Prefer push-based refresh events from Tauri commands after create, update, archive, delete, and capture operations.
+- `HomeView.vue` pauses the three-second poll on `visibilitychange` when the
+  document is hidden and resumes with an immediate refresh when visible.
+- Polling while visible remains deliberate current behaviour.
 
 ### 3. Global app lock held during expensive work
 
@@ -71,42 +59,60 @@ Recommended improvement:
 - Move long-running search work outside the global lock.
 - Consider separate locking for settings, cache, backend, and database access.
 
-### 4. Linked-memory expansion still performs N+1 queries
+### 3a. MCP provider lock contention — resolved 1 August 2026
+
+File: `crates/clio-mcp/src/main.rs`
+
+- The MCP process already reused one SQLite connection, settings cache and
+  embedding backend, but semantic query embedding, capture classification,
+  checkpoint distillation and post-write embedding held the connection mutex
+  during provider work.
+- These provider phases now run before acquiring, or after releasing, the
+  SQLite mutex. Focused concurrency tests block the provider deliberately and
+  prove an unrelated namespace read still completes.
+- Post-write vectors use an `updated_at` check before storage, preventing an
+  embedding generated from an older record version from overwriting a newer
+  edit.
+
+### 3b. Remaining MCP provider critical sections
+
+Files: `crates/clio-mcp/src/main.rs`, `crates/clio-core/src/embeddings.rs`,
+`crates/clio-core/src/review.rs`
+
+- `memory_suggest_links` still holds the MCP SQLite mutex if the source memory
+  has no stored vector and must be embedded on demand.
+- Inbox approval still creates and invokes an embedding backend while the MCP
+  mutex is held when automatic embedding is enabled.
+- Both are lower-frequency paths than search, capture, checkpoints and direct
+  writes, but should use the same provider/database phase split if profiling or
+  contention reports justify the extra core API surface.
+
+### 4. Linked-memory expansion — resolved
 
 File: `crates/clio-core/src/repository.rs`
 
-- `append_linked_memories()` claims to use batch fetching.
-- It batch-fetches target memories, but still calls `get_links()` once for each result item.
-- That means one extra query per recalled memory before the batch fetch even happens.
+- `append_linked_memories()` now calls `get_links_bulk()` and
+  `get_links_bulk_incoming()` once each for all anchors, then batch-fetches
+  eligible targets. The original N+1 query path no longer exists.
 
-Why it matters:
-
-- This becomes expensive when `include_links` is enabled on larger result sets.
-- The query count grows with the number of base results.
-
-Recommended improvement:
-
-- Replace per-item `get_links()` calls with one query that fetches all links for the current result IDs using `IN (...)`.
-- Build the source-to-target map from that one result set.
-
-### 5. Semantic search scans and sorts the full embedding corpus
+### 5. Semantic search scans the embedding corpus but retains bounded top-K
 
 File: `crates/clio-core/src/embeddings.rs`
 
 - `semantic_search()` selects every matching embedding blob.
 - It decodes every blob into a `Vec<f32>`.
 - It computes cosine similarity for every row.
-- It sorts the entire result vector and then truncates to `limit`.
+- It retains only `limit` candidates in a `BinaryHeap` and sorts that bounded
+  heap for output.
 
 Why it matters:
 
 - This is acceptable for small datasets but becomes the dominant bottleneck at scale.
 - The cost grows with the total number of embeddings, not the requested `limit`.
-- Full sorting adds more work than necessary when only the top few items are needed.
+- Full-corpus decoding and cosine work remain O(N); ranking memory is now O(K).
 
 Recommended improvement:
 
-- Maintain a fixed-size top-K heap instead of sorting the full result list.
 - Avoid decoding all vectors if a more efficient storage or approximate index is introduced later.
 - Longer term, consider ANN/vector index support if the dataset is expected to grow significantly.
 
@@ -165,22 +171,12 @@ Recommended improvement:
 - Use non-blocking send where practical and log/drop duplicate or burst traffic.
 - Alternatively introduce a coalescing queue for bursty inbox drops.
 
-### 9. Autosave cleanup could be made safer
+### 9. Autosave lifecycle — resolved
 
 File: `ui/src/composables/useAutoSave.ts`
 
-- The composable clears timers when `cancel()` is called.
-- It does not register its own teardown on component unmount.
-- Current usage appears controlled, but the composable relies on callers always cleaning up correctly.
-
-Why it matters:
-
-- This is not a proven leak in the current code, but it is a fragile lifecycle pattern.
-
-Recommended improvement:
-
-- Register cleanup with `onUnmounted()` inside the composable.
-- Keep timer ownership entirely local to the composable lifecycle.
+- `useAutoSave()` registers `onUnmounted(cancel)`, so its timers and pending
+  state are owned by the composable lifecycle.
 
 ## Memory-Leak Assessment
 
@@ -201,44 +197,52 @@ Recommended improvement:
 
 ## Recommended Priority Order
 
-### Phase 1 — Best return for effort
+### Phase 1 — Current best return for effort
 
-1. Replace polling + `JSON.stringify` diffing in the UI.
-2. Reduce global Tauri lock contention.
-3. Batch linked-memory expansion properly.
+1. Reduce global Tauri lock contention.
+2. Coalesce or otherwise drain bursty daemon watcher events without blocking
+   the notify callback or dropping unacknowledged files.
+3. Measure and reduce repeated vector scans in auto-link batches.
 
 ### Phase 2 — Scale-focused improvements
 
-4. Rework semantic search to use top-K selection instead of full sorting.
-5. Optimise auto-link batch processing to avoid repeated scans.
-6. Add short-lived caching for stats and other analytical reads.
+4. Add short-lived caching for stats and other analytical reads.
+5. Reduce full-corpus vector decoding or introduce an indexed search path when
+   measured corpus size justifies it.
+6. Move visible-window polling to event-driven refresh if profiling shows the
+   remaining reads matter.
 
 ### Phase 3 — Longer-term architecture
 
-7. Move from polling to push-based UI refresh events.
+7. Consider a small MCP connection pool only if profiling shows SQLite phases,
+   rather than provider waits, still limit responsiveness.
 8. Consider a more scalable vector-search approach if memory volume is expected to grow significantly.
-9. Review whether a connection pool or a more concurrent read model would improve MCP and Tauri responsiveness.
 
 ## Suggested Implementation Plan
 
 ### Quick wins
 
-- Compare lists using `id` and `updated_at` rather than serialising the full payload.
-- Pause polling when the app is hidden or unfocused.
-- Add `onUnmounted()` cleanup in `useAutoSave()`.
+- Add watcher queue-depth and processing-latency instrumentation before changing
+  backpressure behaviour.
+- Measure stats latency at current and projected corpus sizes before adding a
+  cache.
 
 ### Medium effort
 
 - Refactor Tauri state access to avoid holding one mutex during embedding work.
-- Replace per-item link lookups with a bulk query.
-- Add a top-K heap for semantic search.
+- Reuse candidate vectors across an auto-link batch where measurement supports
+  the additional memory cost.
 
 ### Larger changes
 
-- Introduce event-driven invalidation and refresh for the UI.
-- Batch or cache vector decoding during auto-linking.
+- Introduce event-driven invalidation and refresh for the UI if required.
 - Evaluate future vector indexing options.
 
 ## Final Summary
 
-The app does not currently show a clear memory leak from static inspection, but it does have several hotspots that will limit responsiveness and scalability. The biggest practical wins will come from reducing unnecessary UI refresh work, narrowing lock scope in the Tauri layer, removing remaining N+1 access patterns, and making semantic/vector operations more incremental.
+The current source does not show a clear unbounded leak. Earlier UI lifecycle,
+linked-query and top-K findings have been fixed, and the audited MCP semantic
+query, capture, checkpoint and post-write embedding waits no longer serialise
+unrelated database reads. The remaining performance work is measurement-led:
+narrow the Tauri local-state lock, address daemon watcher backpressure safely,
+and reduce repeated/full-corpus vector work as the corpus grows.

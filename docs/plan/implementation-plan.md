@@ -1081,7 +1081,7 @@ These are intentionally deferred decisions and should not block phase one:
 - Capture pipeline integration: `CaptureResult` enum (`Stored(Memory)` | `Queued(ReviewItem)`); captures below `review_threshold` in settings route to review queue instead of direct storage
 - `review_threshold: Option<f64>` added to `CaptureConfig` (default `None` = disabled)
 - CLI commands: `clio inbox list`, `clio inbox approve <id>`, `clio inbox reject <id>`, `clio inbox edit <id>` (with `--title`, `--namespace`, `--kind`, `--tags`, `--summary`, `--importance`), `clio inbox stats`
-- MCP tools: `memory_inbox_list`, `memory_inbox_approve`, `memory_inbox_reject`, `memory_inbox_edit`
+- MCP tool: merged `memory_inbox` dispatcher with `list`, `approve`, `reject`, and `edit` actions
 - `assembly.rs` module in `clio-core`: `ContextPreset` enum (6 variants: `project-brief`, `person-brief`, `decision-history`, `active-constraints`, `recent-activity`, `custom`), `ContextRequest`, `ContextSection`, `ContextBrief` types; `build_context()` combines kind-filtered and recent memories into sectioned briefs
 - CLI command: `clio brief` with `--namespace`, `--preset`, `--query`, `--max-items`, `--include-links`
 - MCP tool: `memory_context` with namespace auto-detection from `cwd`, preset selection, markdown/JSON output

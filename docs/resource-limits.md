@@ -80,12 +80,24 @@ Figures cover the `memory_embeddings` BLOB column only; they exclude index overh
 
 ## MCP Limits
 
-Defined in `crates/clio-mcp/src/main.rs`. Applied to all query tools (`memory_recall`, `memory_search`, `memory_list`).
+Defined in `crates/clio-mcp/src/main.rs`. Applied wherever an MCP input exposes
+`limit` or `max_items`, including recall/recent, semantic search, activity,
+suggestions, context, inbox, resume and attention queries.
 
 | Limit | Value | Notes |
 |---|---|---|
 | `MAX_LIMIT` | 500 | Hard cap; all caller-supplied limits are silently clamped to this value |
 | Default limit | 10 | Used when the caller omits the `limit` parameter |
+
+---
+
+## Remote Bridge Limits
+
+Defined in `crates/clio-cli/src/remote_mcp.rs`.
+
+| Limit | Value | Notes |
+|---|---:|---|
+| Maximum newline-delimited MCP request | 2 MiB (2,097,152 bytes) | Includes JSON-RPC framing and newline; a larger line closes the bridge input with an invalid-data error instead of being buffered without bound |
 
 ---
 
@@ -98,6 +110,10 @@ Defined in `crates/clio-daemon/src/watcher.rs`.
 | Limit | Value | Notes |
 |---|---|---|
 | Maximum inbox file size | 10 MiB (10,485,760 bytes) | Files exceeding this are moved to `_processed/` without being stored |
+
+Empty and oversized files are deliberate rejections. Other files move to
+`_processed/` only after capture/queueing or fallback note storage succeeds; a
+database write failure leaves the source in place for retry.
 
 ### Auto-Link Inference
 

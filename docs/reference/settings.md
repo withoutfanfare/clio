@@ -77,9 +77,9 @@ in provider billing, so there is no way to tell what Clio itself is costing. Ste
 (`capture`, `openai embeddings`, `auto-title`) so it is clear which part of Clio
 reached for the shared key.
 
-A variable exported as an empty string is treated as absent rather than as a key,
-so a blank export falls through to the next step instead of sending an
-unauthenticated request.
+Whitespace is trimmed from configured and environment keys. A blank value is
+treated as absent, so resolution falls through to the next step instead of
+sending an unauthenticated request.
 
 Change only the model, without replacing the API key or endpoint:
 
@@ -141,7 +141,7 @@ unless the app also implements their full validation and recovery workflows.
 | `inbox_paths` | string[] | `[]` | Directories to watch for inbox drop files |
 | `socket_path` | string? | platform default | Unix domain socket path |
 | `log_dir` | string? | platform default | Rolling log file directory |
-| `http_port` | int? | `null` | Optional HTTP loopback API port |
+| `http_port` | int? | `null` | Reserved compatibility field; currently ignored. The daemon exposes no HTTP listener |
 | `auto_link` | object | see below | Auto-link inference settings |
 | `maintenance` | object | see below | Periodic backup / integrity jobs |
 
@@ -177,6 +177,9 @@ not run here; it is triggered per session by the session-stop hook.)
 | `backup_interval_secs` | int | `0` | Seconds between database backups (`0` = off). E.g. `604800` for weekly |
 | `backup_max_backups` | int | `7` | Timestamped backups to retain |
 | `integrity_interval_secs` | int | `0` | Seconds between integrity checks, log-only (`0` = off) |
+
+`clio daemon status` reports `backup_scheduler` and `integrity_scheduler` only
+when their corresponding intervals are non-zero. It never reports an HTTP route.
 
 ## remote
 
