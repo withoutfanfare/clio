@@ -164,7 +164,7 @@ async fn process_file(
     // so we must run it inside spawn_blocking to avoid a nested runtime panic.
     // We move the connection into the blocking task and return it so it can be
     // reused in fallback paths (rusqlite::Connection is Send).
-    if settings.capture.enabled {
+    let stored = if settings.capture.enabled {
         let capture_content = content.clone();
         let capture_config = settings.capture.clone();
         let capture_settings = settings.clone();
@@ -189,13 +189,23 @@ async fn process_file(
                     ?result,
                     "capture pipeline succeeded"
                 );
+                true
             }
             Ok((conn, Err(e))) => {
                 tracing::warn!(
                     file = %file_path.display(),
                     "capture pipeline failed, storing as plain note: {e}"
                 );
-                store_as_note(&conn, &content, file_path, settings, embedding_backend);
+                match store_as_note(&conn, &content, file_path, settings, embedding_backend) {
+                    Ok(()) => true,
+                    Err(e) => {
+                        tracing::error!(
+                            file = %file_path.display(),
+                            "failed to store inbox file as note; leaving it for retry: {e}"
+                        );
+                        false
+                    }
+                }
             }
             Err(e) => {
                 tracing::warn!(
@@ -204,17 +214,38 @@ async fn process_file(
                 );
                 // Connection was lost in the panicked task; must re-open.
                 if let Ok(conn) = clio_core::db::open(db_path) {
-                    store_as_note(&conn, &content, file_path, settings, embedding_backend);
+                    match store_as_note(&conn, &content, file_path, settings, embedding_backend) {
+                        Ok(()) => true,
+                        Err(e) => {
+                            tracing::error!(
+                                file = %file_path.display(),
+                                "failed to store inbox file as note; leaving it for retry: {e}"
+                            );
+                            false
+                        }
+                    }
                 } else {
                     tracing::error!("could not open database for fallback note storage");
+                    false
                 }
             }
         }
     } else {
-        store_as_note(&conn, &content, file_path, settings, embedding_backend);
-    }
+        match store_as_note(&conn, &content, file_path, settings, embedding_backend) {
+            Ok(()) => true,
+            Err(e) => {
+                tracing::error!(
+                    file = %file_path.display(),
+                    "failed to store inbox file as note; leaving it for retry: {e}"
+                );
+                false
+            }
+        }
+    };
 
-    move_to_processed(file_path);
+    if stored {
+        move_to_processed(file_path);
+    }
 }
 
 /// Store content as a simple note memory via the repository.
@@ -224,7 +255,7 @@ fn store_as_note(
     file_path: &Path,
     settings: &clio_core::settings::Settings,
     embedding_backend: &Option<Arc<dyn clio_core::embeddings::EmbeddingBackend>>,
-) {
+) -> clio_core::error::Result<()> {
     let title = file_path
         .file_stem()
         .and_then(|s| s.to_str())
@@ -247,25 +278,19 @@ fn store_as_note(
         upsert: false,
     };
 
-    match clio_core::repository::remember(conn, &input, settings) {
-        Ok(memory) => {
-            tracing::info!(id = %memory.id, "stored inbox file as note");
+    let memory = clio_core::repository::remember(conn, &input, settings)?;
+    tracing::info!(id = %memory.id, "stored inbox file as note");
 
-            // Auto-embed using the shared backend.
-            if settings.auto_embed {
-                if let Some(ref be) = *embedding_backend {
-                    if let Err(e) =
-                        clio_core::embeddings::embed_and_store(conn, be.as_ref(), &memory)
-                    {
-                        tracing::warn!("auto-embed failed for inbox note: {e}");
-                    }
-                }
+    // Auto-embed using the shared backend.
+    if settings.auto_embed {
+        if let Some(ref be) = *embedding_backend {
+            if let Err(e) = clio_core::embeddings::embed_and_store(conn, be.as_ref(), &memory) {
+                tracing::warn!("auto-embed failed for inbox note: {e}");
             }
         }
-        Err(e) => {
-            tracing::error!("failed to store inbox file as note: {e}");
-        }
     }
+
+    Ok(())
 }
 
 /// Move a processed file to the `_processed/` subdirectory alongside it.
@@ -315,5 +340,43 @@ fn move_to_processed(file_path: &Path) {
             dst = %dest.display(),
             "moved to _processed"
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn failed_note_storage_keeps_the_inbox_file_for_retry() {
+        let directory = std::env::temp_dir().join(format!(
+            "clio-daemon-watcher-{}-{}",
+            std::process::id(),
+            uuid::Uuid::now_v7()
+        ));
+        std::fs::create_dir(&directory).unwrap();
+        let file = directory.join("note.md");
+        std::fs::write(&file, "keep me").unwrap();
+        let db_path = directory.join("memory.db");
+        let conn = clio_core::db::open(&db_path).unwrap();
+        conn.execute_batch(
+            "CREATE TRIGGER reject_inbox_insert BEFORE INSERT ON memories
+             BEGIN SELECT RAISE(FAIL, 'forced test failure'); END;",
+        )
+        .unwrap();
+        drop(conn);
+
+        process_file(
+            &file,
+            &db_path,
+            &clio_core::settings::Settings::default(),
+            &None,
+        )
+        .await;
+
+        assert!(file.exists());
+        assert!(!directory.join("_processed/note.md").exists());
+
+        std::fs::remove_dir_all(directory).unwrap();
     }
 }

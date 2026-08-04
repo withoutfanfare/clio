@@ -1057,6 +1057,41 @@ fn format_clio_error(err: &ClioError) -> String {
     }
 }
 
+/// Generate a record embedding without holding the shared SQLite mutex, then
+/// persist it only if the record has not changed while provider work ran.
+fn embed_memory_if_current(
+    conn: &Arc<Mutex<rusqlite::Connection>>,
+    backend: &dyn clio_core::embeddings::EmbeddingBackend,
+    memory: &Memory,
+) -> Result<(), String> {
+    let passage = clio_core::embeddings::build_passage(memory);
+    let embedding = backend
+        .embed_one(&passage)
+        .map_err(|e| format_clio_error(&e))?;
+
+    let conn = conn.lock().map_err(|e| format!("lock error: {e}"))?;
+    let current = clio_core::repository::get_many_pub(&conn, std::slice::from_ref(&memory.id))
+        .map_err(|e| format_clio_error(&e))?
+        .into_iter()
+        .next();
+    if current.as_ref().map(|m| &m.updated_at) != Some(&memory.updated_at) {
+        tracing::debug!(
+            memory_id = %memory.id,
+            "memory changed before auto-embedding completed; skipping stale vector"
+        );
+        return Ok(());
+    }
+
+    clio_core::embeddings::store_embedding(
+        &conn,
+        &memory.id,
+        backend.model_name(),
+        backend.dimensions(),
+        &embedding,
+    )
+    .map_err(|e| format_clio_error(&e))
+}
+
 // ---------------------------------------------------------------------------
 // Markdown rendering
 // ---------------------------------------------------------------------------
@@ -1469,7 +1504,6 @@ impl ClioServer {
         let settings = self.settings()?;
         let backend = self.embedding_backend.clone();
         tokio::task::spawn_blocking(move || {
-            let conn = conn.lock().map_err(|e| format!("lock error: {e}"))?;
             let cwd_path = params.cwd.as_deref().map(std::path::Path::new);
             let namespace = resolve_mcp_namespace(
                 params.namespace.as_deref(),
@@ -1479,16 +1513,17 @@ impl ClioServer {
             );
             let upsert = params.upsert;
             let input = remember_input(params, namespace, upsert);
-            let memory = cache
-                .remember(&conn, &input, &settings)
-                .map_err(|e| format_clio_error(&e))?;
+            let memory = {
+                let conn = conn.lock().map_err(|e| format!("lock error: {e}"))?;
+                cache
+                    .remember(&conn, &input, &settings)
+                    .map_err(|e| format_clio_error(&e))?
+            };
 
             // Auto-embed if enabled.
             if settings.auto_embed {
                 if let Some(ref be) = *backend {
-                    if let Err(e) =
-                        clio_core::embeddings::embed_and_store(&conn, be.as_ref(), &memory)
-                    {
+                    if let Err(e) = embed_memory_if_current(&conn, be.as_ref(), &memory) {
                         tracing::warn!("auto-embed failed: {e}");
                     }
                 }
@@ -1532,16 +1567,16 @@ impl ClioServer {
         let settings = self.settings()?;
         let backend = self.embedding_backend.clone();
         tokio::task::spawn_blocking(move || {
-            let conn = conn.lock().map_err(|e| format!("lock error: {e}"))?;
-            let memory = cache
-                .update(&conn, &memory_id, &input, &settings)
-                .map_err(|e| format_clio_error(&e))?;
+            let memory = {
+                let conn = conn.lock().map_err(|e| format!("lock error: {e}"))?;
+                cache
+                    .update(&conn, &memory_id, &input, &settings)
+                    .map_err(|e| format_clio_error(&e))?
+            };
 
             if settings.auto_embed {
                 if let Some(ref be) = *backend {
-                    if let Err(e) =
-                        clio_core::embeddings::embed_and_store(&conn, be.as_ref(), &memory)
-                    {
+                    if let Err(e) = embed_memory_if_current(&conn, be.as_ref(), &memory) {
                         tracing::warn!("auto-embed failed: {e}");
                     }
                 }
@@ -1869,8 +1904,8 @@ impl ClioServer {
         }
         let conn = self.conn.clone();
         let settings = self.settings()?;
+        let backend = self.embedding_backend.clone();
         tokio::task::spawn_blocking(move || {
-            let conn = conn.lock().map_err(|e| format!("lock error: {e}"))?;
             // The explicit namespace and the cwd-detected default stay separate:
             // core resolves them with the same precedence as capture/distill
             // everywhere else (override → model's global promotion → cwd → model).
@@ -1885,15 +1920,30 @@ impl ClioServer {
                 None
             };
 
-            let result = clio_core::capture::capture(
-                &conn,
-                &params.text,
-                &settings.capture,
-                params.namespace.as_deref(),
-                default_ns.as_deref(),
-                &settings,
-            )
-            .map_err(|e| format_clio_error(&e))?;
+            let classification = clio_core::capture::classify(&params.text, &settings.capture)
+                .map_err(|e| format_clio_error(&e))?;
+            let result = {
+                let conn = conn.lock().map_err(|e| format!("lock error: {e}"))?;
+                clio_core::capture::capture_with_classification_deferred_embedding(
+                    &conn,
+                    &params.text,
+                    &classification,
+                    params.namespace.as_deref(),
+                    default_ns.as_deref(),
+                    &settings,
+                )
+                .map_err(|e| format_clio_error(&e))?
+            };
+
+            if settings.auto_embed {
+                if let (clio_core::capture::CaptureResult::Stored(memory), Some(be)) =
+                    (&result, backend.as_ref())
+                {
+                    if let Err(e) = embed_memory_if_current(&conn, be.as_ref(), memory) {
+                        tracing::warn!(memory_id = %memory.id, "capture auto-embed failed: {e}");
+                    }
+                }
+            }
             serde_json::to_string_pretty(&result).map_err(|e| format!("Serialisation error: {e}"))
         })
         .await
@@ -1914,8 +1964,18 @@ impl ClioServer {
         if params.text.trim().is_empty() {
             return Err("text must not be empty.".into());
         }
+        if params.source.is_empty() {
+            return Err("source is required.".into());
+        }
+        if params.session_id.is_empty() {
+            return Err("session_id is required.".into());
+        }
+        if params.cursor < 0 {
+            return Err("cursor must be zero or positive.".into());
+        }
         let conn = self.conn.clone();
         let settings = self.settings()?;
+        let backend = self.embedding_backend.clone();
         tokio::task::spawn_blocking(move || {
             // Resolve the default namespace from cwd like memory_capture, but
             // keep an explicit namespace as the override that always wins.
@@ -1941,15 +2001,44 @@ impl ClioServer {
                 ticket: params.ticket,
             };
 
-            let conn = conn.lock().map_err(|e| format!("lock error: {e}"))?;
-            let result = clio_core::checkpoint::checkpoint(
-                &conn,
-                &request,
-                &params.text,
-                &settings.capture,
-                &settings,
-            )
-            .map_err(|e| format_clio_error(&e))?;
+            if let Some(existing) = {
+                let conn = conn.lock().map_err(|e| format!("lock error: {e}"))?;
+                clio_core::checkpoint::find_checkpoint(
+                    &conn,
+                    &request.source,
+                    &request.session_id,
+                    request.cursor,
+                )
+                .map_err(|e| format_clio_error(&e))?
+            } {
+                return serde_json::to_string_pretty(&existing)
+                    .map_err(|e| format!("Serialisation error: {e}"));
+            }
+
+            let memories = clio_core::capture::distill(&params.text, &settings.capture)
+                .map_err(|e| format_clio_error(&e))?;
+            let (result, stored_memories) = {
+                let conn = conn.lock().map_err(|e| format!("lock error: {e}"))?;
+                let result =
+                    clio_core::checkpoint::store_checkpoint(&conn, &request, &memories, &settings)
+                        .map_err(|e| format_clio_error(&e))?;
+                let stored_memories = if !result.replayed && settings.auto_embed {
+                    clio_core::repository::get_many_pub(&conn, &result.stored_memory_ids)
+                        .map_err(|e| format_clio_error(&e))?
+                } else {
+                    Vec::new()
+                };
+                (result, stored_memories)
+            };
+
+            if let Some(ref be) = *backend {
+                for memory in &stored_memories {
+                    if let Err(e) = embed_memory_if_current(&conn, be.as_ref(), memory) {
+                        tracing::warn!(memory_id = %memory.id, "checkpoint auto-embed failed: {e}");
+                    }
+                }
+            }
+
             serde_json::to_string_pretty(&result).map_err(|e| format!("Serialisation error: {e}"))
         })
         .await
@@ -1975,8 +2064,6 @@ impl ClioServer {
         let settings = self.settings()?;
         let backend = self.embedding_backend.clone();
         tokio::task::spawn_blocking(move || {
-            let conn = conn.lock().map_err(|e| format!("lock error: {e}"))?;
-
             let be = backend.as_ref().as_ref().ok_or_else(|| {
                 "Embedding backend not available. Ensure embeddings are configured in settings."
                     .to_string()
@@ -1985,6 +2072,8 @@ impl ClioServer {
             let query_embedding = be
                 .embed_one(&params.query)
                 .map_err(|e| format_clio_error(&e))?;
+
+            let conn = conn.lock().map_err(|e| format!("lock error: {e}"))?;
 
             let cwd_path = params.cwd.as_deref().map(std::path::Path::new);
             let detected_ns = resolve_mcp_namespace(
@@ -2876,5 +2965,464 @@ mod maintenance_lock_tests {
         );
         drop(maintenance);
         std::fs::remove_file(lock_path).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod concurrency_tests {
+    use super::*;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::mpsc::{self, Receiver, SyncSender};
+    use std::sync::{Arc, Barrier};
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+    struct BlockingBackend {
+        started: Arc<Barrier>,
+        release: Arc<Barrier>,
+    }
+
+    struct SignallingBackend {
+        started: SyncSender<()>,
+        release: Mutex<Receiver<()>>,
+    }
+
+    impl clio_core::embeddings::EmbeddingBackend for SignallingBackend {
+        fn model_name(&self) -> &str {
+            "signalling-test"
+        }
+
+        fn dimensions(&self) -> usize {
+            1
+        }
+
+        fn embed_one(&self, _text: &str) -> clio_core::error::Result<Vec<f32>> {
+            self.started.send(()).unwrap();
+            self.release.lock().unwrap().recv().unwrap();
+            Ok(vec![1.0])
+        }
+
+        fn embed_batch(&self, texts: &[String]) -> clio_core::error::Result<Vec<Vec<f32>>> {
+            Ok(vec![vec![1.0]; texts.len()])
+        }
+    }
+
+    impl clio_core::embeddings::EmbeddingBackend for BlockingBackend {
+        fn model_name(&self) -> &str {
+            "blocking-test"
+        }
+
+        fn dimensions(&self) -> usize {
+            1
+        }
+
+        fn embed_one(&self, _text: &str) -> clio_core::error::Result<Vec<f32>> {
+            self.started.wait();
+            self.release.wait();
+            Ok(vec![1.0])
+        }
+
+        fn embed_batch(&self, texts: &[String]) -> clio_core::error::Result<Vec<Vec<f32>>> {
+            Ok(vec![vec![1.0]; texts.len()])
+        }
+    }
+
+    fn capture_endpoint(
+        started: Arc<Barrier>,
+        release: Arc<Barrier>,
+        assistant_content: serde_json::Value,
+    ) -> (String, std::thread::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut request = Vec::new();
+            let mut buffer = [0_u8; 4096];
+            loop {
+                let read = stream.read(&mut buffer).unwrap();
+                request.extend_from_slice(&buffer[..read]);
+                if read == 0 || request.windows(4).any(|bytes| bytes == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            let header_end = request
+                .windows(4)
+                .position(|bytes| bytes == b"\r\n\r\n")
+                .unwrap()
+                + 4;
+            let headers = String::from_utf8_lossy(&request[..header_end]);
+            let content_length = headers
+                .lines()
+                .find_map(|line| {
+                    let (name, value) = line.split_once(':')?;
+                    name.eq_ignore_ascii_case("content-length")
+                        .then(|| value.trim().parse::<usize>().unwrap())
+                })
+                .unwrap_or(0);
+            while request.len() < header_end + content_length {
+                let read = stream.read(&mut buffer).unwrap();
+                if read == 0 {
+                    break;
+                }
+                request.extend_from_slice(&buffer[..read]);
+            }
+
+            started.wait();
+            release.wait();
+
+            let body = serde_json::json!({
+                "choices": [{"message": {"content": assistant_content.to_string()}}],
+                "usage": {
+                    "prompt_tokens": 1,
+                    "completion_tokens": 1,
+                    "completion_tokens_details": {"reasoning_tokens": 0},
+                    "prompt_tokens_details": {"cached_tokens": 0}
+                }
+            })
+            .to_string();
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            )
+            .unwrap();
+            stream.flush().unwrap();
+        });
+
+        (format!("http://{address}"), handle)
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn semantic_embedding_does_not_block_unrelated_database_reads() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let db_path = std::env::temp_dir().join(format!(
+            "clio-mcp-concurrency-{}-{unique}.db",
+            std::process::id()
+        ));
+        let conn = clio_core::db::open(&db_path).unwrap();
+        let started = Arc::new(Barrier::new(2));
+        let release = Arc::new(Barrier::new(2));
+        let server = ClioServer::new(
+            db_path.clone(),
+            conn,
+            clio_core::settings::Settings::default(),
+            Some(Box::new(BlockingBackend {
+                started: started.clone(),
+                release: release.clone(),
+            })),
+        );
+
+        let search_server = server.clone();
+        let search = tokio::spawn(async move {
+            search_server
+                .memory_search(Parameters(SearchParams {
+                    query: "concurrency".into(),
+                    namespace: None,
+                    global: true,
+                    cwd: None,
+                    clio_namespace: None,
+                    include_archived: false,
+                    limit: 10,
+                    response_format: "json".into(),
+                }))
+                .await
+        });
+
+        started.wait();
+        let namespace_result =
+            tokio::time::timeout(Duration::from_millis(500), server.memory_namespaces()).await;
+        release.wait();
+        search.await.unwrap().unwrap();
+
+        assert!(
+            namespace_result.is_ok(),
+            "provider work held the SQLite mutex and blocked an unrelated read"
+        );
+
+        drop(server);
+        std::fs::remove_file(db_path).unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn automatic_embedding_does_not_block_unrelated_database_reads() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let db_path = std::env::temp_dir().join(format!(
+            "clio-mcp-auto-embed-{}-{unique}.db",
+            std::process::id()
+        ));
+        let conn = clio_core::db::open(&db_path).unwrap();
+        let started = Arc::new(Barrier::new(2));
+        let release = Arc::new(Barrier::new(2));
+        let server = ClioServer::new(
+            db_path.clone(),
+            conn,
+            clio_core::settings::Settings::default(),
+            Some(Box::new(BlockingBackend {
+                started: started.clone(),
+                release: release.clone(),
+            })),
+        );
+
+        let remember_server = server.clone();
+        let remember = tokio::spawn(async move {
+            remember_server
+                .memory_remember(Parameters(RememberParams {
+                    namespace: Some("global".into()),
+                    cwd: None,
+                    clio_namespace: None,
+                    kind: "fact".into(),
+                    title: Some("Concurrency".into()),
+                    summary: None,
+                    content: "Provider work should not block SQLite reads.".into(),
+                    tags: Vec::new(),
+                    source: None,
+                    source_ref: None,
+                    confidence: None,
+                    importance: 3,
+                    metadata: serde_json::json!({}),
+                    valid_from: None,
+                    valid_until: None,
+                    upsert: false,
+                }))
+                .await
+        });
+
+        started.wait();
+        let namespace_result =
+            tokio::time::timeout(Duration::from_millis(500), server.memory_namespaces()).await;
+        release.wait();
+        remember.await.unwrap().unwrap();
+
+        assert!(
+            namespace_result.is_ok(),
+            "automatic embedding held the SQLite mutex and blocked an unrelated read"
+        );
+
+        drop(server);
+        std::fs::remove_file(db_path).unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn capture_provider_does_not_block_unrelated_database_reads() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let db_path = std::env::temp_dir().join(format!(
+            "clio-mcp-capture-{}-{unique}.db",
+            std::process::id()
+        ));
+        let conn = clio_core::db::open(&db_path).unwrap();
+        let started = Arc::new(Barrier::new(2));
+        let release = Arc::new(Barrier::new(2));
+        let (base_url, endpoint) = capture_endpoint(
+            started.clone(),
+            release.clone(),
+            serde_json::json!({
+                "kind": "fact",
+                "title": "Concurrency",
+                "summary": "Provider calls do not hold the database lock.",
+                "tags": ["mcp"],
+                "namespace": "global",
+                "importance": 3,
+                "confidence": 1.0
+            }),
+        );
+        let mut settings = clio_core::settings::Settings::default();
+        settings.auto_embed = false;
+        settings.capture = clio_core::settings::CaptureConfig {
+            enabled: true,
+            api_key: Some("test-key".into()),
+            base_url,
+            model: "gpt-4.1".into(),
+            review_threshold: None,
+        };
+        let server = ClioServer::new(db_path.clone(), conn, settings, None);
+
+        let capture_server = server.clone();
+        let capture = tokio::spawn(async move {
+            capture_server
+                .memory_capture(Parameters(CaptureParams {
+                    text: "Remember the concurrency contract.".into(),
+                    namespace: Some("global".into()),
+                    cwd: None,
+                    clio_namespace: None,
+                }))
+                .await
+        });
+
+        started.wait();
+        let namespace_result =
+            tokio::time::timeout(Duration::from_millis(500), server.memory_namespaces()).await;
+        release.wait();
+        capture.await.unwrap().unwrap();
+        endpoint.join().unwrap();
+
+        assert!(
+            namespace_result.is_ok(),
+            "capture provider work held the SQLite mutex and blocked an unrelated read"
+        );
+
+        drop(server);
+        std::fs::remove_file(db_path).unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn capture_auto_embedding_uses_cached_backend_without_blocking_database_reads() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let db_path = std::env::temp_dir().join(format!(
+            "clio-mcp-capture-embedding-{}-{unique}.db",
+            std::process::id()
+        ));
+        let conn = clio_core::db::open(&db_path).unwrap();
+        let classification_started = Arc::new(Barrier::new(2));
+        let classification_release = Arc::new(Barrier::new(2));
+        let (base_url, endpoint) = capture_endpoint(
+            classification_started.clone(),
+            classification_release.clone(),
+            serde_json::json!({
+                "kind": "fact",
+                "title": "Capture embedding",
+                "summary": "Capture reuses the MCP embedding backend.",
+                "tags": ["mcp"],
+                "namespace": "global",
+                "importance": 3,
+                "confidence": 1.0
+            }),
+        );
+        let mut settings = clio_core::settings::Settings::default();
+        settings.auto_embed = true;
+        settings.capture = clio_core::settings::CaptureConfig {
+            enabled: true,
+            api_key: Some("test-key".into()),
+            base_url,
+            model: "gpt-4.1".into(),
+            review_threshold: None,
+        };
+        let (embedding_started_tx, embedding_started_rx) = mpsc::sync_channel(1);
+        let (embedding_release_tx, embedding_release_rx) = mpsc::sync_channel(1);
+        let server = ClioServer::new(
+            db_path.clone(),
+            conn,
+            settings,
+            Some(Box::new(SignallingBackend {
+                started: embedding_started_tx,
+                release: Mutex::new(embedding_release_rx),
+            })),
+        );
+
+        let capture_server = server.clone();
+        let capture = tokio::spawn(async move {
+            capture_server
+                .memory_capture(Parameters(CaptureParams {
+                    text: "Remember that capture embedding is non-blocking.".into(),
+                    namespace: Some("global".into()),
+                    cwd: None,
+                    clio_namespace: None,
+                }))
+                .await
+        });
+
+        classification_started.wait();
+        classification_release.wait();
+        let embedding_started = tokio::task::spawn_blocking(move || {
+            embedding_started_rx.recv_timeout(Duration::from_secs(1))
+        })
+        .await
+        .unwrap();
+        if embedding_started.is_ok() {
+            let namespace_result =
+                tokio::time::timeout(Duration::from_millis(500), server.memory_namespaces()).await;
+            embedding_release_tx.send(()).unwrap();
+            assert!(
+                namespace_result.is_ok(),
+                "capture auto-embedding held the SQLite mutex and blocked an unrelated read"
+            );
+        }
+
+        capture.await.unwrap().unwrap();
+        endpoint.join().unwrap();
+        assert!(
+            embedding_started.is_ok(),
+            "capture did not reuse the MCP server's cached embedding backend"
+        );
+
+        drop(server);
+        std::fs::remove_file(db_path).unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn checkpoint_provider_does_not_block_unrelated_database_reads() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let db_path = std::env::temp_dir().join(format!(
+            "clio-mcp-checkpoint-{}-{unique}.db",
+            std::process::id()
+        ));
+        let conn = clio_core::db::open(&db_path).unwrap();
+        let started = Arc::new(Barrier::new(2));
+        let release = Arc::new(Barrier::new(2));
+        let (base_url, endpoint) = capture_endpoint(
+            started.clone(),
+            release.clone(),
+            serde_json::json!({"memories": []}),
+        );
+        let mut settings = clio_core::settings::Settings::default();
+        settings.auto_embed = false;
+        settings.capture = clio_core::settings::CaptureConfig {
+            enabled: true,
+            api_key: Some("test-key".into()),
+            base_url,
+            model: "gpt-4.1".into(),
+            review_threshold: None,
+        };
+        let server = ClioServer::new(db_path.clone(), conn, settings, None);
+
+        let checkpoint_server = server.clone();
+        let checkpoint = tokio::spawn(async move {
+            checkpoint_server
+                .memory_session_checkpoint(Parameters(SessionCheckpointParams {
+                    text: "No durable changes in this session.".into(),
+                    source: "test-session".into(),
+                    session_id: "session-1".into(),
+                    cursor: 1,
+                    namespace: Some("global".into()),
+                    cwd: None,
+                    branch: None,
+                    ticket: None,
+                    clio_namespace: None,
+                }))
+                .await
+        });
+
+        started.wait();
+        let namespace_result =
+            tokio::time::timeout(Duration::from_millis(500), server.memory_namespaces()).await;
+        release.wait();
+        checkpoint.await.unwrap().unwrap();
+        endpoint.join().unwrap();
+
+        assert!(
+            namespace_result.is_ok(),
+            "checkpoint provider work held the SQLite mutex and blocked an unrelated read"
+        );
+
+        drop(server);
+        std::fs::remove_file(db_path).unwrap();
     }
 }

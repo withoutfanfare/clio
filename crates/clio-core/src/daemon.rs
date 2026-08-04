@@ -34,7 +34,8 @@ pub struct DaemonConfig {
     #[serde(default)]
     pub log_dir: Option<PathBuf>,
 
-    /// Optional HTTP port for the loopback API.
+    /// Reserved compatibility field. The daemon does not currently expose an
+    /// HTTP listener.
     #[serde(default)]
     pub http_port: Option<u16>,
 
@@ -388,16 +389,18 @@ pub fn check_embeddings_health(settings: &Settings) -> HealthCheck {
             status: HealthStatus::Healthy,
             message: "local embedding backend configured".into(),
         },
-        EmbeddingConfig::OpenAi { api_key, .. } => match api_key {
-            Some(key) if !key.is_empty() => HealthCheck {
-                status: HealthStatus::Healthy,
-                message: "OpenAI embedding backend configured".into(),
-            },
-            _ => HealthCheck {
-                status: HealthStatus::Unhealthy,
-                message: "OpenAI embeddings configured but API key is missing".into(),
-            },
-        },
+        EmbeddingConfig::OpenAi { api_key, .. } => {
+            match crate::settings::configured_api_key(api_key.as_deref()) {
+                Some(_) => HealthCheck {
+                    status: HealthStatus::Healthy,
+                    message: "OpenAI embedding backend configured".into(),
+                },
+                _ => HealthCheck {
+                    status: HealthStatus::Unhealthy,
+                    message: "OpenAI embeddings configured but API key is missing".into(),
+                },
+            }
+        }
         EmbeddingConfig::Disabled => HealthCheck {
             status: HealthStatus::Unconfigured,
             message: "embeddings are disabled".into(),
@@ -414,8 +417,8 @@ pub fn check_capture_health(settings: &Settings) -> HealthCheck {
         };
     }
 
-    match &settings.capture.api_key {
-        Some(key) if !key.is_empty() => HealthCheck {
+    match crate::settings::configured_api_key(settings.capture.api_key.as_deref()) {
+        Some(_) => HealthCheck {
             status: HealthStatus::Healthy,
             message: "capture pipeline enabled with API key".into(),
         },

@@ -22,6 +22,7 @@ pub async fn run(
     let interval_duration = Duration::from_secs(config.interval_secs);
     let mut interval = tokio::time::interval(interval_duration);
     let mut watermark: Option<String> = None;
+    let mut watermark_id: Option<String> = None;
 
     tracing::info!(
         interval_secs = config.interval_secs,
@@ -37,13 +38,16 @@ pub async fn run(
                 let config = config.clone();
                 let backend = Arc::clone(&backend);
                 let wm = watermark.clone();
+                let wm_id = watermark_id.clone();
 
                 let result = tokio::task::spawn_blocking(move || {
+                    let _lock = clio_core::embeddings::acquire_auto_link_lock(&db_path)?;
                     let conn = clio_core::db::open(&db_path)?;
                     clio_core::embeddings::auto_link_batch(
                         &conn,
                         backend.as_ref(),
                         wm.as_deref(),
+                        wm_id.as_deref(),
                         &config,
                     )
                 })
@@ -63,6 +67,7 @@ pub async fn run(
                         }
                         if report.last_watermark.is_some() {
                             watermark = report.last_watermark;
+                            watermark_id = report.last_watermark_id;
                         }
                     }
                     Ok(Err(e)) => {

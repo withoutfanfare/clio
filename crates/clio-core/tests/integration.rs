@@ -2975,7 +2975,7 @@ fn auto_link_skips_multiple_excluded_kinds_as_source_and_target() {
         exclude_kinds: vec!["receipt".into(), "summary".into()],
         ..Default::default()
     };
-    let report = auto_link_batch(&conn, &SameVectorBackend, None, &config).unwrap();
+    let report = auto_link_batch(&conn, &SameVectorBackend, None, None, &config).unwrap();
 
     assert_eq!(
         report.memories_processed, 4,
@@ -3035,7 +3035,7 @@ fn auto_link_cap_bounds_total_degree_and_binds() {
         max_links_per_memory: 5,
         ..Default::default()
     };
-    auto_link_batch(&conn, &SameVectorBackend, None, &config).unwrap();
+    auto_link_batch(&conn, &SameVectorBackend, None, None, &config).unwrap();
 
     let degrees: Vec<i64> = cluster
         .iter()
@@ -3053,7 +3053,7 @@ fn auto_link_cap_bounds_total_degree_and_binds() {
 
     // A second run must add nothing: every pair is either linked or blocked by
     // the cap, and the cap is a cumulative total, not a per-run allowance.
-    let second = auto_link_batch(&conn, &SameVectorBackend, None, &config).unwrap();
+    let second = auto_link_batch(&conn, &SameVectorBackend, None, None, &config).unwrap();
     assert_eq!(second.links_created, 0, "second run must be idempotent");
 }
 
@@ -3111,7 +3111,7 @@ fn auto_link_never_lifts_a_memory_already_over_its_cap() {
         max_links_per_memory: 5,
         ..Default::default()
     };
-    let report = auto_link_batch(&conn, &SameVectorBackend, None, &config).unwrap();
+    let report = auto_link_batch(&conn, &SameVectorBackend, None, None, &config).unwrap();
 
     assert_eq!(
         report.links_created, 0,
@@ -3155,7 +3155,7 @@ fn auto_link_reports_unembeddable_memories_as_skipped_not_processed() {
         threshold: 0.5,
         ..Default::default()
     };
-    let report = auto_link_batch(&conn, &FailingBackend, None, &config).unwrap();
+    let report = auto_link_batch(&conn, &FailingBackend, None, None, &config).unwrap();
 
     // The driver distinguishes "corpus finished" (processed == 0 AND skipped == 0)
     // from "backend broken" (skipped > 0), and must be able to keep walking past a
@@ -3166,6 +3166,107 @@ fn auto_link_reports_unembeddable_memories_as_skipped_not_processed() {
     assert!(
         report.last_watermark.is_some(),
         "watermark advances past unembeddable memories"
+    );
+}
+
+#[test]
+fn auto_link_watermark_does_not_skip_timestamp_ties_at_a_batch_boundary() {
+    use clio_core::embeddings::{EmbeddingBackend, auto_link_batch};
+    use clio_core::settings::AutoLinkConfig;
+
+    struct SameVectorBackend;
+    impl EmbeddingBackend for SameVectorBackend {
+        fn model_name(&self) -> &str {
+            "model-a"
+        }
+        fn dimensions(&self) -> usize {
+            2
+        }
+        fn embed_one(&self, _text: &str) -> clio_core::error::Result<Vec<f32>> {
+            Ok(vec![1.0, 0.0])
+        }
+        fn embed_batch(&self, texts: &[String]) -> clio_core::error::Result<Vec<Vec<f32>>> {
+            Ok(texts.iter().map(|_| vec![1.0, 0.0]).collect())
+        }
+    }
+
+    let conn = test_db();
+    for i in 0..3 {
+        remember_in(
+            &conn,
+            "project:x",
+            &format!("memory sharing one update timestamp {i}"),
+        );
+    }
+    conn.execute(
+        "UPDATE memories SET updated_at = '2026-07-30T12:00:00Z'",
+        [],
+    )
+    .unwrap();
+
+    let config = AutoLinkConfig {
+        enabled: true,
+        threshold: 0.5,
+        batch_size: 2,
+        ..Default::default()
+    };
+    let first = auto_link_batch(&conn, &SameVectorBackend, None, None, &config).unwrap();
+    assert_eq!(first.memories_processed, 2);
+
+    let second = auto_link_batch(
+        &conn,
+        &SameVectorBackend,
+        first.last_watermark.as_deref(),
+        first.last_watermark_id.as_deref(),
+        &config,
+    )
+    .unwrap();
+    assert_eq!(
+        second.memories_processed, 1,
+        "the row after the timestamp tie must remain reachable"
+    );
+}
+
+#[test]
+fn auto_link_propagates_degree_query_failures() {
+    use clio_core::embeddings::{EmbeddingBackend, auto_link_batch};
+    use clio_core::settings::AutoLinkConfig;
+
+    struct SameVectorBackend;
+    impl EmbeddingBackend for SameVectorBackend {
+        fn model_name(&self) -> &str {
+            "model-a"
+        }
+        fn dimensions(&self) -> usize {
+            2
+        }
+        fn embed_one(&self, _text: &str) -> clio_core::error::Result<Vec<f32>> {
+            Ok(vec![1.0, 0.0])
+        }
+        fn embed_batch(&self, texts: &[String]) -> clio_core::error::Result<Vec<Vec<f32>>> {
+            Ok(texts.iter().map(|_| vec![1.0, 0.0]).collect())
+        }
+    }
+
+    let conn = test_db();
+    remember_in(&conn, "project:x", "memory whose degree cannot be read");
+    conn.execute("DROP TABLE memory_links", []).unwrap();
+
+    let result = auto_link_batch(
+        &conn,
+        &SameVectorBackend,
+        None,
+        None,
+        &AutoLinkConfig {
+            enabled: true,
+            threshold: 0.5,
+            ..Default::default()
+        },
+    );
+
+    assert!(
+        result.is_err(),
+        "a failed degree query must not be treated as zero links"
     );
 }
 

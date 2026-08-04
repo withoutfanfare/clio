@@ -239,15 +239,14 @@ pub fn classify_with_usage(
 /// `OPENAI_API_KEY`.
 #[cfg(feature = "capture")]
 fn resolve_api_key(config: &CaptureConfig) -> Result<String> {
-    match &config.api_key {
-        Some(key) if !key.is_empty() => Ok(key.clone()),
-        _ => crate::settings::api_key_from_env("capture").ok_or_else(|| {
+    crate::settings::configured_api_key(config.api_key.as_deref())
+        .or_else(|| crate::settings::api_key_from_env("capture"))
+        .ok_or_else(|| {
             ClioError::Config(format!(
                 "capture API key required: set {} or configure capture.api_key in settings",
                 crate::settings::CLIO_API_KEY_ENV
             ))
-        }),
-    }
+        })
 }
 
 /// Send a system + user prompt to the configured OpenAI-compatible chat
@@ -680,6 +679,49 @@ pub fn capture_with_classification(
     default_namespace: Option<&str>,
     settings: &crate::settings::Settings,
 ) -> Result<CaptureResult> {
+    capture_with_classification_embedding(
+        conn,
+        text,
+        classification,
+        namespace_override,
+        default_namespace,
+        settings,
+        true,
+    )
+}
+
+/// Store an already-classified capture without generating its embedding.
+///
+/// Adapters with a shared embedding backend can use this variant, release any
+/// database lock, then generate and persist the embedding separately.
+pub fn capture_with_classification_deferred_embedding(
+    conn: &rusqlite::Connection,
+    text: &str,
+    classification: &ClassificationResult,
+    namespace_override: Option<&str>,
+    default_namespace: Option<&str>,
+    settings: &crate::settings::Settings,
+) -> Result<CaptureResult> {
+    capture_with_classification_embedding(
+        conn,
+        text,
+        classification,
+        namespace_override,
+        default_namespace,
+        settings,
+        false,
+    )
+}
+
+fn capture_with_classification_embedding(
+    conn: &rusqlite::Connection,
+    text: &str,
+    classification: &ClassificationResult,
+    namespace_override: Option<&str>,
+    default_namespace: Option<&str>,
+    settings: &crate::settings::Settings,
+    embed_now: bool,
+) -> Result<CaptureResult> {
     let namespace = resolve_namespace(
         namespace_override,
         &classification.namespace,
@@ -695,7 +737,7 @@ pub fn capture_with_classification(
         None,
         &serde_json::json!({}),
         settings,
-        true,
+        embed_now,
     )
 }
 

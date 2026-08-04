@@ -3231,19 +3231,25 @@ fn cmd_auto_link(
     // One run at a time: the hourly cron pass has unbounded runtime, and an
     // overlapping second pass loses its link writes to SQLITE_BUSY, which looks
     // like a clean run that created nothing.
-    let _lock = acquire_auto_link_lock(&path)?;
+    let _lock = embeddings::acquire_auto_link_lock(&path)?;
 
     let conn = db::open(&path)?;
     let backend = embeddings::create_backend(&s.embeddings)?;
     let mut watermark = args.since.clone();
+    let mut watermark_id: Option<String> = None;
     let mut passes: u32 = 0;
     let mut total_processed: u64 = 0;
     let mut total_links: u64 = 0;
     let mut total_skipped: u64 = 0;
 
     loop {
-        let report =
-            embeddings::auto_link_batch(&conn, backend.as_ref(), watermark.as_deref(), &config)?;
+        let report = embeddings::auto_link_batch(
+            &conn,
+            backend.as_ref(),
+            watermark.as_deref(),
+            watermark_id.as_deref(),
+            &config,
+        )?;
         passes += 1;
         total_processed += u64::from(report.memories_processed);
         total_links += u64::from(report.links_created);
@@ -3258,8 +3264,13 @@ fn cmd_auto_link(
         }
         // A pass that saw memories but did not move the watermark cannot make
         // further progress, and repeating it would loop forever.
-        match report.last_watermark {
-            Some(next) if Some(&next) != watermark.as_ref() => watermark = Some(next),
+        match (report.last_watermark, report.last_watermark_id) {
+            (Some(next), Some(next_id))
+                if Some(&next) != watermark.as_ref() || Some(&next_id) != watermark_id.as_ref() =>
+            {
+                watermark = Some(next);
+                watermark_id = Some(next_id);
+            }
             _ => break,
         }
     }
@@ -3273,6 +3284,7 @@ fn cmd_auto_link(
                 "links_created": total_links,
                 "memories_skipped": total_skipped,
                 "last_watermark": watermark,
+                "last_watermark_id": watermark_id,
                 "threshold": config.threshold,
                 "max_links_per_memory": config.max_links_per_memory,
                 "batch_size": config.batch_size,
@@ -3296,38 +3308,6 @@ fn cmd_auto_link(
         )
         .into());
     }
-    Ok(())
-}
-
-/// Hold an exclusive advisory lock for the duration of an auto-link run, so the
-/// hourly cron pass and a manual run cannot interleave. Released when the
-/// returned handle drops, including on panic or process exit.
-#[cfg(unix)]
-fn acquire_auto_link_lock(
-    db_path: &std::path::Path,
-) -> Result<std::fs::File, Box<dyn std::error::Error>> {
-    use std::os::unix::io::AsRawFd;
-    let lock_path = format!("{}.auto-link.lock", db_path.display());
-    let file = std::fs::OpenOptions::new()
-        .create(true)
-        .truncate(false) // the file carries no content; only the flock matters
-        .write(true)
-        .open(&lock_path)?;
-    // SAFETY: flock on a file descriptor this process owns; the OS releases the
-    // lock when the descriptor closes.
-    let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
-    if rc != 0 {
-        return Err(format!(
-            "another auto-link run already holds {lock_path}; not starting a second — \
-             overlapping passes contend for the same rows."
-        )
-        .into());
-    }
-    Ok(file)
-}
-
-#[cfg(not(unix))]
-fn acquire_auto_link_lock(_db_path: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 

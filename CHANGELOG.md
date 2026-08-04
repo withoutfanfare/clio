@@ -57,21 +57,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   It now also requires auto-link's success line at the end of the log instead of
   grepping a five-line tail for failure words, which missed a dead binary and a
   fully skipped batch. A self-test (`clio-healthcheck-selftest.sh`) drives the
-  alert state machine against a local fake webhook.
+  alert state machine against a local fake webhook. Alerts point to the local log
+  without copying provider errors or other raw log content into Slack.
 - `clio auto-link` honours `daemon.auto_link.enabled` (with `--force` to
   override), exits non-zero when memories were skipped because no embedding could
   be produced instead of reporting a clean empty run, keeps walking the corpus
-  past a wholly skipped batch, and takes an advisory lock so the hourly cron pass
-  and a manual run cannot interleave. Link-write failures log at warn rather than
-  debug, so lock contention no longer looks like a quiet run.
-- Provider keys from the environment are trimmed before use (a trailing newline
-  from `KEY=$(cat file)` produced an opaque 401) and can no longer appear in
-  `Debug` output.
+  past a wholly skipped batch, and uses the same advisory lock as the daemon so
+  automatic and manual passes cannot interleave. Its cursor carries both timestamp
+  and ID so a batch boundary cannot skip memories sharing one timestamp, and degree
+  query errors fail the pass instead of being treated as zero links. Link-write
+  failures log at warn rather than debug, so contention no longer looks quiet.
+- Provider keys from settings and the environment are trimmed before use, and blank
+  configured values fall through to environment resolution. Keys can no longer
+  appear in `Debug` output.
 - `dial-in.sh` asserts its relink the way it asserts its link-clear, copies
-  WAL-mode databases with `.backup` instead of `cp`, and `recall-eval.py` scores
-  its two arms as pairs, reports failed invocations, and refuses the live
-  database path. The recorded threshold/cap sweep is annotated with its measured
-  noise floor; the settings chosen from it are marked plausible, not confirmed.
+  WAL-mode databases with `.backup` instead of `cp`, aborts a trial when evaluation
+  fails, and reports the captured error. `recall-eval.py` scores its two arms from
+  identical snapshots, reports failed query pairs accurately, and refuses live
+  paths resolved from platform defaults or environment configuration. The recorded
+  threshold/cap sweep is annotated with its measured noise floor; the settings
+  chosen from it are marked plausible, not confirmed.
 
 **Release drains MCP sessions (2026-07-30)**
 - `atlas-release.sh deploy` and `rollback` now send SIGTERM to lingering `clio-mcp`

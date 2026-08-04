@@ -185,15 +185,14 @@ pub struct OpenAiBackend {
 #[cfg(feature = "openai-embeddings")]
 impl OpenAiBackend {
     pub fn new(api_key: Option<&str>, model: &str, base_url: Option<&str>) -> Result<Self> {
-        let api_key = match api_key {
-            Some(key) if !key.is_empty() => key.to_string(),
-            _ => crate::settings::api_key_from_env("openai embeddings").ok_or_else(|| {
+        let api_key = crate::settings::configured_api_key(api_key)
+            .or_else(|| crate::settings::api_key_from_env("openai embeddings"))
+            .ok_or_else(|| {
                 ClioError::Config(format!(
                     "OpenAI API key required: set {} or configure api_key in settings",
                     crate::settings::CLIO_API_KEY_ENV
                 ))
-            })?,
-        };
+            })?;
 
         let base_url = base_url
             .unwrap_or("https://api.openai.com/v1")
@@ -1021,12 +1020,64 @@ pub struct AutoLinkReport {
     #[serde(default)]
     pub memories_skipped: u32,
     pub last_watermark: Option<String>,
+    /// ID paired with `last_watermark` to resume safely when multiple memories
+    /// share the same update timestamp.
+    #[serde(default)]
+    pub last_watermark_id: Option<String>,
 }
 
 /// Relationship recorded for links inferred from embedding similarity. The prefix
 /// keeps them distinguishable from links a human created, so they can be audited or
 /// removed without touching deliberate ones.
 pub const AUTO_LINK_RELATIONSHIP: &str = "auto:relates_to";
+
+/// Hold the cross-process lock shared by every automatic-linking entry point.
+/// The operating system releases it when this value is dropped.
+#[cfg(unix)]
+pub struct AutoLinkLock {
+    _file: std::fs::File,
+}
+
+#[cfg(not(unix))]
+pub struct AutoLinkLock;
+
+/// Acquire the advisory lock for this database's auto-link pass.
+#[cfg(unix)]
+pub fn acquire_auto_link_lock(db_path: &std::path::Path) -> Result<AutoLinkLock> {
+    use std::os::unix::io::AsRawFd;
+
+    let mut lock_path = db_path.as_os_str().to_owned();
+    lock_path.push(".auto-link.lock");
+    let lock_path = std::path::PathBuf::from(lock_path);
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&lock_path)
+        .map_err(|e| {
+            ClioError::Storage(format!(
+                "could not open auto-link lock {}: {e}",
+                lock_path.display()
+            ))
+        })?;
+
+    // SAFETY: flock operates on a file descriptor owned by `file`; the lock is
+    // released when that descriptor closes.
+    let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+    if rc != 0 {
+        return Err(ClioError::Conflict(format!(
+            "another auto-link run already holds {}; not starting a second",
+            lock_path.display()
+        )));
+    }
+
+    Ok(AutoLinkLock { _file: file })
+}
+
+#[cfg(not(unix))]
+pub fn acquire_auto_link_lock(_db_path: &std::path::Path) -> Result<AutoLinkLock> {
+    Ok(AutoLinkLock)
+}
 
 /// Count the inferred links touching a memory in either direction, so
 /// `max_links_per_memory` bounds total degree — what actually governs how much
@@ -1056,6 +1107,7 @@ pub fn auto_link_batch(
     conn: &Connection,
     backend: &dyn EmbeddingBackend,
     since: Option<&str>,
+    since_id: Option<&str>,
     config: &crate::settings::AutoLinkConfig,
 ) -> Result<AutoLinkReport> {
     // Query memories updated since the watermark. `id` breaks timestamp ties so
@@ -1067,8 +1119,19 @@ pub fn auto_link_batch(
 
     if let Some(watermark) = since {
         let idx = param_values.len() + 1;
-        sql.push_str(&format!(" AND updated_at > ?{idx}"));
-        param_values.push(Box::new(watermark.to_string()));
+        if let Some(watermark_id) = since_id {
+            let id_idx = idx + 1;
+            sql.push_str(&format!(
+                " AND (updated_at > ?{idx} OR (updated_at = ?{idx} AND id > ?{id_idx}))"
+            ));
+            param_values.push(Box::new(watermark.to_string()));
+            param_values.push(Box::new(watermark_id.to_string()));
+        } else {
+            // An explicit CLI --since timestamp keeps its historical exclusive
+            // semantics. Cursors returned by a batch always include `since_id`.
+            sql.push_str(&format!(" AND updated_at > ?{idx}"));
+            param_values.push(Box::new(watermark.to_string()));
+        }
     }
 
     sql.push_str(" ORDER BY updated_at ASC, id ASC");
@@ -1150,13 +1213,16 @@ pub fn auto_link_batch(
     let mut links_created: u32 = 0;
     let mut memories_skipped: u32 = 0;
     let mut last_watermark: Option<String> = None;
+    let mut last_watermark_id: Option<String> = None;
 
     for (memory_id, updated_at, kind) in &candidates {
+        last_watermark = Some(updated_at.clone());
+        last_watermark_id = Some(memory_id.clone());
+
         // Excluded kinds are skipped as sources as well as targets, so a boilerplate
         // memory neither gathers links nor is gathered. Advance the watermark so the
         // pass still makes progress past it.
         if config.exclude_kinds.contains(kind) {
-            last_watermark = Some(updated_at.clone());
             memories_processed += 1;
             continue;
         }
@@ -1169,7 +1235,6 @@ pub fn auto_link_batch(
             .unwrap_or(false)
         {
             tracing::warn!(memory_id, "auto-link: skipping — no embedding available");
-            last_watermark = Some(updated_at.clone());
             memories_skipped += 1;
             continue;
         }
@@ -1179,12 +1244,11 @@ pub fn auto_link_batch(
         // auto-links accumulate without bound — memories were observed holding 17
         // against a configured 3. Budget against what already exists (in both
         // directions), and skip a memory that is already at its cap.
-        let existing_auto_links = count_auto_links(conn, memory_id).unwrap_or(0);
+        let existing_auto_links = count_auto_links(conn, memory_id)?;
         let remaining = config
             .max_links_per_memory
             .saturating_sub(existing_auto_links);
         if remaining == 0 {
-            last_watermark = Some(updated_at.clone());
             memories_processed += 1;
             continue;
         }
@@ -1206,7 +1270,7 @@ pub fn auto_link_batch(
                     // already filters at-cap targets; re-check here because links
                     // created earlier in this same pass can move a target to its
                     // cap after the query ran.
-                    let target_degree = count_auto_links(conn, &target_memory.id).unwrap_or(0);
+                    let target_degree = count_auto_links(conn, &target_memory.id)?;
                     if target_degree >= config.max_links_per_memory {
                         continue;
                     }
@@ -1238,7 +1302,6 @@ pub fn auto_link_batch(
         }
 
         memories_processed += 1;
-        last_watermark = Some(updated_at.clone());
     }
 
     tracing::info!(
@@ -1253,6 +1316,7 @@ pub fn auto_link_batch(
         links_created,
         memories_skipped,
         last_watermark,
+        last_watermark_id,
     })
 }
 
@@ -1454,6 +1518,21 @@ mod tests {
         let config: crate::settings::AutoLinkConfig = serde_json::from_str(json).unwrap();
         assert_eq!(config.exclude_kinds, vec!["receipt".to_string()]);
         assert_eq!(config.max_links_per_memory, 3, "other defaults still apply");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn auto_link_lock_rejects_an_overlapping_holder() {
+        let directory = tempfile::tempdir().unwrap();
+        let db_path = directory.path().join("memory.db");
+
+        let _first = acquire_auto_link_lock(&db_path).unwrap();
+        let second = acquire_auto_link_lock(&db_path);
+
+        assert!(
+            second.is_err(),
+            "CLI and daemon passes must not hold the same auto-link lock concurrently"
+        );
     }
 
     // The cap itself (budgeting, saturation on over-cap data, target-side

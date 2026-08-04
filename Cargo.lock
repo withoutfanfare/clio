@@ -453,7 +453,6 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "clio-core",
- "libc",
  "rusqlite",
  "serde",
  "serde_json",
@@ -466,6 +465,7 @@ name = "clio-core"
 version = "0.1.0"
 dependencies = [
  "fastembed",
+ "libc",
  "moka",
  "reqwest 0.12.28",
  "rusqlite",

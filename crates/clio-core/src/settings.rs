@@ -484,6 +484,15 @@ pub fn api_key_from_env(purpose: &str) -> Option<String> {
     Some(source.into_key())
 }
 
+/// Normalise a configured provider key, treating blank values as absent so the
+/// documented environment fallback can run.
+pub(crate) fn configured_api_key(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|key| !key.is_empty())
+        .map(String::from)
+}
+
 impl Default for Settings {
     fn default() -> Self {
         Self {
@@ -505,10 +514,8 @@ impl Default for Settings {
 impl Settings {
     /// Resolve the API key for auto-title, falling back to capture config.
     pub fn auto_title_api_key(&self) -> Option<String> {
-        self.auto_title
-            .api_key
-            .clone()
-            .or_else(|| self.capture.api_key.clone())
+        configured_api_key(self.auto_title.api_key.as_deref())
+            .or_else(|| configured_api_key(self.capture.api_key.as_deref()))
             .or_else(|| api_key_from_env("auto-title"))
     }
 
@@ -692,6 +699,28 @@ mod tests {
         assert_eq!(
             pick_env_key(Some("  the-key\n".into()), None),
             Some(EnvKeySource::Clio("the-key".into())),
+        );
+    }
+
+    #[test]
+    fn configured_keys_are_trimmed_and_blank_values_are_absent() {
+        assert_eq!(
+            configured_api_key(Some("  configured-key\n")),
+            Some("configured-key".into())
+        );
+        assert_eq!(configured_api_key(Some(" \t\n")), None);
+        assert_eq!(configured_api_key(None), None);
+    }
+
+    #[test]
+    fn blank_auto_title_key_falls_through_to_capture_key() {
+        let mut settings = Settings::default();
+        settings.auto_title.api_key = Some("  \n".into());
+        settings.capture.api_key = Some("  capture-key \n".into());
+
+        assert_eq!(
+            settings.auto_title_api_key().as_deref(),
+            Some("capture-key")
         );
     }
 
