@@ -11,12 +11,14 @@ set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 CHECK="$HERE/clio-healthcheck.sh"
 WORK="$(mktemp -d)"
-PORT=8763
 pass=0
 fail=0
 
 cleanup() {
-  [[ -n "${SERVER_PID:-}" ]] && kill "$SERVER_PID" 2>/dev/null
+  if [[ -n "${SERVER_PID:-}" ]]; then
+    kill "$SERVER_PID" 2>/dev/null
+    wait "$SERVER_PID" 2>/dev/null
+  fi
   rm -rf "$WORK"
 }
 trap cleanup EXIT
@@ -49,22 +51,35 @@ printf '#!/bin/sh\necho "17 * * * * clio auto-link"\n' > "$WORK/bin/crontab"
 chmod +x "$WORK/bin/crontab"
 
 # A webhook that accepts unless a refuse-file exists. 200 on accept, 500 on refuse.
-python3 - "$PORT" "$WORK/refuse" <<'PY' &
+# Request bodies are retained in the throwaway directory so alert redaction is
+# exercised at the actual HTTP boundary.
+python3 - "$WORK/refuse" "$WORK/requests" "$WORK/port" <<'PY' &
 import http.server, sys
-refuse_marker = sys.argv[2]
+refuse_marker = sys.argv[1]
+requests_path = sys.argv[2]
+port_path = sys.argv[3]
 class H(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         import os
-        self.rfile.read(int(self.headers.get("Content-Length", 0)))
+        body = self.rfile.read(int(self.headers.get("Content-Length", 0)))
+        with open(requests_path, "ab") as requests:
+            requests.write(body + b"\n")
         code = 500 if os.path.exists(refuse_marker) else 200
         self.send_response(code)
         self.end_headers()
     def log_message(self, *a):
         pass
-http.server.HTTPServer(("127.0.0.1", int(sys.argv[1])), H).serve_forever()
+server = http.server.HTTPServer(("127.0.0.1", 0), H)
+with open(port_path, "w") as port_file:
+    print(server.server_port, file=port_file, flush=True)
+server.serve_forever()
 PY
 SERVER_PID=$!
-sleep 1
+for _ in {1..50}; do
+  [[ -s "$WORK/port" ]] && break
+  sleep 0.1
+done
+PORT="$(cat "$WORK/port")"
 
 healthy_log() {
   printf 'Auto-link complete: 3 memory(ies) over 1 pass(es), 2 link(s) created (threshold 0.6, cap 5 per memory).\n' \
@@ -123,10 +138,14 @@ run_check
 ok "recovery run exits 0" "$STATUS"
 [[ ! -s "$WORK/state" ]]; ok "delivered recovery notice clears state" $?
 
-# --- 7. A run that died mid-way is caught by the success-signal check -----------
-printf 'auto-link: batch embedding warning\n' > "$WORK/auto-link.log"
+# --- 7. A run that died mid-way is caught without leaking its log to Slack -------
+printf 'auto-link: provider returned private diagnostic detail\n' > "$WORK/auto-link.log"
 run_check
 grep -q "did not finish cleanly" <<<"$OUT"; ok "missing summary line is a fault" $?
+if grep -q "private diagnostic detail" "$WORK/requests"; then false; else true; fi
+ok "auto-link log content is not sent to Slack" $?
+grep -Fq "$WORK/auto-link.log" "$WORK/requests"
+ok "the alert points the operator to the local log" $?
 
 echo
 echo "RESULT: $pass passed, $fail failed"

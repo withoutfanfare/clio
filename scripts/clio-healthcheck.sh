@@ -93,7 +93,7 @@ if [[ -f "$CLIO_AUTOLINK_LOG" ]]; then
   # the fault signal. Requires the cron entry to run plain `clio auto-link` (not
   # --json) with stderr redirected into the log — see docs/operations/deployment.md.
   if ! tail -1 "$CLIO_AUTOLINK_LOG" | grep -q "Auto-link complete"; then
-    problems+=("auto-link's last run did not finish cleanly: $(tail -2 "$CLIO_AUTOLINK_LOG" | tr '\n' ' ' | cut -c1-160)")
+    problems+=("auto-link's last run did not finish cleanly; inspect $CLIO_AUTOLINK_LOG locally")
   fi
 else
   problems+=("auto-link log missing at $CLIO_AUTOLINK_LOG — has it ever run?")

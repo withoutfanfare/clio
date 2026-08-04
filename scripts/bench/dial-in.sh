@@ -26,7 +26,7 @@ CLIO="${CLIO:-$HOME/.cargo/bin/clio}"
 [[ -r "$SRC" ]] || { echo "cannot read $SRC" >&2; exit 1; }
 
 trial() { # trial <label> <threshold> <cap>
-  local label="$1" threshold="$2" cap="$3" work links
+  local label="$1" threshold="$2" cap="$3" work links eval_output eval_error
   work="$(mktemp -d)"
   # .backup, not cp: the live database runs in WAL mode, and a plain cp drops the
   # -wal sidecar — the copy would be the last checkpoint, not current state, and
@@ -87,13 +87,23 @@ print(sqlite3.connect('$work/memory.db').execute(
   fi
 
   printf '%-22s links=%-6s ' "$label" "$links"
-  CLIO="$CLIO" python3 "$BASE/recall-eval.py" "$work/memory.db" "$N" 2>/dev/null |
+  if ! eval_output="$(CLIO="$CLIO" python3 "$BASE/recall-eval.py" \
+      "$work/memory.db" "$N" 2>"$work/recall.err")"; then
+    eval_error="$(tail -1 "$work/recall.err" 2>/dev/null)"
+    echo "ABORT — recall evaluation failed: ${eval_error:-<no error detail>}"
+    rm -rf "$work"
+    return
+  fi
+  if ! printf '%s\n' "$eval_output" |
     awk '/^with links/            { precision = $4; mrr = $5 }
          /per brief\)/            { gsub("[()]", "", $(NF-2)); per = $(NF-2) }
          /relevant \(micro/       { gsub("%", "", $1); added = $1 }
          /vs the without-links /  { gsub(/[()x]/, "", $NF); lift = $NF }
          END { printf "prec=%s MRR=%s added=%s/brief addPrec=%s%% lift=%s\n",
                       precision, mrr, per, added, lift }'
+  then
+    echo "$label: ABORT — could not summarise recall evaluation output"
+  fi
   rm -rf "$work"
 }
 

@@ -44,9 +44,11 @@ sqlite3 "$LIVE_DB" ".backup /tmp/eval.db" && cp settings.json /tmp/clio-settings
 scripts/bench/recall-eval.py /tmp/eval.db 110
 ```
 
-Arms are scored as pairs (both invocations must succeed and return something) and
-failed invocations are counted and reported. The script refuses the live database
-path — briefs bump access counts, which are scoring inputs.
+Arms are scored as pairs from two copies of one database snapshot (both invocations
+must succeed and return something), so the first arm's access tracking cannot alter
+the second arm's ranking. Failed query pairs are counted and reported. The script
+refuses platform defaults and paths supplied through `CLIO_DB_PATH`,
+`XDG_DATA_HOME`, or `APPDATA` — briefs bump access counts, which are scoring inputs.
 
 Baseline recorded 2026-07-30 against 3,842 live memories at threshold 0.6, cap 5,
 receipts excluded:
@@ -61,9 +63,18 @@ added 5.7 per brief — 57.4% relevant vs 6.3% chance = 9.1x lift
 
 Relinks a copy at each setting and scores the result, sweeping threshold then cap.
 One variable moves at a time: changing both leaves the outcome unattributable.
+If evaluation fails, the trial aborts and prints the evaluator's error instead of
+formatting an empty set of metrics as a result.
 
 ```sh
 scripts/bench/dial-in.sh /path/to/copy-of-memory.db 110
+```
+
+The failure and isolation boundaries have disposable self-tests:
+
+```sh
+scripts/bench/dial-in-selftest.sh
+scripts/bench/recall-eval-selftest.sh
 ```
 
 Findings from 2026-07-30 (110 queries) that set the current configuration:

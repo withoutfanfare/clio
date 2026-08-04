@@ -43,10 +43,12 @@ Environment:
 import json
 import os
 import random
+import shutil
 import sqlite3
 import statistics
 import subprocess
 import sys
+import tempfile
 
 CLIO = os.environ.get("CLIO", os.path.expanduser("~/.cargo/bin/clio"))
 random.seed(int(os.environ.get("CLIO_SEED", "20260730")))
@@ -116,21 +118,59 @@ def load_corpus(db):
     return tags, meta, by_namespace
 
 
+def live_database_paths():
+    """Return every database path Clio may resolve without an explicit CLI flag."""
+    paths = [
+        os.path.expanduser("~/.local/share/clio/memory.db"),
+        os.path.expanduser("~/Library/Application Support/clio/memory.db"),
+    ]
+    configured = os.environ.get("CLIO_DB_PATH", "").strip()
+    if configured:
+        paths.append(os.path.expanduser(configured))
+    xdg_data = os.environ.get("XDG_DATA_HOME", "").strip()
+    if xdg_data:
+        paths.append(os.path.join(os.path.expanduser(xdg_data), "clio", "memory.db"))
+    appdata = os.environ.get("APPDATA", "").strip()
+    if appdata:
+        paths.append(os.path.join(os.path.expanduser(appdata), "clio", "memory.db"))
+    return paths
+
+
+def snapshot_database(source, destination):
+    """Make a transactionally consistent SQLite copy, including WAL contents."""
+    with sqlite3.connect(source) as source_conn, sqlite3.connect(destination) as dest_conn:
+        source_conn.backup(dest_conn)
+
+
+def paired_brief_ids(db, query, namespace):
+    """Run both arms from identical snapshots so neither can train the other."""
+    with tempfile.TemporaryDirectory(prefix="clio-recall-eval-") as work:
+        baseline_db = os.path.join(work, "baseline.db")
+        without_db = os.path.join(work, "without-links.db")
+        with_db = os.path.join(work, "with-links.db")
+        settings = os.path.join(os.path.dirname(os.path.abspath(db)), "clio-settings.json")
+        if os.path.isfile(settings):
+            shutil.copy2(settings, os.path.join(work, "clio-settings.json"))
+        snapshot_database(db, baseline_db)
+        snapshot_database(baseline_db, without_db)
+        snapshot_database(baseline_db, with_db)
+        return (
+            brief_ids(without_db, query, namespace, False),
+            brief_ids(with_db, query, namespace, True),
+        )
+
+
 def main():
     if len(sys.argv) < 2:
         sys.exit(__doc__)
     db = sys.argv[1]
     wanted = int(sys.argv[2]) if len(sys.argv) > 2 else 60
 
-    # Both platform defaults: Linux XDG and the macOS Application Support path.
-    live_paths = [
-        os.path.expanduser("~/.local/share/clio/memory.db"),
-        os.path.expanduser("~/Library/Application Support/clio/memory.db"),
-    ]
     hit = next(
-        (p for p in live_paths if os.path.realpath(db) == os.path.realpath(p)), None
+        (p for p in live_database_paths() if os.path.realpath(db) == os.path.realpath(p)),
+        None,
     )
-    if hit and not os.environ.get("CLIO_EVAL_ALLOW_LIVE"):
+    if hit and os.environ.get("CLIO_EVAL_ALLOW_LIVE") != "1":
         sys.exit(
             "Refusing to run against the live database: briefs bump access counts,\n"
             "which are scoring inputs. Copy it first —\n"
@@ -178,8 +218,7 @@ def main():
 
     for mid, rel in queries:
         query, namespace = meta[mid]["title"], meta[mid]["ns"]
-        without_raw = brief_ids(db, query, namespace, False)
-        with_raw = brief_ids(db, query, namespace, True)
+        without_raw, with_raw = paired_brief_ids(db, query, namespace)
         if without_raw is None or with_raw is None:
             failed += 1
             continue
@@ -206,7 +245,7 @@ def main():
         added_total += len(extra)
         added_relevant += sum(1 for i in extra if i in rel)
 
-    print("Scored as pairs: %d   dropped: %d with an empty arm, %d failed invocations"
+    print("Scored as pairs: %d   dropped: %d with an empty arm, %d failed query pairs"
           % (len(scored_queries), empty_pairs, failed))
     if FAILURES:
         reason, detail = FAILURES[0]
