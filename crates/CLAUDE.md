@@ -1,8 +1,7 @@
 # crates — Rust workspace
 
 Local contract for the Rust workspace. Inherits all repo-wide rules from the
-root CLAUDE.md (DOX rail, British English, conventional commits, critical
-invariants). This doc owns the crate boundaries and Rust build/test workflow.
+root CLAUDE.md. This doc owns the crate boundaries and Rust build/test workflow.
 
 ## Purpose
 
