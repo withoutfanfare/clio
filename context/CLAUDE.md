@@ -5,15 +5,8 @@ root CLAUDE.md. These are the canonical internal references to read **before**
 significant implementation work; both the root CLAUDE.md and `AGENTS.md` point
 here.
 
-## Purpose
-
-- `ARCHITECTURE.md` — crate boundaries, system diagram, module listings, stack.
-- `CRITICAL_WARNINGS.md` — invariants that produce bugs if violated.
-- `DOMAIN_RULES.md` — entities, namespaces, workflows, search semantics.
-
 ## Work Guidance
 
-- British English throughout.
 - These describe how the system actually behaves — when an invariant or boundary
   in `clio-core` changes, update the matching file here so it never drifts from
   the code it documents.

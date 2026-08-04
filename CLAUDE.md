@@ -32,6 +32,7 @@ Local-first shared memory system for AI tooling. Rust workspace, SQLite storage,
 - MCP defaults must match CLI/core semantics exactly.
 - Every schema change ships as a new migration — never edit applied migrations.
 - `archive/python-prototype/` is reference only — do not extend.
+- Desktop app hides-on-close instead of quitting; reopen via the dock icon or Cmd+Shift+M. Cmd+Q quits fully.
 
 ## Context (deep reference)
 
@@ -49,57 +50,7 @@ Read these before significant implementation work:
 
 ## Rules
 
-- British English in all documentation, comments, and user-facing text.
-- Conventional commits. Stage with `gitaddall`.
-
-# DOX framework
-
-- DOX is highly performant CLAUDE.md hierarchy installed here
-- Agent must follow DOX instructions across any edits
-
-## Core Contract
-
-- CLAUDE.md files are binding work contracts for their subtrees
-- Work products, source materials, instructions, records, assets, and durable docs must stay understandable from the nearest applicable CLAUDE.md plus every parent CLAUDE.md above it
-
-## Read Before Editing
-
-1. Read the root CLAUDE.md
-2. Identify every file or folder you expect to touch
-3. Walk from the repository root to each target path
-4. Read every CLAUDE.md found along each route
-5. If a parent CLAUDE.md lists a child CLAUDE.md whose scope contains the path, read that child and continue from there
-6. Use the nearest CLAUDE.md as the local contract and parent docs for repo-wide rules
-7. If docs conflict, the closer doc controls local work details, but no child doc may weaken DOX
-
-Every meaningful change requires a DOX pass before the task is done.
-
-Update the closest owning CLAUDE.md when a change affects:
-
-- purpose, scope, ownership, or responsibilities
-- required inputs, outputs, permissions, constraints, side effects, or artifacts
-- user preferences about behavior, communication, process, organization, or quality
-- CLAUDE.md creation, deletion, move, rename, or index contents
-
-Update parent docs when parent-level structure, ownership, workflow, or child index changes. Update child docs when parent changes alter local rules. Remove stale or contradictory text immediately. Small edits that do not change behavior or contracts may leave docs unchanged, but the DOX pass still must happen.
-## Hierarchy
-
-- Root CLAUDE.md is the DOX rail: project-wide instructions, global preferences, durable workflow rules, and the top-level Child DOX Index
-- Child CLAUDE.md files own domain-specific instructions and their own Child DOX Index
-- Each parent explains what its direct children cover and what stays owned by the parent
-- The closer a doc is to the work, the more specific and practical it must be
-## Child Doc Shape
-
-- Create a child CLAUDE.md when a folder becomes a durable boundary with its own purpose, rules, responsibilities, workflow, materials, or quality standards
-- Work Guidance must reflect the current standards of the project or user instructions; if there are no specific standards or instructions yet, leave it empty
-- Verification must reflect an existing check; if no verification framework exists yet, leave it empty and update it when one exists
-## User Preferences
-
-When the user requests a durable behavior change, record it here or in the relevant child CLAUDE.md
-
-- The desktop app stays running in the background when its window is closed
-  (hide-on-close, not quit). Reopen via the dock icon or the Cmd+Shift+M global
-  shortcut; Cmd+Q quits. Implemented in `crates/clio-tauri/src/lib.rs`.
+Nested CLAUDE.md files are binding for their subtrees; keep them current when local rules change.
 
 ## Child DOX Index
 
