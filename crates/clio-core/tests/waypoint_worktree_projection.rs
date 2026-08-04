@@ -18,6 +18,7 @@
 //! configured on a developer machine, and the CLI would then reach a live
 //! remote store even with `--db-path` naming a temporary file.
 
+use clio_core::assembly::{self, ResumeRequest};
 use clio_core::db;
 use clio_core::models::*;
 use clio_core::repository;
@@ -234,4 +235,45 @@ fn archiving_a_projection_hides_it_from_default_recall_without_deleting_it() {
         including_archived.total, 1,
         "the history must remain searchable"
     );
+}
+
+#[test]
+fn a_projection_surfaces_through_the_generic_resume_brief() {
+    let conn = test_db();
+    repository::remember(
+        &conn,
+        &projection(
+            "Branch scooda-1784. Next action: run focused UAT on the 2FA enrolment path.",
+            4,
+        ),
+        &Settings::default(),
+    )
+    .unwrap();
+
+    // Waypoint deliberately uses Clio's existing generic handoff path rather
+    // than a second, worktree-specific "resume" API. This proves a projection
+    // is reachable through it.
+    let brief = assembly::build_resume_brief(
+        &conn,
+        &ResumeRequest {
+            namespace: Some(NAMESPACE.into()),
+            query: Some("scooda-1784".into()),
+            ..ResumeRequest::default()
+        },
+    )
+    .unwrap();
+
+    let knowledge = brief
+        .sections
+        .iter()
+        .find(|section| section.heading == "Relevant knowledge")
+        .expect("a summary must be reachable from the knowledge section");
+
+    let item = knowledge
+        .items
+        .iter()
+        .find(|item| item.source.as_deref() == Some(SOURCE))
+        .unwrap_or_else(|| panic!("projection missing from brief: {:?}", knowledge.items));
+    assert!(item.content.contains("run focused UAT"));
+    assert!(!item.reason.is_empty(), "every surfaced item explains why");
 }
