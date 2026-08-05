@@ -484,6 +484,17 @@ pub fn api_key_from_env(purpose: &str) -> Option<String> {
     Some(source.into_key())
 }
 
+/// Whether an environment provider key is present, without logging the
+/// shared-key attribution warning `api_key_from_env` emits — for health
+/// checks that only ask "would resolution succeed?", not "use the key now".
+pub fn env_api_key_present() -> bool {
+    pick_env_key(
+        std::env::var(CLIO_API_KEY_ENV).ok(),
+        std::env::var(SHARED_API_KEY_ENV).ok(),
+    )
+    .is_some()
+}
+
 /// Normalise a configured provider key, treating blank values as absent so the
 /// documented environment fallback can run.
 pub(crate) fn configured_api_key(value: Option<&str>) -> Option<String> {

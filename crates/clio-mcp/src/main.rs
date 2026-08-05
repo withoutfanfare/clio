@@ -1069,8 +1069,17 @@ fn embed_memory_if_current(
         .embed_one(&passage)
         .map_err(|e| format_clio_error(&e))?;
 
-    let conn = conn.lock().map_err(|e| format!("lock error: {e}"))?;
-    let current = clio_core::repository::get_many_pub(&conn, std::slice::from_ref(&memory.id))
+    let mut conn = conn.lock().map_err(|e| format!("lock error: {e}"))?;
+    // One immediate transaction around the check and the write. The mutex
+    // above only serialises THIS process; a CLI or daemon pass in another
+    // process could update the memory between a bare check and a bare write,
+    // and the stale vector would be stored as if it described the new text.
+    // BEGIN IMMEDIATE takes the write lock up front, so nothing can slip in
+    // between the freshness check and the store.
+    let tx = conn
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .map_err(|e| format!("could not open embedding transaction: {e}"))?;
+    let current = clio_core::repository::get_many_pub(&tx, std::slice::from_ref(&memory.id))
         .map_err(|e| format_clio_error(&e))?
         .into_iter()
         .next();
@@ -1083,13 +1092,15 @@ fn embed_memory_if_current(
     }
 
     clio_core::embeddings::store_embedding(
-        &conn,
+        &tx,
         &memory.id,
         backend.model_name(),
         backend.dimensions(),
         &embedding,
     )
-    .map_err(|e| format_clio_error(&e))
+    .map_err(|e| format_clio_error(&e))?;
+    tx.commit()
+        .map_err(|e| format!("could not commit embedding transaction: {e}"))
 }
 
 // ---------------------------------------------------------------------------
