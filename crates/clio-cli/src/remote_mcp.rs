@@ -127,7 +127,10 @@ fn forward_requests<R: BufRead, W: Write>(mut reader: R, writer: &mut W) -> io::
         if line.len() > MAX_MCP_MESSAGE_BYTES {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                "MCP request exceeds the 2 MiB bridge limit",
+                format!(
+                    "MCP request exceeds the {} MiB bridge limit",
+                    MAX_MCP_MESSAGE_BYTES / (1024 * 1024)
+                ),
             ));
         }
         writer.write_all(&rewrite_request(&line))?;
