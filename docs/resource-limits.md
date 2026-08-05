@@ -97,7 +97,7 @@ Defined in `crates/clio-cli/src/remote_mcp.rs`.
 
 | Limit | Value | Notes |
 |---|---:|---|
-| Maximum newline-delimited MCP request | 2 MiB (2,097,152 bytes) | Includes JSON-RPC framing and newline; a larger line closes the bridge input with an invalid-data error instead of being buffered without bound |
+| Maximum newline-delimited MCP request | 8 MiB (8,388,608 bytes) | Includes JSON-RPC framing and newline, sized for the worst-case JSON-escaped 1 MiB payload; a larger line closes the bridge input with an invalid-data error instead of being buffered without bound |
 
 ---
 
