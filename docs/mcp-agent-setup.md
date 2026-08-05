@@ -77,8 +77,9 @@ forwarding configuration. The database and MCP server remain private behind
 SSH; neither needs a public network listener. Each client connection starts its
 own remote `clio-mcp` process, which exits when the client disconnects; no
 long-running server is required. A single newline-delimited request may be at
-most 2 MiB; the bridge rejects a larger line instead of buffering it without a
-bound.
+most 8 MiB — sized for the worst-case JSON-escaped encoding of the 1 MiB
+payload limit plus framing; the bridge rejects a larger line instead of
+buffering it without a bound.
 
 For a headless Linux server, build without local embeddings from the repository
 root so the project SQLite configuration is applied:

@@ -9,7 +9,12 @@ use serde_json::Value;
 
 /// MCP requests may contain the 1 MiB memory payload plus JSON framing, but a
 /// malformed client must not make the SSH bridge buffer an unbounded line.
-const MAX_MCP_MESSAGE_BYTES: usize = 2 * 1024 * 1024;
+///
+/// The limit is sized for the worst-case *encoded* payload, not the decoded
+/// one: JSON string escaping can expand a byte to six (`\u0000`-style), so a
+/// legitimate 1 MiB payload can arrive as ~6 MiB of encoded line plus
+/// envelope. The previous 2 MiB cap rejected such requests as malformed.
+const MAX_MCP_MESSAGE_BYTES: usize = 8 * 1024 * 1024;
 
 pub(crate) fn run(
     host: &str,
@@ -122,7 +127,10 @@ fn forward_requests<R: BufRead, W: Write>(mut reader: R, writer: &mut W) -> io::
         if line.len() > MAX_MCP_MESSAGE_BYTES {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                "MCP request exceeds the 2 MiB bridge limit",
+                format!(
+                    "MCP request exceeds the {} MiB bridge limit",
+                    MAX_MCP_MESSAGE_BYTES / (1024 * 1024)
+                ),
             ));
         }
         writer.write_all(&rewrite_request(&line))?;

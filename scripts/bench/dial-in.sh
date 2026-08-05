@@ -99,7 +99,12 @@ print(sqlite3.connect('$work/memory.db').execute(
          /per brief\)/            { gsub("[()]", "", $(NF-2)); per = $(NF-2) }
          /relevant \(micro/       { gsub("%", "", $1); added = $1 }
          /vs the without-links /  { gsub(/[()x]/, "", $NF); lift = $NF }
-         END { printf "prec=%s MRR=%s added=%s/brief addPrec=%s%% lift=%s\n",
+         END { # A metrics row with holes is not a result: awk exits 0 even when
+               # no pattern matched, so without this check a drifted evaluator
+               # output format would print a blank row that reads as a trial.
+               if (precision == "" || mrr == "" || per == "" || added == "" || lift == "")
+                   exit 1
+               printf "prec=%s MRR=%s added=%s/brief addPrec=%s%% lift=%s\n",
                       precision, mrr, per, added, lift }'
   then
     echo "$label: ABORT — could not summarise recall evaluation output"
