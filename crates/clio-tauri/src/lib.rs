@@ -252,6 +252,12 @@ pub fn run() {
             commands::search::cmd_backend_status,
             commands::stats::cmd_stats,
             commands::stats::cmd_activity,
+            commands::attention::cmd_attention_overview,
+            commands::attention::cmd_action_complete,
+            commands::attention::cmd_action_snooze,
+            commands::attention::cmd_action_cancel,
+            commands::attention::cmd_link_contexts,
+            commands::attention::cmd_capture_queue_health,
             commands::namespaces::cmd_namespaces,
             commands::namespaces::cmd_namespace_details,
             commands::namespaces::cmd_rename_namespace,
@@ -273,6 +279,8 @@ pub fn run() {
             commands::deduplication::cmd_preview_merge,
             commands::deduplication::cmd_merge_memories,
             commands::status::cmd_connection_status,
+            commands::settings::cmd_capture_preferences,
+            commands::settings::cmd_set_capture_model,
         ])
         .build(tauri::generate_context!())
         .expect("Failed to build Clio")

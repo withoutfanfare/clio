@@ -57,7 +57,7 @@ The embedding backend loads in the background so the window appears immediately 
 A Vue 3 single-page application using:
 
 - **Pinia** for state management (`stores/memories.ts`)
-- **Vue Router** for navigation (Home, Stats views)
+- **Vue Router** for navigation (Home, Stats, Namespaces, Tools, Context Builder and Settings views)
 - **Tauri IPC** via `@tauri-apps/api/core` `invoke()` for all backend calls
 - Custom CSS design system (no Tailwind) with glass-morphism aesthetic
 
@@ -84,6 +84,22 @@ All commands are defined in `crates/clio-tauri/src/commands/` and registered in 
 | `cmd_capture` | text, namespace | `CaptureResult` | LLM-classify and store unstructured text |
 | `cmd_cache_clear` | — | `CacheClearResult` | Clear the in-memory cache |
 
+### Attention Commands (`commands/attention.rs`)
+
+The Today / Needs attention surface. Local mode serialises the same core types
+the Atlas `memory_action` tool returns, so local and remote payloads stay
+identical by construction. A remote disconnect surfaces as an error — the app
+never falls back to local storage.
+
+| Command | Parameters | Returns | Description |
+|---|---|---|---|
+| `cmd_attention_overview` | namespace? | `AttentionOverview` (JSON) | Eligible items with reasons, open/snoozed items, review depth, consolidation freshness |
+| `cmd_action_complete` | id, evidence?, reason? | `AttentionItem` (JSON) | Resolve a follow-up; rows stay on screen until the server confirms |
+| `cmd_action_snooze` | id, until | `AttentionItem` (JSON) | Snooze until a time |
+| `cmd_action_cancel` | id, reason? | `AttentionItem` (JSON) | Cancel a follow-up |
+| `cmd_link_contexts` | memory_id | `Vec<LinkContext>` (JSON) | Both-direction edges with relationship + metadata (drives link rows and the decision-history panel) |
+| `cmd_capture_queue_health` | — | JSON or `null` | Client-local capture spool depth; `null` renders as "unavailable", never zero |
+
 ### Search Commands (`commands/search.rs`)
 
 | Command | Parameters | Returns | Description |
@@ -98,6 +114,19 @@ All commands are defined in `crates/clio-tauri/src/commands/` and registered in 
 |---|---|---|---|
 | `cmd_stats` | namespace | `MemoryStats` | Aggregate statistics (counts, breakdowns, top tags) |
 | `cmd_activity` | namespace, limit | `Vec<RecentEntry>` | Recent activity feed |
+
+### Settings Commands (`commands/settings.rs`)
+
+| Command | Parameters | Returns | Description |
+|---|---|---|---|
+| `cmd_capture_preferences` | — | `CapturePreferences` | Read non-secret capture settings from the active local or Atlas backend |
+| `cmd_set_capture_model` | model | `CapturePreferences` | Change only the capture model while preserving credentials, endpoint and review threshold |
+
+The Settings view suggests the benchmarked GPT-4.1, GPT-5.6 Luna and GPT-5.6
+Terra model IDs while accepting a custom compatible ID. In Atlas mode it uses
+the persisted `clio settings use-remote` route and the same CLI command as a
+Terminal session. Environment-only remote configuration cannot change settings;
+persist the route first.
 
 ### Namespace Commands (`commands/namespaces.rs`)
 
@@ -137,6 +166,7 @@ Key types are defined in `ui/src/api/types.ts`:
 
 - **`HomeView.vue`** — Main view with compose area, filter bar, and memory list/grid
 - **`StatsView.vue`** — Statistics dashboard
+- **`SettingsView.vue`** — Non-secret operational settings, currently the shared capture model
 - **`DateGroup.vue`** — Groups memories under a label (date, kind, importance)
 - **`MemoryPage.vue`** — Individual memory card in list or grid mode
 

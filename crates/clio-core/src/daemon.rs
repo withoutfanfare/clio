@@ -34,7 +34,8 @@ pub struct DaemonConfig {
     #[serde(default)]
     pub log_dir: Option<PathBuf>,
 
-    /// Optional HTTP port for the loopback API.
+    /// Reserved compatibility field. The daemon does not currently expose an
+    /// HTTP listener.
     #[serde(default)]
     pub http_port: Option<u16>,
 
@@ -388,16 +389,11 @@ pub fn check_embeddings_health(settings: &Settings) -> HealthCheck {
             status: HealthStatus::Healthy,
             message: "local embedding backend configured".into(),
         },
-        EmbeddingConfig::OpenAi { api_key, .. } => match api_key {
-            Some(key) if !key.is_empty() => HealthCheck {
-                status: HealthStatus::Healthy,
-                message: "OpenAI embedding backend configured".into(),
-            },
-            _ => HealthCheck {
-                status: HealthStatus::Unhealthy,
-                message: "OpenAI embeddings configured but API key is missing".into(),
-            },
-        },
+        EmbeddingConfig::OpenAi { api_key, .. } => api_key_health(
+            api_key.as_deref(),
+            crate::settings::env_api_key_present(),
+            "OpenAI embedding backend",
+        ),
         EmbeddingConfig::Disabled => HealthCheck {
             status: HealthStatus::Unconfigured,
             message: "embeddings are disabled".into(),
@@ -414,15 +410,40 @@ pub fn check_capture_health(settings: &Settings) -> HealthCheck {
         };
     }
 
-    match &settings.capture.api_key {
-        Some(key) if !key.is_empty() => HealthCheck {
+    api_key_health(
+        settings.capture.api_key.as_deref(),
+        crate::settings::env_api_key_present(),
+        "capture pipeline",
+    )
+}
+
+/// Health of a provider API key, resolved the same way the providers
+/// themselves resolve one: a configured key first, then the environment.
+/// Checking only the configured key reported valid environment-only setups
+/// as unhealthy — the check said "missing" while every actual call
+/// succeeded, which is exactly the misleading status a health check exists
+/// to avoid. `env_present` is passed in rather than read here so the logic
+/// stays testable without mutating process-wide environment state.
+fn api_key_health(configured: Option<&str>, env_present: bool, what: &str) -> HealthCheck {
+    if crate::settings::configured_api_key(configured).is_some() {
+        return HealthCheck {
             status: HealthStatus::Healthy,
-            message: "capture pipeline enabled with API key".into(),
-        },
-        _ => HealthCheck {
-            status: HealthStatus::Unhealthy,
-            message: "capture pipeline enabled but API key is missing".into(),
-        },
+            message: format!("{what} has a configured API key"),
+        };
+    }
+    if env_present {
+        return HealthCheck {
+            status: HealthStatus::Healthy,
+            message: format!("{what} will use the environment API key"),
+        };
+    }
+    HealthCheck {
+        status: HealthStatus::Unhealthy,
+        message: format!(
+            "{what} has no API key in settings and none in the environment ({} or {})",
+            crate::settings::CLIO_API_KEY_ENV,
+            crate::settings::SHARED_API_KEY_ENV
+        ),
     }
 }
 
@@ -438,6 +459,35 @@ pub fn run_health_checks(db_path: &Path, settings: &Settings) -> DaemonHealth {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_environment_only_key_setup_is_reported_healthy() {
+        // The defect this closes: health checks examined only the configured
+        // key while the providers themselves fall back to the environment, so
+        // a working environment-only setup was reported unhealthy.
+        let health = api_key_health(None, true, "capture pipeline");
+        assert_eq!(health.status, HealthStatus::Healthy);
+        assert!(health.message.contains("environment"), "{}", health.message);
+    }
+
+    #[test]
+    fn a_blank_configured_key_with_an_environment_key_is_healthy() {
+        // Blank configured keys are treated as absent everywhere else; the
+        // health check must agree.
+        let health = api_key_health(Some("   "), true, "capture pipeline");
+        assert_eq!(health.status, HealthStatus::Healthy);
+    }
+
+    #[test]
+    fn no_key_anywhere_is_unhealthy_and_names_both_channels() {
+        let health = api_key_health(None, false, "capture pipeline");
+        assert_eq!(health.status, HealthStatus::Unhealthy);
+        assert!(
+            health.message.contains("OPENAI_API_KEY"),
+            "the remedy must name the environment variables: {}",
+            health.message
+        );
+    }
 
     #[test]
     fn database_health_runs_sqlite_quick_check() {

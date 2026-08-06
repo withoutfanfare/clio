@@ -201,15 +201,29 @@ CREATE TABLE memory_links (
 - reciprocal links are not implied
 - duplicate links of the same type between the same nodes are disallowed
 - `metadata_json` allows future explanation or provenance of the edge
+- graph reads preserve direction, relationship and metadata: linked recall
+  returns each connected memory once with every edge context that reached it,
+  and `repository::get_link_contexts` exposes both directions for one memory
+- automatically persisted links always use the `auto:` prefix
+  (`auto:relates_to`); typed relations are created by people (or accepted
+  proposals), never silently by a model
 
-Recommended relationship labels:
+The relationship vocabulary is open; these labels are documented and preferred:
 
 - `relates_to`
+- `same_as`
 - `supports`
 - `contradicts`
 - `derived_from`
 - `supersedes`
+- `reverses`
 - `references`
+- `evidence_for`
+- `follow_up_of`
+- `blocks`
+- `resolved_by`
+- `implements`
+- `continuation_of`
 
 ## `schema_migrations`
 
@@ -328,6 +342,202 @@ CREATE INDEX IF NOT EXISTS idx_review_queue_status ON review_queue(status);
 - `reject` sets status to `rejected` — the item remains in the table but is not converted
 - `edit` updates suggested fields and sets status to `edited` — still requires approval
 - `review_threshold` is an optional float in `CaptureConfig`; when `None`, all captures bypass the queue
+
+## `session_checkpoints`
+
+Records the durable outcome of distilling one session delta exactly once. Added by migration `009_session_checkpoints`.
+
+```sql
+CREATE TABLE session_checkpoints (
+    id TEXT PRIMARY KEY,
+    source TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    cursor INTEGER NOT NULL,
+    namespace TEXT,
+    branch TEXT,
+    ticket TEXT,
+    result_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+CREATE UNIQUE INDEX idx_session_checkpoints_identity
+    ON session_checkpoints(source, session_id, cursor);
+```
+
+### Field semantics
+
+| Field | Meaning | Rules |
+|---|---|---|
+| `id` | opaque checkpoint id | UUIDv7 |
+| `source` | capturing agent (e.g. `claude-session`) | required |
+| `session_id` | client session identifier | required |
+| `cursor` | monotonic transcript cursor for the delta's end | required, `>= 0` |
+| `namespace` | requested namespace context | nullable |
+| `branch` | git branch active during the session | nullable |
+| `ticket` | ticket/issue identifier | nullable |
+| `result_json` | stored result envelope: memory IDs and review-item IDs | JSON; never transcript text or secrets |
+| `created_at` | when the checkpoint committed | ISO-8601 UTC |
+
+### Checkpoint rules
+
+- The identity is `(source, session_id, cursor)`: a repeated or concurrently delivered key replays the stored `result_json` instead of storing new atoms.
+- The extracted memories, review items and checkpoint row commit in one transaction; any failure rolls back all of them. No partial session can persist.
+- Model extraction and embedding happen strictly outside the write transaction; auto-embedding runs best-effort after commit.
+- An intentionally empty extraction is a successful checkpoint and is never redistilled.
+- Checkpoint rows are the replay proof — never delete them to tidy up.
+- Per-atom provenance uses `source` plus `source_ref = {session_id}@{cursor}-{index}`, keeping the existing `UNIQUE(source, source_ref)` upsert rule intact.
+
+## `attention_items`
+
+One optional operational row per memory: something the user committed to, is waiting on, or must decide. Added by migration `010_attention_and_events`.
+
+```sql
+CREATE TABLE attention_items (
+    id TEXT PRIMARY KEY,
+    memory_id TEXT NOT NULL UNIQUE,
+    namespace TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'open'
+        CHECK (status IN ('open', 'snoozed', 'resolved', 'cancelled')),
+    owner TEXT,
+    due_at TEXT,
+    remind_at TEXT,
+    trigger_kind TEXT,
+    waiting_on TEXT,
+    completion_condition TEXT,
+    external_system TEXT,
+    external_ref TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    resolved_at TEXT,
+    FOREIGN KEY (memory_id) REFERENCES memories(id) ON DELETE CASCADE
+);
+
+CREATE INDEX idx_attention_status ON attention_items(status, namespace);
+```
+
+### Attention rules
+
+- Statuses are only `open`, `snoozed`, `resolved`, `cancelled`. Invalid transitions are validation errors, not no-ops; `resolved` and `cancelled` are terminal.
+- Creation is idempotent per memory and commits atomically with its `attention_opened` event.
+- Completion never deletes or rewrites the source memory; it records a `resolved` event and, when evidence is supplied, a `resolved_by` link from the followed-up memory to the evidence memory.
+- Eligibility (`overdue`, `reminder_due`, `project_session`, `dormant`) is a pure read returning a machine-readable reason; it mutates nothing, including access ranking.
+- Existing `task`-kind memories remain valid without attention rows.
+
+## `memory_events`
+
+Append-only ledger of what happened to memories: surfaced, acknowledged, acted, snoozed, resolved. Added by migration `010_attention_and_events`.
+
+```sql
+CREATE TABLE memory_events (
+    id TEXT PRIMARY KEY,
+    idempotency_key TEXT,
+    memory_id TEXT,
+    namespace TEXT,
+    actor TEXT,
+    session_id TEXT,
+    topic TEXT,
+    event_type TEXT NOT NULL CHECK (length(event_type) BETWEEN 1 AND 40),
+    reason TEXT,
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL
+);
+
+CREATE UNIQUE INDEX idx_memory_events_idempotency
+    ON memory_events(idempotency_key) WHERE idempotency_key IS NOT NULL;
+CREATE INDEX idx_memory_events_memory ON memory_events(memory_id, created_at);
+```
+
+### Event rules
+
+- The vocabulary is narrow and validated in core: `attention_opened`, `surfaced`, `acknowledged`, `acted`, `snoozed`, `dismissed`, `resolved`, `cancelled`, `external_attached`.
+- An `idempotency_key` makes a write a no-op when already recorded — automatic surfacing records at most one `surfaced` event per item, scope (session/topic), reason and item state.
+- Events accompanying a state change share the state change's transaction; observational events are fire-and-forget and can never fail the parent operation.
+- Events never mutate memories or their `access_count`/`last_accessed_at` ranking data.
+
+## `memory_occurrences`
+
+Append-only sightings of a canonical memory's content: repeated exact evidence strengthens one row instead of duplicating it, without losing provenance. Added by migration `011_occurrences_and_namespace_state`.
+
+```sql
+CREATE TABLE memory_occurrences (
+    id TEXT PRIMARY KEY,
+    memory_id TEXT NOT NULL,
+    source TEXT,
+    source_ref TEXT,
+    session_id TEXT,
+    occurred_at TEXT NOT NULL,
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    FOREIGN KEY (memory_id) REFERENCES memories(id) ON DELETE CASCADE
+);
+
+CREATE INDEX idx_memory_occurrences_memory
+    ON memory_occurrences(memory_id, occurred_at);
+
+CREATE UNIQUE INDEX idx_memory_occurrences_provenance
+    ON memory_occurrences(memory_id, source, source_ref)
+    WHERE source IS NOT NULL AND source_ref IS NOT NULL;
+```
+
+### Occurrence rules
+
+- The capture path records an occurrence for the first sighting and for every dedup/revival hit; the partial unique index makes checkpoint replays and duplicate deliveries no-ops.
+- Occurrence writes share their caller's capture/review transaction.
+- `merge_memories` transfers occurrences to the kept memory before archiving the duplicate row; provenance collisions are dropped as duplicates.
+
+## `namespace_state`
+
+Per-namespace mutation generation, bumped by triggers on every memory, link, attention and occurrence write. Derived views (the consolidated singleton) store the generation as a freshness watermark; alternate adapters cannot forget invalidation because the triggers do it. Added by migration `011_occurrences_and_namespace_state`.
+
+```sql
+CREATE TABLE namespace_state (
+    namespace TEXT PRIMARY KEY,
+    generation INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL
+);
+```
+
+### Consolidation freshness
+
+- The consolidated singleton's metadata carries `generation`, `consolidated_from`, `truncated` and the full structured `citations`.
+- Every material statement must cite input memory IDs; invalid or uncited candidates are rejected and the previous view stays in place, visibly stale.
+- `consolidation_is_stale` compares the stored watermark to the current generation; a pre-watermark (legacy) singleton always reads as stale.
+- Receipts are excluded from consolidation input; contradictions stay separate and labelled unresolved.
+
+## `delivery_outbox`
+
+The state machine between one-tap approval and a *proved* external handoff (Things/Linear). Added by migration `012_delivery_outbox`.
+
+```sql
+CREATE TABLE delivery_outbox (
+    id TEXT PRIMARY KEY,
+    delivery_key TEXT NOT NULL UNIQUE,
+    attention_id TEXT NOT NULL,
+    destination TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending'
+        CHECK (status IN ('pending', 'delivering', 'delivered', 'failed')),
+    attempts INTEGER NOT NULL DEFAULT 0,
+    last_error TEXT,
+    external_id TEXT,
+    readback_json TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    delivered_at TEXT,
+    FOREIGN KEY (attention_id) REFERENCES attention_items(id) ON DELETE CASCADE
+);
+
+CREATE INDEX idx_delivery_outbox_status ON delivery_outbox(status, destination);
+```
+
+### Delivery rules
+
+- `delivery_key = {destination}:{attention_id}`: a duplicate approval replays the one record — never a second external item.
+- `delivered` requires a verified read-back: the stable `external_id` plus `readback_json` evidence, stored atomically with the attention item's external reference.
+- One verified external identity maps to one delivery: `(destination, external_id)` is unique (partial index), a conflicting confirmation is rejected with the colliding delivery named, and a replay is accepted only with the exact stored ID.
+- Network/auth/create/read-back failure leaves the record retryable (`failed` → `retry` → `pending`) and the attention item open. A crash after the external create is visibly stuck in `delivering` and is NOT blindly retryable: reconcile with the destination first, then `confirm_delivery` with the found ID or `fail_delivery` with evidence nothing was created.
+- External completion mirrors into Clio only by a stable external ID Clio itself recorded; a conflicting local terminal state is preserved and the disagreement recorded as an event.
+- Credentials never enter this table, memory metadata, logs or payloads — adapters hold them in the user process.
+- Destination adapters (the actual Things/Linear API code) are gated on proving each product's create + read-back contract live.
 
 ## Indexes
 
@@ -631,6 +841,11 @@ The export format should be easy for:
 | `006_scoped_recall_indexes` | active namespace/kind and review queue creation-time indexes |
 | `007_content_dedup_index` | exact-content duplicate probe index |
 | `008_review_source_ref` | `source_ref` column on `review_queue` |
+| `009_session_checkpoints` | `session_checkpoints` table with unique `(source, session_id, cursor)` identity |
+| `010_attention_and_events` | `attention_items` follow-up lifecycle table and append-only `memory_events` ledger |
+| `011_occurrences_and_namespace_state` | `memory_occurrences` sightings, `namespace_state` mutation generation and its triggers |
+| `012_delivery_outbox` | `delivery_outbox` verified external-handoff state machine |
+| `013_delivery_external_identity` | unique `(destination, external_id)` on delivered outbox rows |
 
 ## Invariants For Implementers
 

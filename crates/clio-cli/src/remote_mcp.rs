@@ -7,6 +7,15 @@ use std::process::{Command, Stdio};
 use clio_core::settings::RemoteConfig;
 use serde_json::Value;
 
+/// MCP requests may contain the 1 MiB memory payload plus JSON framing, but a
+/// malformed client must not make the SSH bridge buffer an unbounded line.
+///
+/// The limit is sized for the worst-case *encoded* payload, not the decoded
+/// one: JSON string escaping can expand a byte to six (`\u0000`-style), so a
+/// legitimate 1 MiB payload can arrive as ~6 MiB of encoded line plus
+/// envelope. The previous 2 MiB cap rejected such requests as malformed.
+const MAX_MCP_MESSAGE_BYTES: usize = 8 * 1024 * 1024;
+
 pub(crate) fn run(
     host: &str,
     remote_binary: &str,
@@ -111,8 +120,18 @@ fn forward_requests<R: BufRead, W: Write>(mut reader: R, writer: &mut W) -> io::
     let mut line = Vec::new();
     loop {
         line.clear();
-        if reader.read_until(b'\n', &mut line)? == 0 {
+        let mut limited = std::io::Read::take(&mut reader, (MAX_MCP_MESSAGE_BYTES + 1) as u64);
+        if limited.read_until(b'\n', &mut line)? == 0 {
             break;
+        }
+        if line.len() > MAX_MCP_MESSAGE_BYTES {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "MCP request exceeds the {} MiB bridge limit",
+                    MAX_MCP_MESSAGE_BYTES / (1024 * 1024)
+                ),
+            ));
         }
         writer.write_all(&rewrite_request(&line))?;
         writer.flush()?;
@@ -331,6 +350,17 @@ mod tests {
         assert!(!arguments.contains_key("_clio_namespace"));
 
         fs::remove_dir(cwd).unwrap();
+    }
+
+    #[test]
+    fn rejects_oversized_mcp_request_lines() {
+        let input = vec![b'x'; MAX_MCP_MESSAGE_BYTES + 1];
+        let mut output = Vec::new();
+
+        let error = forward_requests(std::io::Cursor::new(input), &mut output).unwrap_err();
+
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(output.is_empty());
     }
 
     #[test]

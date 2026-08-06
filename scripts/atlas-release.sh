@@ -213,6 +213,63 @@ mcp_is_gated() {
   [[ -L "$CLIO_BIN_DIR/clio-mcp" && "$(readlink "$CLIO_BIN_DIR/clio-mcp")" == /usr/bin/false ]]
 }
 
+# Terminate lingering MCP servers so clients reconnect against the release just
+# activated. Swapping the `current` symlink does not affect a running process — it
+# keeps the executable it already loaded — so without this a long-lived session
+# serves superseded code indefinitely, and the mismatch is invisible from the
+# client. SIGTERM kills clio-mcp immediately (it installs no handler); the
+# database stays consistent, and clients reconnect on their next call.
+#
+# Set CLIO_KEEP_MCP_SESSIONS=1 to leave them alone, accepting that they run old code.
+drain_mcp() {
+  if [[ "${CLIO_KEEP_MCP_SESSIONS:-0}" == 1 ]]; then
+    printf 'Existing MCP sessions left running (CLIO_KEEP_MCP_SESSIONS=1); they continue on superseded code.\n'
+    return 0
+  fi
+
+  # Exact-name match, scoped to the invoking user, and signal only the PIDs
+  # captured here — never a pattern that could match an unrelated process, and
+  # never someone else's session.
+  local pids
+  pids="$(pgrep -u "$(id -u)" -x clio-mcp 2>/dev/null || true)"
+  if [[ -z "$pids" ]]; then
+    printf 'No MCP sessions to drain.\n'
+    return 0
+  fi
+
+  local count=0 unsignalled=0 pid
+  for pid in $pids; do
+    if kill -TERM "$pid" 2>/dev/null; then
+      count=$((count + 1))
+    else
+      # Already exited, or not signallable after all. Report rather than let it
+      # masquerade as "still exiting".
+      unsignalled=$((unsignalled + 1))
+    fi
+  done
+
+  # Give them a moment to exit before reporting. No escalation to SIGKILL — but be
+  # honest about what SIGTERM does here: clio-mcp installs no signal handler, so
+  # this is an immediate termination, not a graceful drain. The database stays
+  # consistent (WAL rolls back an uncommitted transaction and the OS releases the
+  # flock lease); a request in flight at that instant is lost and its client sees
+  # a transport error, then reconnects into the new release on the next call.
+  local waited=0
+  while [[ $waited -lt 10 ]] && pgrep -u "$(id -u)" -x clio-mcp >/dev/null 2>&1; do
+    sleep 1
+    waited=$((waited + 1))
+  done
+
+  local remaining
+  remaining="$(pgrep -u "$(id -u)" -cx clio-mcp 2>/dev/null || true)"
+  [[ "$unsignalled" -eq 0 ]] || printf 'Could not signal %s MCP process(es) (already gone, or not permitted).\n' "$unsignalled"
+  if [[ "${remaining:-0}" -gt 0 ]]; then
+    printf 'Signalled %s MCP session(s); %s still running after 10s — check them by hand.\n' "$count" "$remaining"
+  else
+    printf 'Drained %s MCP session(s); clients will reconnect to the new release.\n' "$count"
+  fi
+}
+
 detect_existing_gate() {
   local sha="$1" candidate=""
   if mcp_is_gated; then
@@ -344,7 +401,8 @@ deploy() {
     activate_release "$release_dir"
     CLIO_RELEASE_ACTIVATED=true
   fi
-  printf 'Deployed %s. Existing MCP processes were not restarted.\n' "$sha"
+  drain_mcp
+  printf 'Deployed %s.\n' "$sha"
 }
 
 print_binary_status() {
@@ -388,7 +446,8 @@ rollback() {
     && -r "$release_dir/bin/libonnxruntime.so" ]] || fail "Release is incomplete or missing: $release_dir"
   install -d -m 755 "$CLIO_BIN_DIR" "$CLIO_INSTALL_ROOT/releases"
   activate_release "$release_dir"
-  printf 'Rolled binary links back to %s. The database was not restored and MCP processes were not restarted.\n' "$sha"
+  drain_mcp
+  printf 'Rolled binary links back to %s. The database was not restored.\n' "$sha"
 }
 
 case "${1:-}" in

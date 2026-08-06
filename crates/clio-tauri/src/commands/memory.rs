@@ -187,6 +187,7 @@ pub async fn cmd_recall(
         include_links: false,
         exclude_expired: false,
         scoring: Some(app.settings.scoring.clone()),
+        skip_access_tracking: false,
     };
 
     let result = app.cache.recall(&app.conn, &q)?;
@@ -265,6 +266,7 @@ pub async fn cmd_recent(
         include_links: false,
         exclude_expired: false,
         scoring: Some(app.settings.scoring.clone()),
+        skip_access_tracking: false,
     };
 
     let result = app.cache.recall(&app.conn, &q)?;
@@ -410,6 +412,7 @@ pub async fn cmd_capture(
         &text,
         &app.settings.capture,
         namespace.as_deref(),
+        None,
         &app.settings,
     )?;
     Ok(result)

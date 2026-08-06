@@ -1,8 +1,7 @@
 # crates — Rust workspace
 
 Local contract for the Rust workspace. Inherits all repo-wide rules from the
-root CLAUDE.md (DOX rail, British English, conventional commits, critical
-invariants). This doc owns the crate boundaries and Rust build/test workflow.
+root CLAUDE.md. This doc owns the crate boundaries and Rust build/test workflow.
 
 ## Purpose
 
@@ -25,20 +24,14 @@ Five crates make up Clio: one core library and four thin adapters over it.
 
 ## Work Guidance
 
-- **Never put business logic outside `clio-core`.** Adapters parse input, call
-  core, and format output — nothing more.
 - MCP defaults must match CLI/core semantics exactly.
-- Follow existing crate and module boundaries; keep changes minimal and focused.
+- Follow existing crate and module boundaries.
 - `clio-tauri` backend commands live under `src/commands/` (one module per
   domain: memory, search, stats, namespaces, clipboard, deduplication).
 
 ## Verification
 
-- Build all: `./build.sh` — installs binaries, restarts daemon (macOS/launchctl).
-- Build one: `./build.sh {cli|mcp|daemon|tauri|restart}` (short names only).
-- Rust-only: `cargo build` / `cargo test`.
-- Single test: `cargo test -p clio-core <name>`.
-- Lint/format: `cargo fmt` / `cargo clippy` (workspace defaults, no custom config).
+Build/dev commands: see root CLAUDE.md.
 
 ## Child DOX Index
 

@@ -1410,6 +1410,115 @@ fn recall_with_include_links_appends_linked_memories() {
     assert!(result_no_links.items[0].linked_from.is_none());
 }
 
+fn link_simple(conn: &rusqlite::Connection, from: &Memory, to: &Memory) {
+    repository::link(
+        conn,
+        &LinkInput {
+            from_memory_id: from.id.clone(),
+            to_memory_id: to.id.clone(),
+            relationship: "relates_to".into(),
+            metadata: serde_json::json!({}),
+        },
+    )
+    .unwrap();
+}
+
+#[test]
+fn recall_with_include_links_hides_archived_and_expired_targets() {
+    let conn = test_db();
+
+    let anchor = remember_simple(&conn, "anchor memory about quinces");
+    let live = remember_simple(&conn, "linked live fact");
+    let archived = remember_simple(&conn, "linked archived fact");
+    repository::archive(&conn, &archived.id).unwrap();
+    let expired = repository::remember(
+        &conn,
+        &RememberInput {
+            valid_until: Some("2000-01-01T00:00:00Z".into()),
+            ..base_input("linked expired fact")
+        },
+        &Settings::default(),
+    )
+    .unwrap();
+
+    link_simple(&conn, &anchor, &live);
+    link_simple(&conn, &anchor, &archived);
+    link_simple(&conn, &anchor, &expired);
+
+    // Default recall: an archived linked target must stay hidden.
+    let result = repository::recall(
+        &conn,
+        &RecallQuery {
+            query: Some("quinces".into()),
+            include_links: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let ids: Vec<&str> = result.items.iter().map(|i| i.memory.id.as_str()).collect();
+    assert!(
+        ids.contains(&live.id.as_str()),
+        "live linked target should appear"
+    );
+    assert!(
+        !ids.contains(&archived.id.as_str()),
+        "archived linked target must stay hidden in default recall"
+    );
+    assert_eq!(result.count as usize, result.items.len());
+
+    // Expiry eligibility follows the parent query.
+    let result = repository::recall(
+        &conn,
+        &RecallQuery {
+            query: Some("quinces".into()),
+            include_links: true,
+            exclude_expired: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let ids: Vec<&str> = result.items.iter().map(|i| i.memory.id.as_str()).collect();
+    assert!(ids.contains(&live.id.as_str()));
+    assert!(
+        !ids.contains(&expired.id.as_str()),
+        "expired linked target must stay hidden when the parent recall excludes expired"
+    );
+    assert!(!ids.contains(&archived.id.as_str()));
+    assert_eq!(result.count as usize, result.items.len());
+}
+
+#[test]
+fn recall_with_include_archived_still_expands_archived_targets() {
+    // Characterisation: an explicitly requested archived recall keeps working,
+    // and linked expansion follows the parent query's eligibility.
+    let conn = test_db();
+
+    let anchor = remember_simple(&conn, "anchor memory about medlars");
+    let archived = remember_simple(&conn, "linked archived companion");
+    repository::archive(&conn, &archived.id).unwrap();
+    link_simple(&conn, &anchor, &archived);
+
+    let result = repository::recall(
+        &conn,
+        &RecallQuery {
+            query: Some("medlars".into()),
+            include_links: true,
+            include_archived: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let archived_item = result.items.iter().find(|i| i.memory.id == archived.id);
+    assert!(
+        archived_item.is_some(),
+        "archived linked target should appear when the parent recall includes archived"
+    );
+    assert_eq!(
+        archived_item.unwrap().linked_from.as_deref(),
+        Some(anchor.id.as_str())
+    );
+}
+
 #[test]
 fn bulk_link_expansion_returns_linked_memories() {
     let conn = test_db();
@@ -1522,6 +1631,7 @@ fn bulk_link_expansion_returns_linked_memories() {
             offset: 0,
             limit: 50,
             scoring: None,
+            skip_access_tracking: false,
         },
     )
     .unwrap();
@@ -1555,7 +1665,8 @@ fn merge_retains_tags_in_memory_tags_table() {
     let keep = remember_with_tags(&conn, "Primary content about rust", &["alpha", "beta"]);
     let dup = remember_with_tags(&conn, "Duplicate content about rust", &["beta", "gamma"]);
 
-    clio_core::deduplication::merge_memories(&conn, &keep.id, &[dup.id.clone()]).unwrap();
+    clio_core::deduplication::merge_memories(&conn, &keep.id, std::slice::from_ref(&dup.id))
+        .unwrap();
 
     // Regression: the normalised memory_tags rows for the kept memory were silently
     // dropped because the re-insert omitted the NOT NULL created_at column.
@@ -1703,7 +1814,8 @@ fn merge_does_not_inflate_access_count() {
     let keep = remember_simple(&conn, "keep this memory");
     let dup = remember_simple(&conn, "duplicate memory");
 
-    clio_core::deduplication::merge_memories(&conn, &keep.id, &[dup.id.clone()]).unwrap();
+    clio_core::deduplication::merge_memories(&conn, &keep.id, std::slice::from_ref(&dup.id))
+        .unwrap();
 
     let access_count: i64 = conn
         .query_row(
@@ -1845,12 +1957,26 @@ fn capture_of_identical_content_does_not_duplicate() {
     };
 
     let first = stored_id(
-        capture_with_classification(&conn, body, &classification, None, &Settings::default())
-            .unwrap(),
+        capture_with_classification(
+            &conn,
+            body,
+            &classification,
+            None,
+            None,
+            &Settings::default(),
+        )
+        .unwrap(),
     );
     let second = stored_id(
-        capture_with_classification(&conn, body, &classification, None, &Settings::default())
-            .unwrap(),
+        capture_with_classification(
+            &conn,
+            body,
+            &classification,
+            None,
+            None,
+            &Settings::default(),
+        )
+        .unwrap(),
     );
 
     assert_eq!(
@@ -1867,6 +1993,72 @@ fn capture_of_identical_content_does_not_duplicate() {
     )
     .unwrap();
     assert_eq!(res.total, 1, "no duplicate row should be created");
+}
+
+#[test]
+fn capture_and_distill_share_one_namespace_precedence() {
+    use clio_core::capture::{CaptureResult, ClassificationResult, capture_with_classification};
+
+    let conn = test_db();
+    let classify_into = |ns: &str, title: &str| ClassificationResult {
+        kind: "fact".into(),
+        title: title.into(),
+        summary: "s".into(),
+        tags: vec![],
+        namespace: ns.into(),
+        importance: 3,
+        confidence: 0.9,
+    };
+    let capture_into = |classification: &ClassificationResult,
+                        override_ns: Option<&str>,
+                        default_ns: Option<&str>|
+     -> String {
+        match capture_with_classification(
+            &conn,
+            &format!("body for {}", classification.title),
+            classification,
+            override_ns,
+            default_ns,
+            &Settings::default(),
+        )
+        .unwrap()
+        {
+            CaptureResult::Stored(m) => m.namespace,
+            CaptureResult::Queued(_) => panic!("expected Stored, got Queued"),
+        }
+    };
+
+    // The drift this guards against: capture once let the working directory
+    // override a model's `global` promotion while distill honoured it, so the
+    // same classification landed in different namespaces depending on which
+    // command stored it. Both now resolve through capture::resolve_namespace.
+    assert_eq!(
+        capture_into(
+            &classify_into("global", "applies everywhere"),
+            None,
+            Some("project:cwd")
+        ),
+        "global",
+        "the model's global promotion must beat the working-directory default"
+    );
+    assert_eq!(
+        capture_into(
+            &classify_into("project:model-idea", "project fact"),
+            None,
+            Some("project:cwd")
+        ),
+        "project:cwd",
+        "a non-global suggestion yields to the working directory"
+    );
+    assert_eq!(
+        capture_into(
+            &classify_into("global", "explicitly filed"),
+            Some("project:explicit"),
+            Some("project:cwd")
+        ),
+        "project:explicit",
+        "an explicit override beats everything, including a global promotion"
+    );
 }
 
 #[test]
@@ -2325,4 +2517,886 @@ fn recall_scoped_global_fallback_is_global_only() {
     assert_eq!(res.total, 1);
     assert_eq!(res.count, 1);
     assert_eq!(res.items[0].memory.namespace, "global");
+}
+
+// ---------------------------------------------------------------------------
+// Attention lifecycle (public API)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn attention_lifecycle_preserves_content_and_history() {
+    use clio_core::attention;
+
+    let conn = test_db();
+    let memory = remember_simple(&conn, "Follow up: verify the deployment");
+
+    let item = attention::create_attention(
+        &conn,
+        &attention::AttentionInput {
+            memory_id: memory.id.clone(),
+            owner: Some("user".into()),
+            due_at: Some("2026-07-01T00:00:00Z".into()),
+            ..attention::AttentionInput::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(item.status, "open");
+
+    // Eligible with a machine-readable reason at a fixed time.
+    let eligible = attention::eligible(
+        &conn,
+        &attention::EligibilityContext {
+            namespace: None,
+            scope: None,
+            now: "2026-07-29T12:00:00Z".into(),
+            dormant_days: 0,
+        },
+    )
+    .unwrap();
+    assert_eq!(eligible.len(), 1);
+    assert_eq!(eligible[0].reason.as_str(), "overdue");
+
+    // Snooze, then resolve with evidence; the source memory is untouched.
+    attention::snooze(&conn, &item.id, "2026-08-01T00:00:00Z", Some("user")).unwrap();
+    let evidence = remember_simple(&conn, "Deployment verified via smoke test");
+    let resolved =
+        attention::complete(&conn, &item.id, Some(&evidence.id), None, Some("user")).unwrap();
+    assert_eq!(resolved.status, "resolved");
+
+    let unchanged = repository::get(&conn, &memory.id).unwrap();
+    assert_eq!(unchanged.content, "Follow up: verify the deployment");
+
+    let history = clio_core::events::list_events(&conn, &memory.id, 20).unwrap();
+    let types: Vec<&str> = history.iter().map(|e| e.event_type.as_str()).collect();
+    assert_eq!(types, vec!["attention_opened", "snoozed", "resolved"]);
+}
+
+// ---------------------------------------------------------------------------
+// Session-attention fixture runner (payload -> operational outcome)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn session_attention_cases_route_to_the_annotated_outcome() {
+    use clio_core::attention;
+    use clio_core::checkpoint::{self, CheckpointRequest};
+
+    let fixture: serde_json::Value =
+        serde_json::from_str(include_str!("fixtures/session_attention_cases.json")).unwrap();
+
+    for (index, case) in fixture["cases"].as_array().unwrap().iter().enumerate() {
+        let name = case["name"].as_str().unwrap();
+        let conn = test_db();
+        let settings = Settings::default();
+
+        // A resolution case needs a pre-existing open loop to complete.
+        let target_id = {
+            let target = remember_simple(&conn, "Open loop: verify the deployment");
+            attention::create_attention(
+                &conn,
+                &attention::AttentionInput {
+                    memory_id: target.id.clone(),
+                    ..attention::AttentionInput::default()
+                },
+            )
+            .unwrap();
+            target.id
+        };
+
+        let payload = serde_json::to_string(&serde_json::json!({
+            "memories": [case["payload"]]
+        }))
+        .unwrap()
+        .replace("__TARGET_MEMORY_ID__", &target_id);
+        let memories = clio_core::capture::parse_distillation(&payload).unwrap();
+        assert_eq!(memories.len(), 1, "case {name}: payload must parse");
+
+        let result = checkpoint::store_checkpoint(
+            &conn,
+            &CheckpointRequest {
+                source: "claude-session".into(),
+                session_id: format!("fixture-{index}"),
+                cursor: 1,
+                namespace_override: None,
+                default_namespace: Some("project:clio".into()),
+                cwd: None,
+                branch: Some("develop".into()),
+                ticket: Some("CLIO-42".into()),
+            },
+            &memories,
+            &settings,
+        )
+        .unwrap();
+
+        let expect = &case["expect"];
+        let stored_new: Vec<&String> = result
+            .stored_memory_ids
+            .iter()
+            .filter(|id| **id != target_id)
+            .collect();
+        assert_eq!(
+            !stored_new.is_empty(),
+            expect["stored"].as_bool().unwrap(),
+            "case {name}: stored expectation"
+        );
+        assert_eq!(
+            result.queued_review_ids.len() == 1,
+            expect["review_queued"].as_bool().unwrap(),
+            "case {name}: review expectation"
+        );
+
+        if expect["attention_open"].as_bool().unwrap() {
+            let memory_id = stored_new[0];
+            let item = attention::get_by_memory(&conn, memory_id).unwrap().unwrap();
+            assert_eq!(item.status, "open", "case {name}: attention open");
+            // Deterministic ticket tagging survives into the stored memory.
+            let stored = repository::get(&conn, memory_id).unwrap();
+            assert!(
+                stored.tags.iter().any(|t| t == "ticket:clio-42"),
+                "case {name}: ticket tag applied, got {:?}",
+                stored.tags
+            );
+        } else if expect["stored"].as_bool().unwrap() {
+            let memory_id = stored_new[0];
+            assert!(
+                attention::get_by_memory(&conn, memory_id)
+                    .unwrap()
+                    .is_none(),
+                "case {name}: no attention expected"
+            );
+        }
+
+        // A queued suggestion must carry enough metadata for approval to
+        // open attention atomically.
+        if expect["review_queued"].as_bool().unwrap() {
+            let review_id = &result.queued_review_ids[0];
+            let item = clio_core::review::get_review(&conn, review_id).unwrap();
+            assert!(
+                item.metadata.get("attention").is_some(),
+                "case {name}: queued item keeps attention metadata"
+            );
+            let memory = clio_core::review::approve_review(&conn, review_id, &settings).unwrap();
+            let opened = attention::get_by_memory(&conn, &memory.id).unwrap();
+            assert!(
+                opened.is_some(),
+                "case {name}: approval opens attention atomically"
+            );
+        }
+
+        // Resolution claims are review candidates, never automatic
+        // completions: the target ALWAYS stays open, and an explicit
+        // stable-ID claim records a visible candidate event.
+        let target_state = attention::get_by_memory(&conn, &target_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            target_state.status, "open",
+            "case {name}: model output can never close real work"
+        );
+        let history = clio_core::events::list_events(&conn, &target_state.memory_id, 20).unwrap();
+        let has_candidate = history
+            .iter()
+            .any(|e| e.event_type == "resolution_candidate");
+        assert_eq!(
+            has_candidate,
+            expect["resolution_candidate"].as_bool().unwrap_or(false),
+            "case {name}: resolution candidate expectation"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Directional, typed graph recall (Task 8)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn recall_includes_incoming_links_with_direction_and_metadata() {
+    let conn = test_db();
+    let anchor = remember_simple(&conn, "anchor memory about loquats");
+    let upstream = remember_simple(&conn, "upstream evidence memory");
+
+    // upstream --evidence_for--> anchor (an INCOMING edge for the anchor).
+    repository::link(
+        &conn,
+        &LinkInput {
+            from_memory_id: upstream.id.clone(),
+            to_memory_id: anchor.id.clone(),
+            relationship: "evidence_for".into(),
+            metadata: serde_json::json!({ "note": "smoke test output" }),
+        },
+    )
+    .unwrap();
+
+    let result = repository::recall(
+        &conn,
+        &RecallQuery {
+            query: Some("loquats".into()),
+            include_links: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    let linked = result
+        .items
+        .iter()
+        .find(|i| i.memory.id == upstream.id)
+        .expect("incoming-linked memory should be included");
+    assert_eq!(linked.linked_from.as_deref(), Some(anchor.id.as_str()));
+    assert_eq!(linked.link_context.len(), 1);
+    let ctx = &linked.link_context[0];
+    assert_eq!(ctx.direction, "incoming");
+    assert_eq!(ctx.relationship, "evidence_for");
+    assert_eq!(ctx.from_memory_id, upstream.id);
+    assert_eq!(ctx.to_memory_id, anchor.id);
+    assert_eq!(ctx.metadata["note"], "smoke test output");
+}
+
+#[test]
+fn recall_preserves_multiple_edges_to_one_target() {
+    let conn = test_db();
+    let anchor = remember_simple(&conn, "anchor memory about damsons");
+    let target = remember_simple(&conn, "richly linked target");
+
+    for relationship in ["supports", "follow_up_of"] {
+        repository::link(
+            &conn,
+            &LinkInput {
+                from_memory_id: anchor.id.clone(),
+                to_memory_id: target.id.clone(),
+                relationship: relationship.into(),
+                metadata: serde_json::json!({}),
+            },
+        )
+        .unwrap();
+    }
+    // And one incoming edge from the target back to the anchor.
+    repository::link(
+        &conn,
+        &LinkInput {
+            from_memory_id: target.id.clone(),
+            to_memory_id: anchor.id.clone(),
+            relationship: "contradicts".into(),
+            metadata: serde_json::json!({}),
+        },
+    )
+    .unwrap();
+
+    let result = repository::recall(
+        &conn,
+        &RecallQuery {
+            query: Some("damsons".into()),
+            include_links: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    let appearances: Vec<_> = result
+        .items
+        .iter()
+        .filter(|i| i.memory.id == target.id)
+        .collect();
+    assert_eq!(appearances.len(), 1, "target memory deduplicated");
+    let contexts = &appearances[0].link_context;
+    assert_eq!(contexts.len(), 3, "every edge context preserved");
+    let rels: Vec<&str> = contexts.iter().map(|c| c.relationship.as_str()).collect();
+    assert!(rels.contains(&"supports"));
+    assert!(rels.contains(&"follow_up_of"));
+    assert!(rels.contains(&"contradicts"));
+    assert_eq!(
+        contexts
+            .iter()
+            .filter(|c| c.direction == "incoming")
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn link_contexts_expose_both_directions_for_one_memory() {
+    let conn = test_db();
+    let memory = remember_simple(&conn, "central memory");
+    let out_target = remember_simple(&conn, "outgoing target");
+    let in_source = remember_simple(&conn, "incoming source");
+
+    repository::link(
+        &conn,
+        &LinkInput {
+            from_memory_id: memory.id.clone(),
+            to_memory_id: out_target.id.clone(),
+            relationship: "supersedes".into(),
+            metadata: serde_json::json!({}),
+        },
+    )
+    .unwrap();
+    repository::link(
+        &conn,
+        &LinkInput {
+            from_memory_id: in_source.id.clone(),
+            to_memory_id: memory.id.clone(),
+            relationship: "resolved_by".into(),
+            metadata: serde_json::json!({}),
+        },
+    )
+    .unwrap();
+
+    let contexts = repository::get_link_contexts(&conn, &memory.id).unwrap();
+    assert_eq!(contexts.len(), 2);
+    let outgoing = contexts.iter().find(|c| c.direction == "outgoing").unwrap();
+    assert_eq!(outgoing.relationship, "supersedes");
+    assert_eq!(outgoing.to_memory_id, out_target.id);
+    let incoming = contexts.iter().find(|c| c.direction == "incoming").unwrap();
+    assert_eq!(incoming.relationship, "resolved_by");
+    assert_eq!(incoming.from_memory_id, in_source.id);
+}
+
+#[test]
+fn suggest_links_stays_in_namespace_and_skips_hidden_candidates() {
+    use clio_core::embeddings::{EmbeddingBackend, store_embedding, suggest_links};
+
+    struct SameVectorBackend;
+    impl EmbeddingBackend for SameVectorBackend {
+        fn model_name(&self) -> &str {
+            "model-a"
+        }
+        fn dimensions(&self) -> usize {
+            2
+        }
+        fn embed_one(&self, _text: &str) -> clio_core::error::Result<Vec<f32>> {
+            Ok(vec![1.0, 0.0])
+        }
+        fn embed_batch(&self, texts: &[String]) -> clio_core::error::Result<Vec<Vec<f32>>> {
+            Ok(texts.iter().map(|_| vec![1.0, 0.0]).collect())
+        }
+    }
+
+    let conn = test_db();
+    let backend = SameVectorBackend;
+
+    let source = remember_in(&conn, "project:x", "source memory");
+    let same_ns = remember_in(&conn, "project:x", "same namespace candidate");
+    let other_ns = remember_in(&conn, "project:y", "other namespace candidate");
+    let archived = remember_in(&conn, "project:x", "archived candidate");
+    repository::archive(&conn, &archived.id).unwrap();
+    let expired = repository::remember(
+        &conn,
+        &RememberInput {
+            namespace: "project:x".into(),
+            valid_until: Some("2000-01-01T00:00:00Z".into()),
+            ..base_input("expired candidate")
+        },
+        &Settings::default(),
+    )
+    .unwrap();
+
+    for memory in [&source, &same_ns, &other_ns, &archived, &expired] {
+        store_embedding(&conn, &memory.id, "model-a", 2, &[1.0, 0.0]).unwrap();
+    }
+
+    let suggestions = suggest_links(&conn, &source.id, &backend, 0.5, 10).unwrap();
+    let ids: Vec<&str> = suggestions.iter().map(|(m, _)| m.id.as_str()).collect();
+    assert_eq!(
+        ids,
+        vec![same_ns.id.as_str()],
+        "only live, unexpired, same-namespace candidates may be suggested"
+    );
+}
+
+/// Count auto-links touching a memory in either direction.
+fn auto_link_degree(conn: &rusqlite::Connection, id: &str) -> i64 {
+    conn.query_row(
+        "SELECT COUNT(*) FROM memory_links
+         WHERE (from_memory_id = ?1 OR to_memory_id = ?1) AND relationship = 'auto:relates_to'",
+        [id],
+        |r| r.get(0),
+    )
+    .unwrap()
+}
+
+#[test]
+fn auto_link_skips_multiple_excluded_kinds_as_source_and_target() {
+    use clio_core::embeddings::{EmbeddingBackend, auto_link_batch, store_embedding};
+    use clio_core::settings::AutoLinkConfig;
+
+    struct SameVectorBackend;
+    impl EmbeddingBackend for SameVectorBackend {
+        fn model_name(&self) -> &str {
+            "model-a"
+        }
+        fn dimensions(&self) -> usize {
+            2
+        }
+        fn embed_one(&self, _text: &str) -> clio_core::error::Result<Vec<f32>> {
+            Ok(vec![1.0, 0.0])
+        }
+        fn embed_batch(&self, texts: &[String]) -> clio_core::error::Result<Vec<Vec<f32>>> {
+            Ok(texts.iter().map(|_| vec![1.0, 0.0]).collect())
+        }
+    }
+
+    let conn = test_db();
+    let note_a = remember_in(&conn, "project:x", "connection pooling enabled for the api");
+    let note_b = remember_in(
+        &conn,
+        "project:x",
+        "pooling switched on for postgres connections",
+    );
+    let receipt = repository::remember(
+        &conn,
+        &RememberInput {
+            namespace: "project:x".into(),
+            kind: "receipt".into(),
+            ..base_input("session receipt describing the pooling work")
+        },
+        &Settings::default(),
+    )
+    .unwrap();
+    let summary = repository::remember(
+        &conn,
+        &RememberInput {
+            namespace: "project:x".into(),
+            kind: "summary".into(),
+            ..base_input("session summary describing the pooling work")
+        },
+        &Settings::default(),
+    )
+    .unwrap();
+
+    for m in [&note_a, &note_b, &receipt, &summary] {
+        store_embedding(&conn, &m.id, "model-a", 2, &[1.0, 0.0]).unwrap();
+    }
+
+    // Two excluded kinds, so the dynamically numbered placeholders (?5, ?6) are
+    // both exercised — the case the hand-numbering could get wrong.
+    let config = AutoLinkConfig {
+        enabled: true,
+        threshold: 0.5,
+        max_links_per_memory: 10,
+        exclude_kinds: vec!["receipt".into(), "summary".into()],
+        ..Default::default()
+    };
+    let report = auto_link_batch(&conn, &SameVectorBackend, None, None, &config).unwrap();
+
+    assert_eq!(
+        report.memories_processed, 4,
+        "excluded kinds are passed over but still count as processed"
+    );
+    assert_eq!(report.memories_skipped, 0);
+    assert!(report.links_created > 0, "the two notes should link");
+    assert!(auto_link_degree(&conn, &note_a.id) > 0);
+    assert_eq!(
+        auto_link_degree(&conn, &receipt.id),
+        0,
+        "an excluded kind must not link in either direction"
+    );
+    assert_eq!(
+        auto_link_degree(&conn, &summary.id),
+        0,
+        "an excluded kind must not link in either direction"
+    );
+}
+
+#[test]
+fn auto_link_cap_bounds_total_degree_and_binds() {
+    use clio_core::embeddings::{EmbeddingBackend, auto_link_batch, store_embedding};
+    use clio_core::settings::AutoLinkConfig;
+
+    struct SameVectorBackend;
+    impl EmbeddingBackend for SameVectorBackend {
+        fn model_name(&self) -> &str {
+            "model-a"
+        }
+        fn dimensions(&self) -> usize {
+            2
+        }
+        fn embed_one(&self, _text: &str) -> clio_core::error::Result<Vec<f32>> {
+            Ok(vec![1.0, 0.0])
+        }
+        fn embed_batch(&self, texts: &[String]) -> clio_core::error::Result<Vec<Vec<f32>>> {
+            Ok(texts.iter().map(|_| vec![1.0, 0.0]).collect())
+        }
+    }
+
+    let conn = test_db();
+    // Seven mutually similar memories against a cap of five: an uncapped run
+    // would give every memory degree six, so the cap must actually bind here —
+    // unlike a cluster smaller than the cap, where these assertions pass with
+    // the cap logic deleted.
+    let cluster: Vec<_> = (0..7)
+        .map(|i| remember_in(&conn, "project:x", &format!("pooling memory number {i}")))
+        .collect();
+    for m in &cluster {
+        store_embedding(&conn, &m.id, "model-a", 2, &[1.0, 0.0]).unwrap();
+    }
+
+    let config = AutoLinkConfig {
+        enabled: true,
+        threshold: 0.5,
+        max_links_per_memory: 5,
+        ..Default::default()
+    };
+    auto_link_batch(&conn, &SameVectorBackend, None, None, &config).unwrap();
+
+    let degrees: Vec<i64> = cluster
+        .iter()
+        .map(|m| auto_link_degree(&conn, &m.id))
+        .collect();
+    assert!(
+        degrees.iter().all(|&d| d <= 5),
+        "no memory may exceed the total-degree cap: {degrees:?}"
+    );
+    assert_eq!(
+        degrees.iter().max(),
+        Some(&5),
+        "the cap must bind in this fixture, or the assertions prove nothing: {degrees:?}"
+    );
+
+    // A second run must add nothing: every pair is either linked or blocked by
+    // the cap, and the cap is a cumulative total, not a per-run allowance.
+    let second = auto_link_batch(&conn, &SameVectorBackend, None, None, &config).unwrap();
+    assert_eq!(second.links_created, 0, "second run must be idempotent");
+}
+
+#[test]
+fn auto_link_never_lifts_a_memory_already_over_its_cap() {
+    use clio_core::embeddings::{EmbeddingBackend, auto_link_batch, store_embedding};
+    use clio_core::models::LinkInput;
+    use clio_core::settings::AutoLinkConfig;
+
+    struct SameVectorBackend;
+    impl EmbeddingBackend for SameVectorBackend {
+        fn model_name(&self) -> &str {
+            "model-a"
+        }
+        fn dimensions(&self) -> usize {
+            2
+        }
+        fn embed_one(&self, _text: &str) -> clio_core::error::Result<Vec<f32>> {
+            Ok(vec![1.0, 0.0])
+        }
+        fn embed_batch(&self, texts: &[String]) -> clio_core::error::Result<Vec<Vec<f32>>> {
+            Ok(texts.iter().map(|_| vec![1.0, 0.0]).collect())
+        }
+    }
+
+    let conn = test_db();
+    // A memory already over cap (degree 6 against a cap of 5): legacy state from
+    // before the cumulative cap existed. It must neither gain links, panic the
+    // budget arithmetic, nor be pushed further over as a target.
+    let over = remember_in(&conn, "project:x", "memory already over its cap");
+    let newcomer = remember_in(&conn, "project:x", "new memory similar to the over-cap one");
+    store_embedding(&conn, &over.id, "model-a", 2, &[1.0, 0.0]).unwrap();
+    store_embedding(&conn, &newcomer.id, "model-a", 2, &[1.0, 0.0]).unwrap();
+    for i in 0..6 {
+        // Each dummy lives in its own namespace, so auto-link can never suggest
+        // them — to each other or to `over` — and only the pre-made links exist.
+        let dummy = remember_in(&conn, &format!("project:dummy-{i}"), &format!("dummy {i}"));
+        store_embedding(&conn, &dummy.id, "model-a", 2, &[0.0, 1.0]).unwrap();
+        repository::link(
+            &conn,
+            &LinkInput {
+                from_memory_id: over.id.clone(),
+                to_memory_id: dummy.id.clone(),
+                relationship: "auto:relates_to".into(),
+                metadata: serde_json::json!({}),
+            },
+        )
+        .unwrap();
+    }
+    assert_eq!(auto_link_degree(&conn, &over.id), 6);
+
+    let config = AutoLinkConfig {
+        enabled: true,
+        threshold: 0.5,
+        max_links_per_memory: 5,
+        ..Default::default()
+    };
+    let report = auto_link_batch(&conn, &SameVectorBackend, None, None, &config).unwrap();
+
+    assert_eq!(
+        report.links_created, 0,
+        "the newcomer's only similar candidate is over cap and must be skipped as a target"
+    );
+    assert_eq!(
+        auto_link_degree(&conn, &over.id),
+        6,
+        "an over-cap memory must not move: no new links out of it or into it"
+    );
+}
+
+#[test]
+fn auto_link_reports_unembeddable_memories_as_skipped_not_processed() {
+    use clio_core::embeddings::{EmbeddingBackend, auto_link_batch};
+    use clio_core::error::ClioError;
+    use clio_core::settings::AutoLinkConfig;
+
+    struct FailingBackend;
+    impl EmbeddingBackend for FailingBackend {
+        fn model_name(&self) -> &str {
+            "model-a"
+        }
+        fn dimensions(&self) -> usize {
+            2
+        }
+        fn embed_one(&self, _text: &str) -> clio_core::error::Result<Vec<f32>> {
+            Err(ClioError::Storage("backend down".into()))
+        }
+        fn embed_batch(&self, _texts: &[String]) -> clio_core::error::Result<Vec<Vec<f32>>> {
+            Err(ClioError::Storage("backend down".into()))
+        }
+    }
+
+    let conn = test_db();
+    remember_in(&conn, "project:x", "first memory with no embedding");
+    remember_in(&conn, "project:x", "second memory with no embedding");
+
+    let config = AutoLinkConfig {
+        enabled: true,
+        threshold: 0.5,
+        ..Default::default()
+    };
+    let report = auto_link_batch(&conn, &FailingBackend, None, None, &config).unwrap();
+
+    // The driver distinguishes "corpus finished" (processed == 0 AND skipped == 0)
+    // from "backend broken" (skipped > 0), and must be able to keep walking past a
+    // broken batch — so the watermark still advances.
+    assert_eq!(report.memories_processed, 0);
+    assert_eq!(report.memories_skipped, 2);
+    assert_eq!(report.links_created, 0);
+    assert!(
+        report.last_watermark.is_some(),
+        "watermark advances past unembeddable memories"
+    );
+}
+
+#[test]
+fn auto_link_watermark_does_not_skip_timestamp_ties_at_a_batch_boundary() {
+    use clio_core::embeddings::{EmbeddingBackend, auto_link_batch};
+    use clio_core::settings::AutoLinkConfig;
+
+    struct SameVectorBackend;
+    impl EmbeddingBackend for SameVectorBackend {
+        fn model_name(&self) -> &str {
+            "model-a"
+        }
+        fn dimensions(&self) -> usize {
+            2
+        }
+        fn embed_one(&self, _text: &str) -> clio_core::error::Result<Vec<f32>> {
+            Ok(vec![1.0, 0.0])
+        }
+        fn embed_batch(&self, texts: &[String]) -> clio_core::error::Result<Vec<Vec<f32>>> {
+            Ok(texts.iter().map(|_| vec![1.0, 0.0]).collect())
+        }
+    }
+
+    let conn = test_db();
+    for i in 0..3 {
+        remember_in(
+            &conn,
+            "project:x",
+            &format!("memory sharing one update timestamp {i}"),
+        );
+    }
+    conn.execute(
+        "UPDATE memories SET updated_at = '2026-07-30T12:00:00Z'",
+        [],
+    )
+    .unwrap();
+
+    let config = AutoLinkConfig {
+        enabled: true,
+        threshold: 0.5,
+        batch_size: 2,
+        ..Default::default()
+    };
+    let first = auto_link_batch(&conn, &SameVectorBackend, None, None, &config).unwrap();
+    assert_eq!(first.memories_processed, 2);
+
+    let second = auto_link_batch(
+        &conn,
+        &SameVectorBackend,
+        first.last_watermark.as_deref(),
+        first.last_watermark_id.as_deref(),
+        &config,
+    )
+    .unwrap();
+    assert_eq!(
+        second.memories_processed, 1,
+        "the row after the timestamp tie must remain reachable"
+    );
+}
+
+#[test]
+fn auto_link_propagates_degree_query_failures() {
+    use clio_core::embeddings::{EmbeddingBackend, auto_link_batch};
+    use clio_core::settings::AutoLinkConfig;
+
+    struct SameVectorBackend;
+    impl EmbeddingBackend for SameVectorBackend {
+        fn model_name(&self) -> &str {
+            "model-a"
+        }
+        fn dimensions(&self) -> usize {
+            2
+        }
+        fn embed_one(&self, _text: &str) -> clio_core::error::Result<Vec<f32>> {
+            Ok(vec![1.0, 0.0])
+        }
+        fn embed_batch(&self, texts: &[String]) -> clio_core::error::Result<Vec<Vec<f32>>> {
+            Ok(texts.iter().map(|_| vec![1.0, 0.0]).collect())
+        }
+    }
+
+    let conn = test_db();
+    remember_in(&conn, "project:x", "memory whose degree cannot be read");
+    conn.execute("DROP TABLE memory_links", []).unwrap();
+
+    let result = auto_link_batch(
+        &conn,
+        &SameVectorBackend,
+        None,
+        None,
+        &AutoLinkConfig {
+            enabled: true,
+            threshold: 0.5,
+            ..Default::default()
+        },
+    );
+
+    assert!(
+        result.is_err(),
+        "a failed degree query must not be treated as zero links"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Occurrences through the checkpoint path (Task 9)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn repeated_evidence_across_sessions_keeps_one_memory_with_occurrences() {
+    use clio_core::checkpoint::{CheckpointRequest, store_checkpoint};
+    use clio_core::occurrences;
+
+    let conn = test_db();
+    let settings = Settings::default();
+    let atom = || clio_core::capture::DistilledMemory {
+        content: "The Atlas key rotates monthly.".into(),
+        kind: "fact".into(),
+        title: "Atlas key rotation".into(),
+        summary: String::new(),
+        tags: vec![],
+        namespace: "project:occ".into(),
+        importance: 3,
+        confidence: 1.0,
+        attention: None,
+        resolves: None,
+    };
+    let request = |session: &str, cursor: i64| CheckpointRequest {
+        source: "claude-session".into(),
+        session_id: session.into(),
+        cursor,
+        namespace_override: None,
+        default_namespace: Some("project:occ".into()),
+        cwd: None,
+        branch: None,
+        ticket: None,
+    };
+
+    let first = store_checkpoint(&conn, &request("sess-a", 10), &[atom()], &settings).unwrap();
+    let memory_id = first.stored_memory_ids[0].clone();
+
+    // Same evidenced fact from a different session: no second memory row.
+    let second = store_checkpoint(&conn, &request("sess-b", 5), &[atom()], &settings).unwrap();
+    assert_eq!(second.stored_memory_ids, vec![memory_id.clone()]);
+    let count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM memories WHERE namespace = 'project:occ'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(count, 1, "one canonical memory");
+    assert_eq!(
+        occurrences::count_occurrences(&conn, &memory_id).unwrap(),
+        2,
+        "each session's sighting is provenance"
+    );
+
+    // Checkpoint replay of a delivered key adds no occurrence.
+    let replay = store_checkpoint(&conn, &request("sess-a", 10), &[atom()], &settings).unwrap();
+    assert!(replay.replayed);
+    assert_eq!(
+        occurrences::count_occurrences(&conn, &memory_id).unwrap(),
+        2
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Effectiveness reporting (Task 12)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn effectiveness_report_is_untracked_and_dedupes_surfaced_events() {
+    use clio_core::attention::{self, AttentionInput};
+    use clio_core::stats;
+
+    let conn = test_db();
+    let memory = remember_in(&conn, "project:fx", "An overdue follow-up");
+    attention::create_attention(
+        &conn,
+        &AttentionInput {
+            memory_id: memory.id.clone(),
+            due_at: Some("2000-01-01T00:00:00Z".into()),
+            ..AttentionInput::default()
+        },
+    )
+    .unwrap();
+
+    // The same surfaced key recorded twice counts once.
+    let item = attention::resolve_attention(&conn, &memory.id).unwrap();
+    attention::record_surfaced(&conn, &item, "session-a", "overdue", None);
+    attention::record_surfaced(&conn, &item, "session-a", "overdue", None);
+    attention::record_surfaced(&conn, &item, "session-b", "overdue", None);
+
+    let before_access: i64 = conn
+        .query_row(
+            "SELECT COALESCE(SUM(access_count),0) FROM memories",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let before_events: i64 = conn
+        .query_row("SELECT COUNT(*) FROM memory_events", [], |r| r.get(0))
+        .unwrap();
+
+    let disabled = stats::effectiveness(&conn, Some("project:fx"), 0).unwrap();
+    assert_eq!(
+        disabled.attention_stale, 0,
+        "dormancy disabled reports zero stale items"
+    );
+
+    let report = stats::effectiveness(&conn, Some("project:fx"), 14).unwrap();
+    assert_eq!(
+        report.surfaced_unique, 2,
+        "idempotent surfacing deduplicated"
+    );
+    assert_eq!(report.attention.get("open"), Some(&1));
+    assert_eq!(report.corrupt_rows, 0);
+    assert_eq!(report.deliberate_accesses, before_access);
+
+    // Reporting mutates nothing: no access tracking, no new events.
+    let after_access: i64 = conn
+        .query_row(
+            "SELECT COALESCE(SUM(access_count),0) FROM memories",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let after_events: i64 = conn
+        .query_row("SELECT COUNT(*) FROM memory_events", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(after_access, before_access);
+    assert_eq!(after_events, before_events);
 }

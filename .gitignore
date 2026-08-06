@@ -28,3 +28,7 @@ graphify-out/
 
 # macOS
 .DS_Store
+
+# Python bytecode from benchmark scripts
+__pycache__/
+*.pyc

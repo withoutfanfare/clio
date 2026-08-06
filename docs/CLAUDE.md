@@ -9,14 +9,7 @@ rule. For the deep internal invariant reference, see `context/` (its own doc).
 Audience-facing documentation: getting started, CLI reference, MCP agent setup,
 desktop app guide, plus the machine-relevant **contracts** and planning records.
 
-## Contracts (source of truth)
-
-These define behaviour the code must match — keep them in lock-step with the
-implementation in `clio-core`:
-
-- `reference/schema.md` — SQLite schema, indexes, FTS, triggers.
-- `reference/mcp-contract.md` — MCP tool/resource definitions.
-- `reference/settings.md` — config keys and defaults.
+Contracts: see root CLAUDE.md deep-reference list.
 
 ## Plans & specs
 
@@ -26,7 +19,6 @@ implementation in `clio-core`:
 
 ## Work Guidance
 
-- British English throughout.
 - Update the relevant doc when behaviour, commands, or contracts change — a
   contract change in `clio-core` and its `reference/` doc land together.
 - Keep `README.md` (the docs index) current when adding or moving documents.

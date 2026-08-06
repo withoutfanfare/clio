@@ -127,17 +127,34 @@ enum Command {
     /// more durable memories via LLM.
     Distill(DistillArgs),
 
+    /// Distil a session delta and commit it as an exact-once checkpoint keyed
+    /// by source + session + cursor. Safe to retry: a completed key replays
+    /// the stored result instead of creating duplicates.
+    Checkpoint(CheckpointArgs),
+
+    /// Manage follow-up attention items (open loops).
+    Action(ActionArgs),
+
     /// Manage the review queue (low-confidence captures).
     Inbox(InboxArgs),
 
     /// Show memory statistics and analytics.
     Stats(StatsArgs),
 
+    /// Event-backed usefulness report: capture, attention, surfacing and
+    /// delivery state. Untracked reads only — never changes ranking.
+    Effectiveness(EffectivenessArgs),
+
     /// Show recent memory activity (creates, updates, archives).
     Activity(ActivityArgs),
 
     /// Suggest potential links based on embedding similarity.
     SuggestLinks(SuggestLinksArgs),
+
+    /// Run one auto-link inference pass, creating links between similar memories.
+    /// Intended for a scheduler (systemd timer, cron) as an alternative to running
+    /// the daemon.
+    AutoLink(AutoLinkArgs),
 
     /// Import memories from other AI tools (Claude, ChatGPT).
     Migrate(MigrateArgs),
@@ -147,6 +164,10 @@ enum Command {
 
     /// Build a context brief for agent consumption.
     Brief(BriefArgs),
+
+    /// Build a resume brief: open work, blockers, constraints and relevant
+    /// knowledge, each with the reason it appears now. Reads are untracked.
+    Resume(ResumeArgs),
 
     /// Start the MCP server (stdio transport).
     Serve,
@@ -451,6 +472,14 @@ struct CaptureArgs {
     /// Show classification without storing the memory.
     #[arg(long)]
     dry_run: bool,
+
+    /// Use a different model for this request without changing settings.
+    #[arg(long)]
+    model: Option<String>,
+
+    /// Include latency and token usage in dry-run output.
+    #[arg(long, requires = "dry_run")]
+    metrics: bool,
 }
 
 #[derive(Parser)]
@@ -473,6 +502,56 @@ struct DistillArgs {
     /// Show the distilled memories without storing them.
     #[arg(long)]
     dry_run: bool,
+
+    /// Use a different model for this request without changing settings.
+    #[arg(long)]
+    model: Option<String>,
+
+    /// Include latency and token usage in dry-run output.
+    #[arg(long, requires = "dry_run")]
+    metrics: bool,
+}
+
+#[derive(Parser)]
+struct CheckpointArgs {
+    /// The redacted session-delta digest to distil. Pass `-` to read from stdin.
+    text: String,
+
+    /// Capturing agent recorded on the checkpoint and each memory,
+    /// e.g. claude-session.
+    #[arg(long)]
+    source: String,
+
+    /// Client session identifier.
+    #[arg(long)]
+    session_id: String,
+
+    /// Monotonic transcript cursor marking where this delta ends.
+    #[arg(long)]
+    cursor: i64,
+
+    /// Override the namespace suggested by the LLM for every memory.
+    #[arg(long)]
+    namespace: Option<String>,
+
+    /// Git branch active during the session.
+    #[arg(long)]
+    branch: Option<String>,
+
+    /// Ticket/issue identifier associated with the work.
+    #[arg(long)]
+    ticket: Option<String>,
+
+    /// Use a different model for this request without changing settings.
+    #[arg(long)]
+    model: Option<String>,
+}
+
+#[derive(Parser)]
+struct EffectivenessArgs {
+    /// Scope the report to a namespace. Auto-detected from cwd if omitted.
+    #[arg(long)]
+    namespace: Option<String>,
 }
 
 #[derive(Parser)]
@@ -491,6 +570,29 @@ struct ActivityArgs {
     /// Maximum number of activity entries to show.
     #[arg(long, default_value_t = 20)]
     limit: u32,
+}
+
+#[derive(Parser)]
+struct ResumeArgs {
+    /// Namespace scope. Auto-detected from cwd if omitted.
+    #[arg(long)]
+    namespace: Option<String>,
+
+    /// Prompt/task context for the relevant-knowledge section.
+    #[arg(long)]
+    query: Option<String>,
+
+    /// Session or topic scope for once-per-scope surfacing suppression.
+    #[arg(long)]
+    session: Option<String>,
+
+    /// Maximum items across all sections.
+    #[arg(long, default_value_t = 20)]
+    max_items: u32,
+
+    /// Character budget over the serialised items.
+    #[arg(long)]
+    char_budget: Option<u32>,
 }
 
 #[derive(Parser)]
@@ -532,6 +634,153 @@ struct SuggestLinksArgs {
     /// Maximum number of suggestions.
     #[arg(long, default_value_t = 5)]
     limit: u32,
+}
+
+#[derive(Parser)]
+struct AutoLinkArgs {
+    /// Start from memories updated after this ISO-8601 timestamp instead of from the
+    /// beginning. The command iterates in `batch_size` steps until no memories
+    /// remain, so this is only needed to skip work already known to be done.
+    #[arg(long)]
+    since: Option<String>,
+
+    /// Minimum similarity threshold. Defaults to the configured
+    /// `daemon.auto_link.threshold`.
+    #[arg(long)]
+    threshold: Option<f64>,
+
+    /// Run even when `daemon.auto_link.enabled` is false. Without this, a machine
+    /// with auto-linking switched off refuses to write links — e.g. a secondary
+    /// copy of a shared database that must not diverge from the primary.
+    #[arg(long)]
+    force: bool,
+}
+
+#[derive(Parser)]
+struct ActionArgs {
+    #[command(subcommand)]
+    command: ActionSubcommand,
+}
+
+#[derive(Subcommand)]
+enum ActionSubcommand {
+    /// Open attention on a follow-up: give text to create a task memory, or
+    /// --memory to attach attention to an existing memory.
+    Add {
+        /// Content for a new task memory (omit when using --memory).
+        content: Option<String>,
+
+        /// Attach attention to this existing memory instead of creating one.
+        #[arg(long, conflicts_with = "content")]
+        memory: Option<String>,
+
+        /// Namespace for a newly created memory. Auto-detected if omitted.
+        #[arg(long)]
+        namespace: Option<String>,
+
+        /// Who owns the follow-up (e.g. user).
+        #[arg(long)]
+        owner: Option<String>,
+
+        /// Hard due date (ISO-8601 UTC).
+        #[arg(long)]
+        due: Option<String>,
+
+        /// Reminder time (ISO-8601 UTC).
+        #[arg(long)]
+        remind: Option<String>,
+
+        /// Non-time trigger, e.g. project-session.
+        #[arg(long)]
+        trigger: Option<String>,
+
+        /// What or whom this waits on.
+        #[arg(long)]
+        waiting_on: Option<String>,
+
+        /// What would prove this complete.
+        #[arg(long)]
+        condition: Option<String>,
+    },
+
+    /// List attention items.
+    List {
+        /// Filter by namespace.
+        #[arg(long)]
+        namespace: Option<String>,
+
+        /// Filter by status: open, snoozed, resolved, cancelled.
+        #[arg(long)]
+        status: Option<String>,
+
+        /// Maximum number of items to show.
+        #[arg(long, default_value_t = 20)]
+        limit: u32,
+    },
+
+    /// Show which items deserve attention now, with the reason for each.
+    Eligible {
+        /// Project namespace context (enables project-session triggers).
+        #[arg(long)]
+        namespace: Option<String>,
+
+        /// Session or topic scope for once-per-scope suppression.
+        #[arg(long)]
+        scope: Option<String>,
+    },
+
+    /// Resolve an item (by attention ID or memory ID).
+    Complete {
+        id: String,
+
+        /// Memory ID recording the evidence of completion.
+        #[arg(long)]
+        evidence: Option<String>,
+
+        /// Why it is resolved.
+        #[arg(long)]
+        reason: Option<String>,
+    },
+
+    /// Snooze an item until a given time.
+    Snooze {
+        id: String,
+
+        /// Wake time (ISO-8601 UTC).
+        #[arg(long)]
+        until: String,
+    },
+
+    /// Cancel an item.
+    Cancel {
+        id: String,
+
+        /// Why it is cancelled.
+        #[arg(long)]
+        reason: Option<String>,
+    },
+
+    /// Record a verified external reference (e.g. a Things or Linear item).
+    AttachExternal {
+        id: String,
+
+        /// External system name, e.g. things or linear.
+        #[arg(long)]
+        system: String,
+
+        /// Stable external item ID.
+        #[arg(long, name = "ref")]
+        external_ref: String,
+    },
+
+    /// Show the event history for an item (by attention ID or memory ID).
+    History {
+        id: String,
+
+        /// Maximum number of events to show.
+        #[arg(long, default_value_t = 50)]
+        limit: u32,
+    },
 }
 
 #[derive(Parser)]
@@ -664,12 +913,16 @@ enum SettingsSubcommand {
     /// Show current settings.
     Show,
 
+    /// Show non-secret capture settings from the active shared backend.
+    ShowCapture,
+
     /// Set the embedding provider to "local" (fastembed, offline).
     UseLocal,
 
     /// Set the embedding provider to "openai".
     UseOpenai {
-        /// OpenAI API key. If omitted, OPENAI_API_KEY env var will be used at runtime.
+        /// OpenAI API key. If omitted, OPENAI_API_KEY_CLIO is used at runtime,
+        /// falling back to the shared OPENAI_API_KEY with a warning.
         #[arg(long)]
         api_key: Option<String>,
 
@@ -698,6 +951,12 @@ enum SettingsSubcommand {
         /// Base URL override for compatible APIs.
         #[arg(long)]
         base_url: Option<String>,
+    },
+
+    /// Change only the active capture model, preserving credentials and endpoint.
+    SetCaptureModel {
+        /// OpenAI-compatible chat model ID.
+        model: String,
     },
 
     /// Disable the capture pipeline.
@@ -896,17 +1155,20 @@ fn run_with_routing(cli: Cli, raw_args: &[OsString]) -> Result<(), Box<dyn std::
 }
 
 fn command_uses_shared_storage(command: &Command) -> bool {
-    !matches!(
-        command,
+    match command {
+        Command::Settings(SettingsArgs {
+            command: SettingsSubcommand::ShowCapture | SettingsSubcommand::SetCaptureModel { .. },
+        }) => true,
         Command::Init(_)
-            | Command::Context
-            | Command::Settings(_)
-            | Command::Serve
-            | Command::RemoteMcp(_)
-            | Command::Setup(_)
-            | Command::Daemon { .. }
-            | Command::Cache { .. }
-    )
+        | Command::Context
+        | Command::Settings(_)
+        | Command::Serve
+        | Command::RemoteMcp(_)
+        | Command::Setup(_)
+        | Command::Daemon { .. }
+        | Command::Cache { .. } => false,
+        _ => true,
+    }
 }
 
 fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
@@ -931,14 +1193,19 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         Command::Search(args) => cmd_search(cli.db_path.as_deref(), cli.json, args),
         Command::Capture(args) => cmd_capture(cli.db_path.as_deref(), cli.json, args),
         Command::Distill(args) => cmd_distill(cli.db_path.as_deref(), cli.json, args),
+        Command::Checkpoint(args) => cmd_checkpoint(cli.db_path.as_deref(), cli.json, args),
+        Command::Action(args) => cmd_action(cli.db_path.as_deref(), cli.json, args),
         Command::Inbox(args) => cmd_inbox(cli.db_path.as_deref(), cli.json, args),
         Command::Stats(args) => cmd_stats(cli.db_path.as_deref(), cli.json, args),
+        Command::Effectiveness(args) => cmd_effectiveness(cli.db_path.as_deref(), cli.json, args),
         Command::Activity(args) => cmd_activity(cli.db_path.as_deref(), cli.json, args),
         Command::SuggestLinks(args) => cmd_suggest_links(cli.db_path.as_deref(), cli.json, args),
+        Command::AutoLink(args) => cmd_auto_link(cli.db_path.as_deref(), cli.json, args),
         Command::Embed(args) => cmd_embed(cli.db_path.as_deref(), args),
         Command::Migrate(args) => cmd_migrate(cli.db_path.as_deref(), cli.json, args),
         Command::Settings(args) => cmd_settings(cli.db_path.as_deref(), cli.json, args),
         Command::Brief(args) => cmd_brief(cli.db_path.as_deref(), cli.json, args),
+        Command::Resume(args) => cmd_resume(cli.db_path.as_deref(), cli.json, args),
         Command::Serve => cmd_serve(cli.db_path.as_deref()),
         Command::RemoteMcp(args) => {
             remote_mcp::run(&args.host, &args.remote_binary, cli.db_path.as_deref())
@@ -1188,6 +1455,7 @@ fn cmd_recall(
             limit: args.limit,
             offset: args.offset,
             scoring,
+            skip_access_tracking: false,
         };
         repository::recall(&conn, &query)?
     } else if args.namespace.is_some() {
@@ -1206,6 +1474,7 @@ fn cmd_recall(
             limit: args.limit,
             offset: args.offset,
             scoring,
+            skip_access_tracking: false,
         };
         repository::recall(&conn, &query)?
     } else {
@@ -1224,6 +1493,7 @@ fn cmd_recall(
             limit: args.limit,
             offset: args.offset,
             scoring,
+            skip_access_tracking: false,
         };
         repository::recall_scoped(&conn, &query, &detected_ns)?
     };
@@ -1751,6 +2021,17 @@ fn cmd_search(
     Ok(())
 }
 
+fn capture_config_with_model(
+    config: &settings::CaptureConfig,
+    model: Option<&str>,
+) -> Result<settings::CaptureConfig, Box<dyn std::error::Error>> {
+    let mut config = config.clone();
+    if let Some(model) = model {
+        config.model = settings::normalise_capture_model(model)?;
+    }
+    Ok(config)
+}
+
 fn cmd_capture(
     db_path: Option<&str>,
     json: bool,
@@ -1759,6 +2040,7 @@ fn cmd_capture(
     let path = resolve_db_path(db_path)?;
     let conn = db::open(&path)?;
     let s = settings::load(&path)?;
+    let capture_config = capture_config_with_model(&s.capture, args.model.as_deref())?;
 
     let text = if args.text == "-" {
         let mut buf = String::new();
@@ -1768,32 +2050,78 @@ fn cmd_capture(
         args.text
     };
 
-    let classification = clio_core::capture::classify(&text, &s.capture)?;
+    let started = std::time::Instant::now();
+    let (classification, usage) = clio_core::capture::classify_with_usage(&text, &capture_config)?;
+    let elapsed_ms = started.elapsed().as_millis();
+
+    // Same inputs for preview and storage: the explicit --namespace and the
+    // working directory's namespace, resolved by the shared core rule.
+    let default_ns = s.context.auto_detect.then(current_namespace).flatten();
 
     if args.dry_run {
+        // Match what storing would do, via the same resolver storage uses.
+        // Previewing the raw suggestion misreports where the memory would land;
+        // the raw suggestion is still reported alongside, because it is the one
+        // namespace decision the model controls and would otherwise be
+        // unobservable when the working directory wins.
+        let suggested = classification.namespace.clone();
+        let mut classification = classification;
+        classification.namespace = clio_core::capture::resolve_namespace(
+            args.namespace.as_deref(),
+            &suggested,
+            default_ns.as_deref(),
+        );
         if json {
-            println!("{}", serde_json::to_string_pretty(&classification)?);
+            let mut result = serde_json::to_value(&classification)?;
+            result["suggested_namespace"] = serde_json::Value::String(suggested.clone());
+            let output = if args.metrics {
+                serde_json::json!({
+                    "model": capture_config.model,
+                    "elapsed_ms": elapsed_ms,
+                    "usage": usage,
+                    "result": result,
+                })
+            } else {
+                result
+            };
+            println!("{}", serde_json::to_string_pretty(&output)?);
         } else {
             eprintln!("Dry run — classification result:");
             eprintln!("  kind:       {}", classification.kind);
             eprintln!("  title:      {}", classification.title);
             eprintln!("  summary:    {}", classification.summary);
             eprintln!("  tags:       {}", classification.tags.join(", "));
-            eprintln!("  namespace:  {}", classification.namespace);
+            if classification.namespace == suggested {
+                eprintln!("  namespace:  {}", classification.namespace);
+            } else {
+                eprintln!(
+                    "  namespace:  {} (model suggested {})",
+                    classification.namespace, suggested
+                );
+            }
             eprintln!("  importance: {}", classification.importance);
             eprintln!("  confidence: {:.2}", classification.confidence);
+            if args.metrics {
+                eprintln!("  model:      {}", capture_config.model);
+                eprintln!("  latency:    {elapsed_ms} ms");
+                eprintln!(
+                    "  tokens:     {} input ({} cached), {} output, {} reasoning",
+                    usage.input_tokens,
+                    usage.cached_input_tokens,
+                    usage.output_tokens,
+                    usage.reasoning_tokens
+                );
+            }
         }
         return Ok(());
     }
 
-    let namespace = args
-        .namespace
-        .or_else(|| s.context.auto_detect.then(current_namespace).flatten());
     let result = clio_core::capture::capture_with_classification(
         &conn,
         &text,
         &classification,
-        namespace.as_deref(),
+        args.namespace.as_deref(),
+        default_ns.as_deref(),
         &s,
     )?;
 
@@ -1819,6 +2147,63 @@ fn cmd_capture(
     Ok(())
 }
 
+fn cmd_checkpoint(
+    db_path: Option<&str>,
+    json: bool,
+    args: CheckpointArgs,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let path = resolve_db_path(db_path)?;
+    let conn = db::open(&path)?;
+    let s = settings::load(&path)?;
+    let capture_config = capture_config_with_model(&s.capture, args.model.as_deref())?;
+
+    let text = if args.text == "-" {
+        let mut buf = String::new();
+        io::stdin().read_to_string(&mut buf)?;
+        buf
+    } else {
+        args.text
+    };
+
+    let cwd = if s.cleanup.record_cwd {
+        current_context_cwd()
+    } else {
+        None
+    };
+    let default_namespace = s.context.auto_detect.then(current_namespace).flatten();
+
+    let request = clio_core::checkpoint::CheckpointRequest {
+        source: args.source,
+        session_id: args.session_id,
+        cursor: args.cursor,
+        namespace_override: args.namespace,
+        default_namespace,
+        cwd,
+        branch: args.branch,
+        ticket: args.ticket,
+    };
+
+    let result = clio_core::checkpoint::checkpoint(&conn, &request, &text, &capture_config, &s)?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&result)?);
+    } else if result.replayed {
+        eprintln!(
+            "Checkpoint already completed — replayed {} stored, {} queued.",
+            result.stored_memory_ids.len(),
+            result.queued_review_ids.len()
+        );
+    } else {
+        eprintln!(
+            "Checkpoint stored — {} memory(ies), {} queued for review.",
+            result.stored_memory_ids.len(),
+            result.queued_review_ids.len()
+        );
+    }
+
+    Ok(())
+}
+
 fn cmd_distill(
     db_path: Option<&str>,
     json: bool,
@@ -1827,6 +2212,7 @@ fn cmd_distill(
     let path = resolve_db_path(db_path)?;
     let conn = db::open(&path)?;
     let s = settings::load(&path)?;
+    let capture_config = capture_config_with_model(&s.capture, args.model.as_deref())?;
 
     let text = if args.text == "-" {
         let mut buf = String::new();
@@ -1837,16 +2223,55 @@ fn cmd_distill(
     };
 
     if args.dry_run {
-        let memories = clio_core::capture::distill(&text, &s.capture)?;
+        let started = std::time::Instant::now();
+        let (mut memories, usage) = clio_core::capture::distill_with_usage(&text, &capture_config)?;
+        let elapsed_ms = started.elapsed().as_millis();
+
+        // Report the namespace each memory would actually be stored under, not the
+        // model's raw suggestion — storage applies the same resolution, so a
+        // preview showing the unresolved value invites false conclusions about
+        // where memories land.
+        let default_namespace = s.context.auto_detect.then(current_namespace).flatten();
+        for m in &mut memories {
+            m.namespace = clio_core::capture::resolve_namespace(
+                args.namespace.as_deref(),
+                &m.namespace,
+                default_namespace.as_deref(),
+            );
+        }
         if json {
-            println!("{}", serde_json::to_string_pretty(&memories)?);
+            let output = if args.metrics {
+                serde_json::json!({
+                    "model": capture_config.model,
+                    "elapsed_ms": elapsed_ms,
+                    "usage": usage,
+                    "result": memories,
+                })
+            } else {
+                serde_json::to_value(&memories)?
+            };
+            println!("{}", serde_json::to_string_pretty(&output)?);
         } else if memories.is_empty() {
             eprintln!("Dry run — nothing durable to distil.");
         } else {
             eprintln!("Dry run — {} memory(ies) distilled:", memories.len());
             for m in &memories {
-                eprintln!("  [{}] {} (importance {})", m.kind, m.title, m.importance);
+                eprintln!(
+                    "  [{}] {} (importance {}, namespace {})",
+                    m.kind, m.title, m.importance, m.namespace
+                );
             }
+        }
+        if args.metrics && !json {
+            eprintln!("  model:      {}", capture_config.model);
+            eprintln!("  latency:    {elapsed_ms} ms");
+            eprintln!(
+                "  tokens:     {} input ({} cached), {} output, {} reasoning",
+                usage.input_tokens,
+                usage.cached_input_tokens,
+                usage.output_tokens,
+                usage.reasoning_tokens
+            );
         }
         return Ok(());
     }
@@ -1868,7 +2293,7 @@ fn cmd_distill(
     let results = clio_core::capture::distill_and_store(
         &conn,
         &text,
-        &s.capture,
+        &capture_config,
         args.namespace.as_deref(),
         default_namespace.as_deref(),
         &args.source,
@@ -1892,6 +2317,232 @@ fn cmd_distill(
             match result {
                 CaptureResult::Stored(memory) => print_memory_card(memory),
                 CaptureResult::Queued(item) => print_review_item(item),
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn print_attention_item(item: &clio_core::attention::AttentionItem) {
+    eprintln!(
+        "  [{}] {} (memory {})",
+        item.status, item.id, item.memory_id
+    );
+    if let Some(due) = &item.due_at {
+        eprintln!("    due:      {due}");
+    }
+    if let Some(remind) = &item.remind_at {
+        eprintln!("    remind:   {remind}");
+    }
+    if let Some(trigger) = &item.trigger {
+        eprintln!("    trigger:  {trigger}");
+    }
+    if let Some(waiting) = &item.waiting_on {
+        eprintln!("    waiting:  {waiting}");
+    }
+    if let (Some(system), Some(external)) = (&item.external_system, &item.external_ref) {
+        eprintln!("    external: {system}:{external}");
+    }
+}
+
+fn cmd_action(
+    db_path: Option<&str>,
+    json: bool,
+    args: ActionArgs,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use clio_core::attention;
+
+    let path = resolve_db_path(db_path)?;
+    let conn = db::open(&path)?;
+
+    match args.command {
+        ActionSubcommand::Add {
+            content,
+            memory,
+            namespace,
+            owner,
+            due,
+            remind,
+            trigger,
+            waiting_on,
+            condition,
+        } => {
+            let s = settings::load(&path)?;
+            conn.execute_batch("BEGIN IMMEDIATE")?;
+            let result = (|| -> Result<attention::AttentionItem, Box<dyn std::error::Error>> {
+                let memory_id = match (&memory, &content) {
+                    (Some(id), _) => id.clone(),
+                    (None, Some(text)) => {
+                        let ns = namespace
+                            .clone()
+                            .or_else(|| s.context.auto_detect.then(current_namespace).flatten())
+                            .unwrap_or_else(|| "global".into());
+                        let created = repository::remember(
+                            &conn,
+                            &RememberInput {
+                                namespace: ns,
+                                kind: "task".into(),
+                                title: None,
+                                summary: None,
+                                content: text.clone(),
+                                tags: vec!["follow-up".into()],
+                                source: None,
+                                source_ref: None,
+                                confidence: None,
+                                importance: 3,
+                                metadata: serde_json::json!({}),
+                                valid_from: None,
+                                valid_until: None,
+                                upsert: false,
+                            },
+                            &s,
+                        )?;
+                        created.id
+                    }
+                    (None, None) => {
+                        return Err("provide content for a new memory or --memory <id>".into());
+                    }
+                };
+                Ok(attention::create_attention(
+                    &conn,
+                    &attention::AttentionInput {
+                        memory_id,
+                        owner: owner.clone(),
+                        due_at: due.clone(),
+                        remind_at: remind.clone(),
+                        trigger: trigger.clone(),
+                        waiting_on: waiting_on.clone(),
+                        completion_condition: condition.clone(),
+                        actor: Some("user".into()),
+                    },
+                )?)
+            })();
+            match result {
+                Ok(item) => {
+                    conn.execute_batch("COMMIT")?;
+                    if json {
+                        println!("{}", serde_json::to_string_pretty(&item)?);
+                    } else {
+                        eprintln!("Attention opened.");
+                        print_attention_item(&item);
+                    }
+                }
+                Err(e) => {
+                    let _ = conn.execute_batch("ROLLBACK");
+                    return Err(e);
+                }
+            }
+        }
+        ActionSubcommand::List {
+            namespace,
+            status,
+            limit,
+        } => {
+            let items =
+                attention::list_attention(&conn, namespace.as_deref(), status.as_deref(), limit)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&items)?);
+            } else if items.is_empty() {
+                eprintln!("No attention items.");
+            } else {
+                eprintln!("{} attention item(s):\n", items.len());
+                for item in &items {
+                    print_attention_item(item);
+                    println!();
+                }
+            }
+        }
+        ActionSubcommand::Eligible { namespace, scope } => {
+            let s = settings::load(&path)?;
+            let namespace = namespace.or_else(current_namespace);
+            let context = attention::EligibilityContext {
+                namespace,
+                scope,
+                now: clio_core::models::now_utc(),
+                dormant_days: s.attention.dormant_days,
+            };
+            let items = attention::eligible(&conn, &context)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&items)?);
+            } else if items.is_empty() {
+                eprintln!("Nothing needs attention right now.");
+            } else {
+                eprintln!("{} item(s) need attention:\n", items.len());
+                for entry in &items {
+                    eprintln!("  why: {}", entry.reason.as_str());
+                    print_attention_item(&entry.item);
+                    println!();
+                }
+            }
+        }
+        ActionSubcommand::Complete {
+            id,
+            evidence,
+            reason,
+        } => {
+            let item = attention::complete(
+                &conn,
+                &id,
+                evidence.as_deref(),
+                reason.as_deref(),
+                Some("user"),
+            )?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&item)?);
+            } else {
+                eprintln!("Resolved.");
+                print_attention_item(&item);
+            }
+        }
+        ActionSubcommand::Snooze { id, until } => {
+            let item = attention::snooze(&conn, &id, &until, Some("user"))?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&item)?);
+            } else {
+                eprintln!("Snoozed until {until}.");
+                print_attention_item(&item);
+            }
+        }
+        ActionSubcommand::Cancel { id, reason } => {
+            let item = attention::cancel(&conn, &id, reason.as_deref(), Some("user"))?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&item)?);
+            } else {
+                eprintln!("Cancelled.");
+                print_attention_item(&item);
+            }
+        }
+        ActionSubcommand::AttachExternal {
+            id,
+            system,
+            external_ref,
+        } => {
+            let item =
+                attention::attach_external(&conn, &id, &system, &external_ref, Some("user"))?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&item)?);
+            } else {
+                eprintln!("External reference recorded.");
+                print_attention_item(&item);
+            }
+        }
+        ActionSubcommand::History { id, limit } => {
+            let item = attention::resolve_attention(&conn, &id)?;
+            let events = clio_core::events::list_events(&conn, &item.memory_id, limit)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&events)?);
+            } else if events.is_empty() {
+                eprintln!("No events recorded.");
+            } else {
+                for event in &events {
+                    let reason = event
+                        .reason
+                        .as_deref()
+                        .map(|r| format!(" — {r}"))
+                        .unwrap_or_default();
+                    eprintln!("  {} {}{}", event.created_at, event.event_type, reason);
+                }
             }
         }
     }
@@ -2176,6 +2827,22 @@ fn cmd_settings(
                 }
             }
         }
+        SettingsSubcommand::ShowCapture => {
+            let capture = settings::capture_preferences(&path)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&capture)?);
+            } else {
+                eprintln!(
+                    "Capture enabled: {}",
+                    if capture.enabled { "on" } else { "off" }
+                );
+                eprintln!("Capture model: {}", capture.model);
+                match capture.review_threshold {
+                    Some(threshold) => eprintln!("Review threshold: {threshold}"),
+                    None => eprintln!("Review threshold: off"),
+                }
+            }
+        }
         SettingsSubcommand::UseLocal => {
             let mut s = settings::load(&path)?;
             s.embeddings = embeddings::EmbeddingConfig::Local {
@@ -2227,6 +2894,14 @@ fn cmd_settings(
             settings::save(&path, &s)?;
             eprintln!("Capture pipeline enabled.");
         }
+        SettingsSubcommand::SetCaptureModel { model } => {
+            let capture = settings::set_capture_model(&path, &model)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&capture)?);
+            } else {
+                eprintln!("Capture model set to {}.", capture.model);
+            }
+        }
         SettingsSubcommand::DisableCapture => {
             let mut s = settings::load(&path)?;
             s.capture.enabled = false;
@@ -2265,6 +2940,57 @@ fn cmd_settings(
     Ok(())
 }
 
+fn cmd_effectiveness(
+    db_path: Option<&str>,
+    json: bool,
+    args: EffectivenessArgs,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let path = resolve_db_path(db_path)?;
+    let conn = db::open(&path)?;
+    let s = settings::load(&path)?;
+    let namespace = args
+        .namespace
+        .or_else(|| s.context.auto_detect.then(current_namespace).flatten());
+
+    let report =
+        clio_core::stats::effectiveness(&conn, namespace.as_deref(), s.attention.dormant_days)?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        eprintln!(
+            "Effectiveness — {}",
+            report.namespace.as_deref().unwrap_or("all namespaces")
+        );
+        eprintln!(
+            "  checkpoints:     {} (last {})",
+            report.checkpoints_total,
+            report.last_checkpoint_at.as_deref().unwrap_or("never")
+        );
+        for (status, count) in &report.attention {
+            eprintln!("  attention {status}: {count}");
+        }
+        eprintln!("  stale open items: {}", report.attention_stale);
+        eprintln!("  auto-surfaced:    {} unique", report.surfaced_unique);
+        eprintln!("  deliberate reads: {}", report.deliberate_accesses);
+        eprintln!("  contradictions:   {}", report.unresolved_contradictions);
+        if let Some(stale) = report.consolidation_stale {
+            eprintln!(
+                "  consolidation:    {}",
+                if stale { "STALE" } else { "fresh" }
+            );
+        }
+        for (status, count) in &report.deliveries {
+            eprintln!("  delivery {status}: {count}");
+        }
+        eprintln!("  review pending:   {}", report.review_pending);
+        if report.corrupt_rows > 0 {
+            eprintln!("  CORRUPT ROWS:     {}", report.corrupt_rows);
+        }
+    }
+    Ok(())
+}
+
 fn cmd_stats(
     db_path: Option<&str>,
     json: bool,
@@ -2294,6 +3020,60 @@ fn cmd_activity(
         println!("{}", serde_json::to_string_pretty(&entries)?);
     } else {
         print_activity(&entries);
+    }
+
+    Ok(())
+}
+
+fn cmd_resume(
+    db_path: Option<&str>,
+    json: bool,
+    args: ResumeArgs,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let path = resolve_db_path(db_path)?;
+    let conn = db::open(&path)?;
+    let stgs = settings::load(&path)?;
+
+    let namespace = match &args.namespace {
+        Some(ns) => Some(ns.clone()),
+        None => {
+            if stgs.context.auto_detect {
+                current_namespace()
+            } else {
+                None
+            }
+        }
+    };
+
+    let request = clio_core::assembly::ResumeRequest {
+        namespace,
+        query: args.query,
+        session_id: args.session,
+        max_items: args.max_items,
+        char_budget: args.char_budget,
+        scoring: Some(stgs.scoring),
+        dormant_days: stgs.attention.dormant_days,
+        now: None,
+    };
+
+    let brief = clio_core::assembly::build_resume_brief(&conn, &request)?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&brief)?);
+    } else if brief.sections.is_empty() {
+        eprintln!("Nothing to resume — no open work or relevant context.");
+    } else {
+        eprintln!("# Resume — {}\n", brief.namespace);
+        for section in &brief.sections {
+            eprintln!("## {}\n", section.heading);
+            for item in &section.items {
+                let title = item.title.as_deref().unwrap_or("(untitled)");
+                eprintln!("  - [{}] {} ({})", item.kind, title, item.memory_id);
+                eprintln!("    why: {}", item.reason);
+                eprintln!("    {}", item.content);
+            }
+            eprintln!();
+        }
     }
 
     Ok(())
@@ -2413,6 +3193,121 @@ fn cmd_suggest_links(
         print_suggestions(&suggestions);
     }
 
+    Ok(())
+}
+
+/// Run auto-link inference to completion.
+///
+/// `auto_link_batch` processes at most `batch_size` memories and returns how far it
+/// reached. That bound is right for a daemon tick but useless on its own for a
+/// scheduled run: the daemon carries its watermark in memory between ticks, whereas
+/// a one-shot starting from the same place every time would churn the same oldest
+/// `batch_size` memories forever and never reach the rest. So this iterates,
+/// feeding each pass's watermark into the next, until a pass finds nothing new.
+fn cmd_auto_link(
+    db_path: Option<&str>,
+    json: bool,
+    args: AutoLinkArgs,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let path = resolve_db_path(db_path)?;
+    let s = settings::load(&path)?;
+
+    let mut config = s.daemon.auto_link.clone();
+    if let Some(threshold) = args.threshold {
+        config.threshold = threshold;
+    }
+
+    // The daemon honours this switch; a one-shot run must too, or "disabled"
+    // machines (e.g. a secondary copy of a shared database) silently diverge.
+    if !config.enabled && !args.force {
+        return Err(format!(
+            "auto-link is disabled on this machine (daemon.auto_link.enabled = false in {}). \
+             Pass --force to run anyway.",
+            settings::settings_path(&path).display(),
+        )
+        .into());
+    }
+
+    // One run at a time: the hourly cron pass has unbounded runtime, and an
+    // overlapping second pass loses its link writes to SQLITE_BUSY, which looks
+    // like a clean run that created nothing.
+    let _lock = embeddings::acquire_auto_link_lock(&path)?;
+
+    let conn = db::open(&path)?;
+    let backend = embeddings::create_backend(&s.embeddings)?;
+    let mut watermark = args.since.clone();
+    let mut watermark_id: Option<String> = None;
+    let mut passes: u32 = 0;
+    let mut total_processed: u64 = 0;
+    let mut total_links: u64 = 0;
+    let mut total_skipped: u64 = 0;
+
+    loop {
+        let report = embeddings::auto_link_batch(
+            &conn,
+            backend.as_ref(),
+            watermark.as_deref(),
+            watermark_id.as_deref(),
+            &config,
+        )?;
+        passes += 1;
+        total_processed += u64::from(report.memories_processed);
+        total_links += u64::from(report.links_created);
+        total_skipped += u64::from(report.memories_skipped);
+
+        // Stop only when a pass saw nothing at all. A batch that was wholly
+        // skipped (no embeddings could be produced) still advanced the
+        // watermark, and stopping there would silently abandon the rest of
+        // the corpus.
+        if report.memories_processed == 0 && report.memories_skipped == 0 {
+            break;
+        }
+        // A pass that saw memories but did not move the watermark cannot make
+        // further progress, and repeating it would loop forever.
+        match (report.last_watermark, report.last_watermark_id) {
+            (Some(next), Some(next_id))
+                if Some(&next) != watermark.as_ref() || Some(&next_id) != watermark_id.as_ref() =>
+            {
+                watermark = Some(next);
+                watermark_id = Some(next_id);
+            }
+            _ => break,
+        }
+    }
+
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "passes": passes,
+                "memories_processed": total_processed,
+                "links_created": total_links,
+                "memories_skipped": total_skipped,
+                "last_watermark": watermark,
+                "last_watermark_id": watermark_id,
+                "threshold": config.threshold,
+                "max_links_per_memory": config.max_links_per_memory,
+                "batch_size": config.batch_size,
+            }))?
+        );
+    } else {
+        eprintln!(
+            "Auto-link complete: {} memory(ies) over {} pass(es), {} link(s) created \
+             (threshold {}, cap {} per memory).",
+            total_processed, passes, total_links, config.threshold, config.max_links_per_memory,
+        );
+    }
+
+    // Fail loudly after reporting: a skipped memory means no embedding could be
+    // produced for it, and a run that shrugs that off exits 0 with nothing linked
+    // — indistinguishable from health to anything watching the exit code.
+    if total_skipped > 0 {
+        return Err(format!(
+            "{total_skipped} memory(ies) skipped because no embedding could be produced; \
+             the embedding backend may be broken — see warnings above."
+        )
+        .into());
+    }
     Ok(())
 }
 
@@ -3595,4 +4490,69 @@ fn setup_json_merge(p: &SetupMergeParams<'_>) -> Result<(), Box<dyn std::error::
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn capture_model_setting_routes_to_the_shared_backend() {
+        let setting = Command::Settings(SettingsArgs {
+            command: SettingsSubcommand::SetCaptureModel {
+                model: "gpt-5.6-luna".into(),
+            },
+        });
+        let show = Command::Settings(SettingsArgs {
+            command: SettingsSubcommand::Show,
+        });
+        let show_capture = Command::Settings(SettingsArgs {
+            command: SettingsSubcommand::ShowCapture,
+        });
+
+        assert!(command_uses_shared_storage(&setting));
+        assert!(command_uses_shared_storage(&show_capture));
+        assert!(!command_uses_shared_storage(&show));
+    }
+
+    #[test]
+    fn action_routes_to_the_shared_backend() {
+        let action = Command::Action(ActionArgs {
+            command: ActionSubcommand::List {
+                namespace: None,
+                status: None,
+                limit: 20,
+            },
+        });
+        assert!(command_uses_shared_storage(&action));
+    }
+
+    #[test]
+    fn checkpoint_routes_to_the_shared_backend() {
+        let checkpoint = Command::Checkpoint(CheckpointArgs {
+            text: "-".into(),
+            source: "claude-session".into(),
+            session_id: "session-1".into(),
+            cursor: 10,
+            namespace: None,
+            branch: None,
+            ticket: None,
+            model: None,
+        });
+        assert!(command_uses_shared_storage(&checkpoint));
+    }
+
+    #[test]
+    fn capture_model_override_preserves_other_settings() {
+        let base = settings::CaptureConfig {
+            enabled: true,
+            api_key: Some("secret".into()),
+            ..Default::default()
+        };
+        let changed = capture_config_with_model(&base, Some(" gpt-5.6-terra ")).unwrap();
+
+        assert_eq!(changed.model, "gpt-5.6-terra");
+        assert_eq!(changed.api_key, base.api_key);
+        assert!(capture_config_with_model(&base, Some("  ")).is_err());
+    }
 }

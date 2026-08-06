@@ -223,6 +223,11 @@ pub struct RecallQuery {
     /// not exposed via MCP parameters.
     #[serde(skip)]
     pub scoring: Option<crate::settings::ScoringConfig>,
+    /// When true, this recall does not touch `access_count`/`last_accessed_at`.
+    /// Internal-only: automatic surfacing (resume briefs) must not train its
+    /// own ranking. Deliberate recall stays tracked.
+    #[serde(skip)]
+    pub skip_access_tracking: bool,
 }
 
 fn default_true() -> bool {
@@ -250,6 +255,7 @@ impl Default for RecallQuery {
             limit: 10,
             offset: 0,
             scoring: None,
+            skip_access_tracking: false,
         }
     }
 }
@@ -264,6 +270,24 @@ pub struct RecallItem {
     /// memory with this ID (graph-aware recall).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub linked_from: Option<String>,
+    /// Every edge that connected this linked memory to a direct result,
+    /// with direction, relationship and metadata preserved. Empty for
+    /// direct (non-linked) results.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub link_context: Vec<LinkContext>,
+}
+
+/// One graph edge described relative to a recall anchor: the raw edge plus
+/// which way it points from the anchor's perspective.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LinkContext {
+    pub from_memory_id: String,
+    pub to_memory_id: String,
+    /// `outgoing` (anchor → linked) or `incoming` (linked → anchor).
+    pub direction: String,
+    pub relationship: String,
+    pub metadata: serde_json::Value,
+    pub created_at: String,
 }
 
 /// Paginated recall result envelope.

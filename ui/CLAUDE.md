@@ -22,14 +22,8 @@ Tauri backend commands; holds no business logic of its own (that lives in
 | `composables/` | Reactive helpers (`useKeyboard`, `useAutoSave`, …). |
 | `router/`, `utils/` | Routing and pure helpers. |
 
-## Stack
-
-Vue 3 + Pinia + Vue Router, built with Vite; TypeScript checked by `vue-tsc`.
-Shared design system via `@stuntrocket/ui`. Tauri APIs via `@tauri-apps/api`.
-
 ## Work Guidance
 
-- British English in all user-facing text.
 - Keep components presentational; route data access through `api/` and `stores/`.
 - Reuse `@stuntrocket/ui` primitives before adding bespoke components.
 

@@ -90,7 +90,31 @@ Auto-detection is controlled by `context.auto_detect` in settings (default `true
 2. Auto-detected namespace from `cwd`
 3. `global`
 
-Tools that accept `cwd`: `memory_remember`, `memory_recall`, `memory_capture`, `memory_search`, `memory_context`.
+Tools that accept `cwd`: `memory_remember`, `memory_recall`, `memory_capture`,
+`memory_session_checkpoint`, `memory_search`, `memory_context`, `memory_resume`,
+and `memory_action`.
+
+**Exception — classified storage** (`memory_capture`, and distillation via
+`memory_session_checkpoint`): the model's classification may promote a memory to
+`global`, and that promotion ranks above the auto-detected `cwd` namespace:
+explicit `namespace` → model's `global` promotion → auto-detected from `cwd` →
+model's suggested namespace. This is one shared rule in core
+(`capture::resolve_namespace`) for every classified path, so capture and distill
+cannot disagree about where the same classification lands.
+
+## Runtime Lifecycle and Concurrency
+
+One MCP process opens one SQLite connection, holds one bounded namespace-list
+cache, caches settings for 30 seconds, and creates its embedding backend once.
+Changing embedding settings therefore requires an MCP process restart; other
+settings are reloaded after the cache window.
+
+SQLite phases are serialised through one mutex. Slow provider phases run on the
+blocking pool without that mutex: semantic query embedding, capture
+classification, checkpoint distillation, and automatic embedding after a
+remember/update/capture/checkpoint write. A record vector generated after a write is
+stored only when the record's `updated_at` is still unchanged, so releasing the
+mutex cannot let a stale vector overwrite a newer edit.
 
 ## Shared Types
 
@@ -423,7 +447,7 @@ Fetch one memory by id.
 ## `memory_recent`
 
 **Deprecated** — use `memory_recall` with no `query` (it falls through to a
-recent-style listing). Retained as an alias for one release, then removed.
+recent-style listing). Retained for compatibility.
 
 Return recent memories with optional filtering and sorting.
 
@@ -789,11 +813,166 @@ Capture is controlled by the `capture` section of `clio-settings.json`:
 | Field | Default | Notes |
 |---|---|---|
 | `enabled` | `false` | must be `true` for the tool to work |
-| `api_key` | null | falls back to `OPENAI_API_KEY` env var |
+| `api_key` | null | falls back to `OPENAI_API_KEY_CLIO`, then the shared `OPENAI_API_KEY` with a warning — see [settings](settings.md#api-key-resolution) |
 | `base_url` | `https://api.openai.com/v1` | override for proxies or compatible APIs |
 | `model` | `gpt-4o-mini` | any OpenAI-compatible chat model |
 
 Configure via CLI: `clio settings use-capture --api-key <key> [--model <model>] [--base-url <url>]`
+
+## `memory_session_checkpoint`
+
+Distil one session delta and commit it as an exact-once checkpoint keyed by `source + session_id + cursor`.
+
+### Why it exists
+
+Stop-hook capture retries after a lost response, a provider 429 or an outage. Without a server-side identity, a retry either duplicates atoms or silently loses the delta. A checkpoint gives every capture attempt exactly one durable outcome: the first delivery stores the atoms and the result envelope atomically; every later delivery of the same key replays that stored result.
+
+### Input
+
+```json
+{
+  "text": "…redacted session-delta digest…",
+  "source": "claude-session",
+  "session_id": "b2c3d4",
+  "cursor": 1240,
+  "namespace": "project:clio",
+  "cwd": "/Users/alice/code/my-project",
+  "branch": "develop",
+  "ticket": "clio-123"
+}
+```
+
+### Input defaults
+
+- `namespace`: null — an explicit value overrides the namespace of every extracted memory
+- `cwd`: null (used for default-namespace detection, recorded in memory metadata)
+- `branch`, `ticket`: null (stored on the checkpoint row)
+
+### Validation rules
+
+- `text`, `source` and `session_id` are required and must not be empty
+- `cursor` must be zero or positive
+
+### Behaviour
+
+1. Preflight: if a checkpoint for `(source, session_id, cursor)` exists, return its stored result with `replayed: true` — the model is not called
+2. Otherwise distil `text` with the configured capture model outside both the write transaction and the shared SQLite mutex
+3. Open one write transaction, recheck the key under the lock, then store every extracted memory or review item and the checkpoint record atomically
+4. Any failure rolls back all writes — no partial session can persist; the key stays open for retry
+5. An empty extraction commits an empty checkpoint: success, never redistilled
+6. Auto-embedding runs best-effort after commit and cannot fail the checkpoint
+7. Namespace resolution per memory matches `clio distill`: explicit `namespace` → LLM `global` promotion → `cwd`-detected default → LLM suggestion
+8. Atoms carrying explicit open-loop data (`attention.explicitness = "explicit"`) open attention atomically with the stored memory; suggested/inferred open loops queue for review whatever their confidence, and approval creates memory + attention in one transaction
+9. An atom's `resolves` identifier never completes anything automatically: a stable reference to an open/snoozed attention item records a reviewable `resolution_candidate` event; anything fuzzy leaves state unchanged
+10. `ticket` becomes a deterministic lowercase `ticket:<id>` tag and `branch` is recorded in memory metadata — the model never invents session identifiers
+
+### Response
+
+```json
+{
+  "checkpoint_id": "01954d70-cf20-7d42-bb3b-ff2f0f0de123",
+  "replayed": false,
+  "stored_memory_ids": ["01954d70-…"],
+  "queued_review_ids": [],
+  "created_at": "2026-07-29T16:04:48Z"
+}
+```
+
+`replayed: true` means the key had already completed and the stored envelope was returned unchanged.
+
+### Failure cases
+
+- capture not enabled / API key missing → configuration error (same as `memory_capture`)
+- LLM API request failed → storage error with HTTP status; the key stays open for retry
+- LLM returned unparseable JSON → validation error; the key stays open for retry
+- storage failure → transaction rolled back, actionable storage error
+
+## `memory_get_links` — direction parameter
+
+`memory_get_links` accepts an optional `direction` field:
+
+- `"outgoing"` (default): the existing compatible shape — raw outgoing links
+- `"incoming"` / `"both"`: edge contexts `{ from_memory_id, to_memory_id, direction, relationship, metadata, created_at }`, where `direction` is relative to the requested memory
+
+Linked recall (`memory_recall` with `include_links`) likewise returns each linked memory once with a `link_context` array preserving every edge's direction, relationship and metadata.
+
+## `memory_resume`
+
+Build a deterministic, evidence-backed resume brief: what deserves attention now, and why.
+
+### Why it exists
+
+Handoff and context briefs answer "what is this project?"; resume answers "what should I pick up right now?". One core policy selects eligible open work, blocked items, constraints (with a modest global prior), recent decisions, prompt-relevant knowledge and recent activity — every item carrying a `reason`. Adapters and hooks request the brief; they never recreate ordering, eligibility or budgeting.
+
+### Input
+
+```json
+{ "cwd": "/Users/alice/code/my-project", "session_id": "b2c3d4" }
+{ "query": "checkpoint retry semantics", "session_id": "b2c3d4", "max_items": 12 }
+```
+
+### Input defaults
+
+- `query`: null — the relevant-knowledge section abstains entirely without one
+- `namespace`: null (auto-detected from `cwd`)
+- `session_id`: null (no repeat suppression, no `surfaced` events)
+- `max_items`: 20; `char_budget`: null; `response_format`: markdown
+
+### Behaviour
+
+1. Sections in priority order: Needs attention (eligible open work with machine-readable reasons: `overdue`, `reminder_due`, `project_session`, `dormant`), Waiting on, Active constraints (project first plus up to two global), Recent decisions, Relevant knowledge (query only), Recent activity (receipts)
+2. Empty sections are omitted and release their capacity; each non-empty critical section (attention, waiting, constraints) keeps one guaranteed slot at small budgets
+3. Items are deduplicated across sections by memory ID; archived, expired, resolved and cancelled records never appear
+4. Every read is untracked: automatic delivery leaves `access_count` and `last_accessed_at` unchanged
+5. With `session_id`, each included attention item records one idempotent `surfaced` event and is suppressed on repeat requests in the same scope until its state changes
+6. The character budget counts the serialised representation (title + bounded content + reason); at least one item is always kept
+7. Event-write failure logs a warning and still returns the brief
+
+### Response
+
+Markdown by default; `response_format: "json"` returns `{ namespace, sections: [{ heading, items: [{ memory_id, kind, title, content, source, created_at, state, reason }] }], total_items, generated_at }`.
+
+## `memory_action`
+
+Manage follow-up attention on memories — the open-loops lifecycle.
+
+### Why it exists
+
+Memories record what was said; attention records what is still owed. An explicit user commitment ("I'll verify the deployment tomorrow") should open attention immediately, resurface at the right moment with a reason, and resolve with evidence — without ever rewriting the underlying memory or losing its audit history.
+
+### Input
+
+One merged tool with an `action` discriminator, mirroring `memory_inbox`:
+
+```json
+{ "action": "add", "content": "Verify the deployment after release", "owner": "user", "due_at": "2026-08-01T00:00:00Z" }
+{ "action": "add", "memory_id": "0195…", "trigger": "project-session" }
+{ "action": "list", "namespace": "project:clio", "status": "open" }
+{ "action": "eligible", "namespace": "project:clio", "scope": "session-b2c3" }
+{ "action": "complete", "id": "0195…", "evidence": "0195…", "reason": "shipped" }
+{ "action": "snooze", "id": "0195…", "until": "2026-08-15T00:00:00Z" }
+{ "action": "cancel", "id": "0195…", "reason": "obsolete" }
+{ "action": "attach_external", "id": "0195…", "external_system": "things", "external_ref": "things-id" }
+{ "action": "history", "id": "0195…" }
+```
+
+`id` accepts either the attention item ID or the underlying memory ID.
+
+### Behaviour
+
+- `add` opens attention on an existing memory (`memory_id`) or creates a `task` memory from `content` and opens attention on it — memory, attention row and initial event commit atomically. Creation is idempotent per memory.
+- Statuses are only `open`, `snoozed`, `resolved`, `cancelled`. Invalid transitions are validation errors; `resolved`/`cancelled` are terminal.
+- `eligible` is a pure read returning each item with a machine-readable `reason` (`overdue`, `reminder_due`, `project_session`, `dormant`). Passing `scope` suppresses items already surfaced in that session/topic for the same reason and state.
+- `complete` records a `resolved` event and, when `evidence` is given, a `resolved_by` link from the followed-up memory to the evidence memory. The source memory is never rewritten.
+- `attach_external` records a verified external reference and keeps the item open; it does not mark anything delivered.
+- `history` returns the append-only event trail for the item's memory.
+
+### Failure cases
+
+- missing required fields per action → validation error naming the field
+- unknown action → validation error listing the valid actions
+- id resolving to no attention item → not-found error
+- invalid transition (e.g. completing a cancelled item) → validation error stating both states
 
 ## `memory_stats`
 
@@ -1317,12 +1496,15 @@ Recommended annotation intent:
 | `memory_namespaces` | true | false | true |
 | `memory_get_links` | true | false | true |
 | `memory_capture` | false | false | false |
+| `memory_session_checkpoint` | false | false | true |
 | `memory_search` | true | false | true |
 | `memory_stats` | true | false | true |
 | `memory_activity` | true | false | true |
 | `memory_suggest_links` | true | false | false |
 | `memory_context` | true | false | true |
 | `memory_inbox` | false | false | false |
+| `memory_resume` | true | false | true |
+| `memory_action` | false | false | false |
 | `memory_cache_clear` | false | false | true |
 
 ## Output Discipline

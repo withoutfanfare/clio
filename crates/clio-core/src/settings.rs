@@ -53,13 +53,29 @@ pub struct AutoLinkConfig {
     #[serde(default = "default_auto_link_interval")]
     pub interval_secs: u64,
 
-    /// Max links to create per memory per pass.
+    /// Maximum inferred links a memory may hold in **total degree** — counting
+    /// both directions, across all passes; not a fresh allowance each pass. A
+    /// link is only created while both of its endpoints are below this cap, since
+    /// recall walks edges both ways and total degree is what governs how much
+    /// context a memory drags into a brief.
     #[serde(default = "default_auto_link_max")]
     pub max_links_per_memory: u32,
 
     /// Memories to process per pass.
     #[serde(default = "default_auto_link_batch")]
     pub batch_size: u32,
+
+    /// Memory kinds excluded from auto-linking, as both source and target.
+    ///
+    /// Defaults to `["receipt"]`. Receipts are per-session write-ups of what was
+    /// done; they share a great deal of boilerplate phrasing, so they attract each
+    /// other strongly on similarity while carrying little conceptual content.
+    /// Measured on live data at threshold 0.6, receipts averaged 4.86 links each
+    /// against 2.03 for `fact` — the most substantive kind was the least connected,
+    /// and receipts consumed roughly a third of all link mass. Excluding them keeps
+    /// the graph about ideas rather than about sessions.
+    #[serde(default = "default_auto_link_exclude_kinds")]
+    pub exclude_kinds: Vec<String>,
 }
 
 fn default_auto_link_threshold() -> f64 {
@@ -78,6 +94,10 @@ fn default_auto_link_batch() -> u32 {
     50
 }
 
+fn default_auto_link_exclude_kinds() -> Vec<String> {
+    vec!["receipt".to_string()]
+}
+
 impl Default for AutoLinkConfig {
     fn default() -> Self {
         Self {
@@ -86,6 +106,7 @@ impl Default for AutoLinkConfig {
             interval_secs: default_auto_link_interval(),
             max_links_per_memory: default_auto_link_max(),
             batch_size: default_auto_link_batch(),
+            exclude_kinds: default_auto_link_exclude_kinds(),
         }
     }
 }
@@ -138,6 +159,24 @@ impl Default for CaptureConfig {
     }
 }
 
+/// Non-secret capture settings safe to display in user interfaces.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct CapturePreferences {
+    pub enabled: bool,
+    pub model: String,
+    pub review_threshold: Option<f64>,
+}
+
+impl From<&CaptureConfig> for CapturePreferences {
+    fn from(config: &CaptureConfig) -> Self {
+        Self {
+            enabled: config.enabled,
+            model: config.model.clone(),
+            review_threshold: config.review_threshold,
+        }
+    }
+}
+
 /// Configuration for automatic namespace detection from the working directory.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ContextConfig {
@@ -152,8 +191,29 @@ impl Default for ContextConfig {
     }
 }
 
-/// Configuration for AI-powered automatic title generation.
+/// Attention lifecycle policy values.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct AttentionConfig {
+    /// Days an open attention item may sit untouched before eligibility
+    /// reports it as dormant. `0` disables dormancy surfacing.
+    #[serde(default = "default_dormant_days")]
+    pub dormant_days: u32,
+}
+
+fn default_dormant_days() -> u32 {
+    14
+}
+
+impl Default for AttentionConfig {
+    fn default() -> Self {
+        Self {
+            dormant_days: default_dormant_days(),
+        }
+    }
+}
+
+/// Configuration for AI-powered automatic title generation.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct AutoTitleConfig {
     /// Whether AI title generation is enabled.
     #[serde(default)]
@@ -170,17 +230,6 @@ pub struct AutoTitleConfig {
     /// Model to use. Falls back to capture.model if None.
     #[serde(default)]
     pub model: Option<String>,
-}
-
-impl Default for AutoTitleConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            api_key: None,
-            base_url: None,
-            model: None,
-        }
-    }
 }
 
 /// Configuration for namespace cleanup (stale-namespace detection and purge).
@@ -342,6 +391,10 @@ pub struct Settings {
     #[serde(default)]
     pub consolidate: ConsolidateConfig,
 
+    /// Attention lifecycle policy.
+    #[serde(default)]
+    pub attention: AttentionConfig,
+
     /// Optional shared Atlas route for CLI, hooks and Tauri.
     #[serde(default)]
     pub remote: Option<RemoteConfig>,
@@ -349,6 +402,106 @@ pub struct Settings {
 
 fn default_true() -> bool {
     true
+}
+
+/// Environment variable holding a Clio-specific provider key. Preferred over the
+/// shared key so Clio's spend lands on its own key and can be attributed in
+/// provider billing without every other tool on the machine sharing one key.
+pub const CLIO_API_KEY_ENV: &str = "OPENAI_API_KEY_CLIO";
+
+/// The shared provider key. Still honoured, so existing installs keep working,
+/// but falling back to it is warned about: a key shared across tools makes
+/// per-application cost attribution impossible, and the reuse is otherwise
+/// invisible.
+pub const SHARED_API_KEY_ENV: &str = "OPENAI_API_KEY";
+
+/// Which environment variable supplied a key.
+#[derive(Clone, PartialEq, Eq)]
+pub enum EnvKeySource {
+    /// From `OPENAI_API_KEY_CLIO` — the preferred, attributable key.
+    Clio(String),
+    /// From `OPENAI_API_KEY` — shared with other tools on the machine.
+    Shared(String),
+}
+
+/// Hand-written so a `{:?}` in a log or error can never print the key itself —
+/// the derive would.
+impl std::fmt::Debug for EnvKeySource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Clio(_) => write!(f, "EnvKeySource::Clio(<redacted>)"),
+            Self::Shared(_) => write!(f, "EnvKeySource::Shared(<redacted>)"),
+        }
+    }
+}
+
+impl EnvKeySource {
+    /// The key itself, regardless of which variable held it.
+    pub fn into_key(self) -> String {
+        match self {
+            Self::Clio(key) | Self::Shared(key) => key,
+        }
+    }
+}
+
+/// Choose between a Clio-specific and a shared key, preferring the former.
+///
+/// Kept free of environment access so the precedence rule is testable: the
+/// process environment is global, and mutating it inside Rust's parallel test
+/// runner makes results depend on test ordering.
+fn pick_env_key(clio: Option<String>, shared: Option<String>) -> Option<EnvKeySource> {
+    // Trim what we return, not just what we test: `KEY=$(cat file)` leaves a
+    // trailing newline, and a key sent with stray whitespace fails at the
+    // provider as an opaque 401.
+    let non_empty = |value: Option<String>| {
+        value
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty())
+    };
+    match (non_empty(clio), non_empty(shared)) {
+        (Some(key), _) => Some(EnvKeySource::Clio(key)),
+        (None, Some(key)) => Some(EnvKeySource::Shared(key)),
+        (None, None) => None,
+    }
+}
+
+/// Read a provider key from the environment, preferring `OPENAI_API_KEY_CLIO`.
+///
+/// `purpose` names the caller (for example "capture") so the warning about
+/// falling back to the shared key says which part of Clio it applies to.
+pub fn api_key_from_env(purpose: &str) -> Option<String> {
+    let source = pick_env_key(
+        std::env::var(CLIO_API_KEY_ENV).ok(),
+        std::env::var(SHARED_API_KEY_ENV).ok(),
+    )?;
+    if matches!(source, EnvKeySource::Shared(_)) {
+        tracing::warn!(
+            "{purpose}: using the shared {SHARED_API_KEY_ENV}, which other tools \
+             also use — provider billing cannot attribute this spend to Clio. \
+             Set {CLIO_API_KEY_ENV} to a Clio-only key."
+        );
+    }
+    Some(source.into_key())
+}
+
+/// Whether an environment provider key is present, without logging the
+/// shared-key attribution warning `api_key_from_env` emits — for health
+/// checks that only ask "would resolution succeed?", not "use the key now".
+pub fn env_api_key_present() -> bool {
+    pick_env_key(
+        std::env::var(CLIO_API_KEY_ENV).ok(),
+        std::env::var(SHARED_API_KEY_ENV).ok(),
+    )
+    .is_some()
+}
+
+/// Normalise a configured provider key, treating blank values as absent so the
+/// documented environment fallback can run.
+pub(crate) fn configured_api_key(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|key| !key.is_empty())
+        .map(String::from)
 }
 
 impl Default for Settings {
@@ -363,6 +516,7 @@ impl Default for Settings {
             daemon: DaemonConfig::default(),
             cleanup: CleanupConfig::default(),
             consolidate: ConsolidateConfig::default(),
+            attention: AttentionConfig::default(),
             remote: None,
         }
     }
@@ -371,11 +525,9 @@ impl Default for Settings {
 impl Settings {
     /// Resolve the API key for auto-title, falling back to capture config.
     pub fn auto_title_api_key(&self) -> Option<String> {
-        self.auto_title
-            .api_key
-            .clone()
-            .or_else(|| self.capture.api_key.clone())
-            .or_else(|| std::env::var("OPENAI_API_KEY").ok())
+        configured_api_key(self.auto_title.api_key.as_deref())
+            .or_else(|| configured_api_key(self.capture.api_key.as_deref()))
+            .or_else(|| api_key_from_env("auto-title"))
     }
 
     /// Resolve the base URL for auto-title, falling back to capture config.
@@ -430,6 +582,35 @@ pub fn load(db_path: &Path) -> Result<Settings> {
 
     tracing::debug!(path = %path.display(), "loaded settings");
     Ok(settings)
+}
+
+/// Return capture settings that are safe to expose without leaking credentials.
+pub fn capture_preferences(db_path: &Path) -> Result<CapturePreferences> {
+    Ok(CapturePreferences::from(&load(db_path)?.capture))
+}
+
+/// Normalise and validate an OpenAI-compatible capture model ID.
+pub fn normalise_capture_model(model: &str) -> Result<String> {
+    let model = model.trim();
+    if model.is_empty() {
+        return Err(ClioError::Validation(
+            "capture model cannot be empty".into(),
+        ));
+    }
+    if model.len() > 200 || model.chars().any(char::is_control) {
+        return Err(ClioError::Validation(
+            "capture model must be at most 200 characters and contain no control characters".into(),
+        ));
+    }
+    Ok(model.to_string())
+}
+
+/// Change only the capture model, preserving credentials and other settings.
+pub fn set_capture_model(db_path: &Path, model: &str) -> Result<CapturePreferences> {
+    let mut settings = load(db_path)?;
+    settings.capture.model = normalise_capture_model(model)?;
+    save(db_path, &settings)?;
+    Ok(CapturePreferences::from(&settings.capture))
 }
 
 /// Save settings to the file next to the database.
@@ -493,15 +674,90 @@ mod tests {
     }
 
     #[test]
-    fn remote_settings_round_trip() {
+    fn clio_specific_key_wins_over_the_shared_one() {
+        assert_eq!(
+            pick_env_key(Some("clio-key".into()), Some("shared-key".into())),
+            Some(EnvKeySource::Clio("clio-key".into())),
+        );
+    }
+
+    #[test]
+    fn shared_key_is_used_but_flagged_as_shared() {
+        assert_eq!(
+            pick_env_key(None, Some("shared-key".into())),
+            Some(EnvKeySource::Shared("shared-key".into())),
+            "existing installs must keep working, but the source is distinguishable \
+             so the caller can warn",
+        );
+    }
+
+    #[test]
+    fn blank_keys_are_treated_as_absent() {
+        // A variable exported as "" is a common shell accident; taking it as a key
+        // sends an unauthenticated request instead of falling through.
+        assert_eq!(
+            pick_env_key(Some("   ".into()), Some("shared-key".into())),
+            Some(EnvKeySource::Shared("shared-key".into())),
+        );
+        assert_eq!(pick_env_key(Some(String::new()), None), None);
+        assert_eq!(pick_env_key(None, None), None);
+    }
+
+    #[test]
+    fn keys_are_trimmed_before_use() {
+        // `KEY=$(cat file)` leaves a trailing newline; sent verbatim it fails at
+        // the provider as an opaque 401.
+        assert_eq!(
+            pick_env_key(Some("  the-key\n".into()), None),
+            Some(EnvKeySource::Clio("the-key".into())),
+        );
+    }
+
+    #[test]
+    fn configured_keys_are_trimmed_and_blank_values_are_absent() {
+        assert_eq!(
+            configured_api_key(Some("  configured-key\n")),
+            Some("configured-key".into())
+        );
+        assert_eq!(configured_api_key(Some(" \t\n")), None);
+        assert_eq!(configured_api_key(None), None);
+    }
+
+    #[test]
+    fn blank_auto_title_key_falls_through_to_capture_key() {
         let mut settings = Settings::default();
-        settings.remote = Some(RemoteConfig {
-            host: "atlas".into(),
-            db_path: "/srv/clio/memory.db".into(),
-            mcp_binary: "/srv/clio/clio-mcp".into(),
-            cli_binary: "/srv/clio/clio".into(),
-            bridge_command: "/Users/example/.cargo/bin/clio".into(),
-        });
+        settings.auto_title.api_key = Some("  \n".into());
+        settings.capture.api_key = Some("  capture-key \n".into());
+
+        assert_eq!(
+            settings.auto_title_api_key().as_deref(),
+            Some("capture-key")
+        );
+    }
+
+    #[test]
+    fn debug_output_never_contains_the_key() {
+        let debug = format!(
+            "{:?} {:?}",
+            EnvKeySource::Clio("sk-secret-value".into()),
+            EnvKeySource::Shared("sk-secret-value".into()),
+        );
+        assert!(!debug.contains("secret"), "Debug must redact: {debug}");
+        assert!(debug.contains("redacted"));
+    }
+
+    #[test]
+    fn remote_settings_round_trip() {
+        let settings = Settings {
+            remote: Some(RemoteConfig {
+                host: "atlas".into(),
+                db_path: "/srv/clio/memory.db".into(),
+                mcp_binary: "/srv/clio/clio-mcp".into(),
+                cli_binary: "/srv/clio/clio".into(),
+                bridge_command: "/Users/example/.cargo/bin/clio".into(),
+            }),
+            ..Default::default()
+        };
 
         let encoded = serde_json::to_string(&settings).unwrap();
         let decoded: Settings = serde_json::from_str(&encoded).unwrap();
@@ -519,5 +775,35 @@ mod tests {
             bridge_command: "/usr/local/bin/clio".into(),
         };
         assert!(remote.validate().is_err());
+    }
+
+    #[test]
+    fn capture_model_update_preserves_credentials_and_trims_the_model() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("memory.db");
+        let mut settings = Settings::default();
+        settings.capture.enabled = true;
+        settings.capture.api_key = Some("secret".into());
+        settings.capture.base_url = "https://example.test/v1".into();
+        settings.capture.review_threshold = Some(0.7);
+        save(&db_path, &settings).unwrap();
+
+        for model in [
+            "gpt-4.1",
+            "gpt-5.6-luna",
+            " gpt-5.6-terra ",
+            "compatible-provider/new-model",
+        ] {
+            let preferences = set_capture_model(&db_path, model).unwrap();
+            let saved = load(&db_path).unwrap();
+
+            assert_eq!(preferences.model, model.trim());
+            assert_eq!(preferences.review_threshold, Some(0.7));
+            assert_eq!(saved.capture.api_key.as_deref(), Some("secret"));
+            assert_eq!(saved.capture.base_url, "https://example.test/v1");
+            assert_eq!(saved.auto_title_model(), model.trim());
+        }
+        assert!(set_capture_model(&db_path, "  ").is_err());
+        assert!(set_capture_model(&db_path, "bad\nmodel").is_err());
     }
 }

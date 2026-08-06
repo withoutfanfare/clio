@@ -7,7 +7,138 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+**One namespace precedence for capture and distill (2026-07-30)**
+- `capture` now resolves namespaces through the same rule as `distill`: explicit
+  override → the model's `global` promotion → the working directory → the model's
+  suggestion. Previously the working directory silently overrode a model's `global`
+  promotion for `capture` only, so the same classification could land in different
+  namespaces depending on which command stored it. `capture --dry-run` reports the
+  model's raw `suggested_namespace` alongside the resolved one.
+
+**Auto-link excludes boilerplate kinds (2026-07-30)**
+- New `daemon.auto_link.exclude_kinds`, default `["receipt"]`: excluded kinds are
+  skipped as both link source and link target. Measured on live data at threshold
+  0.6, receipts averaged 4.86 links each against 2.03 for `fact` — the most
+  substantive kind was the least connected, and 807 receipts consumed roughly a
+  third of all link mass, because session write-ups share phrasing and so attract
+  each other on similarity while carrying little conceptual content.
+- `suggest_links` is unchanged for explicit callers; auto-linking uses a new
+  `suggest_links_excluding_kinds`, which filters in SQL so excluded candidates
+  cannot consume slots from the per-memory limit.
+- `max_links_per_memory` now bounds **total degree** — inferred links in both
+  directions — rather than outgoing links only. Recall traverses edges both ways,
+  so an inbound link costs recall exactly what an outbound one does, and the old
+  outgoing-only count let heavily-pointed-at memories grow without bound (observed
+  at total degree 23 against a configured cap of 5). A link is now created only
+  while both of its endpoints are below the cap; memories already over it gain
+  nothing further. Existing over-cap links are left in place.
+
 ### Added
+
+**Scheduled auto-linking (2026-07-30)**
+- New `clio auto-link` runs a single auto-link inference pass, so link inference can
+  be driven by a systemd timer or cron instead of requiring the daemon. Intended for
+  hosts that hold the shared database but run no daemon: the release process already
+  updates the `clio` binary, so a timer cannot drift out of step the way an
+  separately-installed daemon would.
+- Defaults to scanning every memory, because the daemon's in-memory watermark has no
+  equivalent in a one-shot run. This is affordable since a memory already at
+  `max_links_per_memory` is skipped before any similarity search; `--since` narrows
+  the scan if a full pass ever becomes slow. `--threshold` overrides the configured
+  value for one run.
+
+### Fixed
+
+**30 July review fixes (2026-07-30)**
+- `clio-healthcheck` no longer records an alert as sent when the Slack delivery
+  failed — a fault during a webhook outage was previously never reported at all.
+  It now also requires auto-link's success line at the end of the log instead of
+  grepping a five-line tail for failure words, which missed a dead binary and a
+  fully skipped batch. A self-test (`clio-healthcheck-selftest.sh`) drives the
+  alert state machine against a local fake webhook. Alerts point to the local log
+  without copying provider errors or other raw log content into Slack.
+- `clio auto-link` honours `daemon.auto_link.enabled` (with `--force` to
+  override), exits non-zero when memories were skipped because no embedding could
+  be produced instead of reporting a clean empty run, keeps walking the corpus
+  past a wholly skipped batch, and uses the same advisory lock as the daemon so
+  automatic and manual passes cannot interleave. Its cursor carries both timestamp
+  and ID so a batch boundary cannot skip memories sharing one timestamp, and degree
+  query errors fail the pass instead of being treated as zero links. Link-write
+  failures log at warn rather than debug, so contention no longer looks quiet.
+- Provider keys from settings and the environment are trimmed before use, and blank
+  configured values fall through to environment resolution. Keys can no longer
+  appear in `Debug` output.
+- `dial-in.sh` asserts its relink the way it asserts its link-clear, copies
+  WAL-mode databases with `.backup` instead of `cp`, aborts a trial when evaluation
+  fails, and reports the captured error. `recall-eval.py` scores its two arms from
+  identical snapshots, reports failed query pairs accurately, and refuses live
+  paths resolved from platform defaults or environment configuration. The recorded
+  threshold/cap sweep is annotated with its measured noise floor; the settings
+  chosen from it are marked plausible, not confirmed.
+
+**Release drains MCP sessions (2026-07-30)**
+- `atlas-release.sh deploy` and `rollback` now send SIGTERM to lingering `clio-mcp`
+  processes so clients reconnect against the release just activated. Swapping the
+  `current` symlink does not affect a running process — it keeps the executable it
+  already loaded — so a long-lived session previously served superseded code
+  indefinitely, with the mismatch invisible from the client. Set
+  `CLIO_KEEP_MCP_SESSIONS=1` to opt out. The match is exact on the process name and
+  scoped to the invoking user. Note SIGTERM here is an immediate termination —
+  `clio-mcp` installs no signal handler. The database stays consistent (WAL rollback,
+  and the OS releases the advisory lock), but a request in flight at that instant is
+  lost; its client sees a transport error and reconnects into the new release.
+
+**Auto-link cap and dry-run namespaces (2026-07-30)**
+- `daemon.auto_link.max_links_per_memory` is now a total per memory rather than a
+  fresh allowance on every timed run. The auto-linker requested the full quota each
+  pass, so inferred links accumulated without bound — memories were observed holding
+  17 against a configured 3. The budget is now computed against existing inferred
+  links, and a memory already at its cap is skipped.
+- `capture --dry-run` and `distill --dry-run` report the namespace a memory would
+  actually be stored under, instead of the model's raw suggestion which storage
+  overrides. `distill`'s text output now shows the namespace, which it never did.
+  `resolve_distill_namespace` is public so the preview reuses the storage rule
+  rather than reimplementing it.
+- Added `AUTO_LINK_RELATIONSHIP` so the `auto:relates_to` marker is defined once.
+
+**Prompt cache visibility (2026-07-30)**
+- Capture usage now records `cached_input_tokens` from the provider's
+  `prompt_tokens_details.cached_tokens`, surfaced by `--metrics` and included in the
+  JSON metrics output. The distillation system prompt is a ~1,200-token stable prefix
+  on every call, so whether it is being served from the provider's prompt cache is the
+  largest single influence on input cost — and was previously invisible. Providers that
+  do not report the field leave it at zero.
+
+**Attributable provider keys (2026-07-30)**
+- `OPENAI_API_KEY_CLIO` is now preferred over the shared `OPENAI_API_KEY` wherever a
+  provider key falls back to the environment (capture/distillation, OpenAI embeddings,
+  auto-title). Resolution order is `api_key` in settings, then `OPENAI_API_KEY_CLIO`,
+  then `OPENAI_API_KEY`.
+- Falling back to the shared key logs a warning naming the caller, so a key reused
+  across tools — which makes per-application billing attribution impossible — is
+  visible rather than silent. Existing installs continue to work unchanged.
+- A variable exported as an empty string is treated as absent, so a blank export falls
+  through instead of sending an unauthenticated request.
+
+**Dependable Workflow Memory (2026-07-29)**
+- Exact-once session checkpoints (`clio checkpoint`, MCP `memory_session_checkpoint`, migration `009_session_checkpoints`): a session delta commits atomically under `source + session + cursor`; retries replay the stored result instead of duplicating atoms, and an empty extraction is a successful checkpoint.
+- Follow-up attention lifecycle (`clio action`, MCP `memory_action`, migration `010_attention_and_events`): open/snoozed/resolved/cancelled items with due/reminder/trigger/waiting context, machine-readable eligibility reasons, evidence-backed completion via `resolved_by` links, and an append-only `memory_events` ledger with idempotency keys.
+- Open-loop extraction in checkpoints: explicit user commitments open attention automatically; assistant suggestions always queue for review (approval creates memory + attention in one transaction); explicit stable-ID resolutions complete their target with the storing memory as evidence; deterministic `ticket:<id>` tags and branch metadata.
+- Evidence-backed resume briefs (`clio resume`, MCP `memory_resume`): open work first with the reason each item surfaces now, blocked items, constraints (with a modest global prior), recent decisions, prompt-relevant knowledge and recent activity — untracked reads, once-per-session surfacing, budget with critical-section reservations.
+- Directional, typed graph recall: linked recall follows edges in both directions and preserves every edge's relationship and metadata (`link_context`); `memory_get_links` gained a `direction` parameter; link suggestions stay in the source memory's namespace and skip archived/expired candidates.
+- Source occurrences and cited consolidation (migration `011_occurrences_and_namespace_state`): repeated exact evidence strengthens one canonical memory with append-only sightings; consolidation output is structured and must cite current source IDs (invalid candidates rejected), watermarked by a per-namespace mutation generation so staleness is provable.
+- Verified external delivery outbox (core, migration `012_delivery_outbox`): stable delivery keys, attempt history, read-back-proved confirmation, retryable failure and stable-ID completion mirroring. Live Things/Linear adapters remain gated on proving their create + read-back contracts.
+- Desktop "Needs attention" view (`/attention`): eligible follow-ups with reasons, Complete/Snooze/Cancel, review depth, client capture-queue health and consolidation freshness; link rows show direction, relationship and titles.
+- Event-backed effectiveness reporting (`clio effectiveness`, `stats::effectiveness`): capture, attention, surfacing, contradiction, delivery and corruption measures from untracked reads only.
+- Hook package (clio-hooks skill): durable redacted capture queue (`capture_queue.py`) with atomic 0600/0700 spool, serial per-session cursors, backoff and dead-letter state; queue-backed Claude/Codex Stop hooks (ordered non-overlapping deltas, non-git sessions captured, late Codex rollouts retried); resume-led SessionStart and first-substantive-prompt recall (`prompt_recall.py`) with per-session/topic dedup.
+
+### Fixed
+
+- Linked recall (`include_links`) reapplies the parent query's archive/expiry eligibility, so hidden memories can no longer re-enter results through graph expansion.
+- Chat output limits per model family: GPT-5-family title requests get reasoning-token headroom (previously truncated to empty), and unknown OpenAI-compatible models get a bounded `max_tokens` instead of no limit.
+- Automatic context injection no longer trains recall ranking: resume reads, attention creation and internal lookups are untracked; deliberate recall still counts.
 
 - **Remote MCP bridge** - `clio remote-mcp` connects MCP clients to a private Clio database over SSH while detecting project namespaces on the client computer.
 

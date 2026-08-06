@@ -42,7 +42,7 @@ Clio is a local-first shared memory system for AI tooling. The repository is a R
 ## Build And Test
 
 - Build all crates with `./build.sh`.
-- Build one crate with `./build.sh <crate-name>`.
+- Build one target with `./build.sh cli|mcp|daemon|tauri`.
 - Use `cargo build` and `cargo test` for Rust-only work.
 - Start Tauri development with `./dev.sh`.
 - Front-end dependencies live in `ui/`; install with `cd ui && npm install`.

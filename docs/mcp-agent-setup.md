@@ -4,7 +4,9 @@
 
 Clio exposes an MCP (Model Context Protocol) server that gives AI coding agents persistent, structured memory across sessions. The server runs over stdio and provides tools for reading, writing, searching, and linking memories.
 
-This section covers connection setup for six AI agents, then explains **how to actually use Clio** once connected — workflows, prompting patterns, and practical examples.
+This section covers connection setup for supported AI agents, then explains
+**how to actually use Clio** once connected — workflows, prompting patterns,
+and practical examples.
 
 **New to Clio?** Start with the [Getting Started Guide](getting-started.md) to install and initialise the database first.
 
@@ -74,7 +76,10 @@ sets `ServerAliveInterval=15`, `ServerAliveCountMax=3`, and
 forwarding configuration. The database and MCP server remain private behind
 SSH; neither needs a public network listener. Each client connection starts its
 own remote `clio-mcp` process, which exits when the client disconnects; no
-long-running server is required.
+long-running server is required. A single newline-delimited request may be at
+most 8 MiB — sized for the worst-case JSON-escaped encoding of the 1 MiB
+payload limit plus framing; the bridge rejects a larger line instead of
+buffering it without a bound.
 
 For a headless Linux server, build without local embeddings from the repository
 root so the project SQLite configuration is applied:
@@ -559,12 +564,14 @@ Once connected, AI agents have access to Clio's MCP tools. Each read or list too
 | `memory_remember` | Store or upsert a memory | `content` (required), `kind`, `title`, `summary`, `tags`, `namespace`, `cwd`, `importance`, `upsert`, `source`, `source_ref` |
 | `memory_update` | Patch a known memory while rejecting stale edits | `memory_id`, `expected_updated_at`, changed fields |
 | `memory_capture` | Classify text, then return a `Stored` or `Queued` outcome | `text` (required), `namespace`, `cwd` |
+| `memory_session_checkpoint` | Distil one session delta with exact-once replay | `text`, `source`, `session_id`, `cursor`, `namespace`, `cwd` |
 | `memory_link` | Create a typed directional link between two memories | `from_memory_id`, `to_memory_id`, `relationship` |
 | `memory_archive` | Soft-archive a memory (reversible) | `memory_id` |
 | `memory_unarchive` | Restore an archived memory | `memory_id` |
 | `memory_delete` | Permanently delete a memory | `memory_id` |
 | `memory_move` | Move a memory to another namespace | `memory_id`, `namespace` |
 | `memory_inbox` | List, approve, reject, or edit queued captures | `action`, `review_id` for mutations |
+| `memory_action` | Manage follow-up attention and its audit history | `action`, `id`/`memory_id`, action-specific fields, `cwd` |
 | `memory_cache_clear` | Clear this process's namespace-list cache | — |
 
 ### Read tools
@@ -574,13 +581,14 @@ Once connected, AI agents have access to Clio's MCP tools. Each read or list too
 | `memory_recall` | Full-text search (keyword matching via FTS5) | `query`, `namespace`, `cwd`, `kind`, `tags`, `match_all_tags`, `include_archived`, `limit`, `offset` |
 | `memory_search` | Semantic search (cosine similarity over embeddings) | `query` (required), `namespace`, `cwd`, `include_archived`, `limit` |
 | `memory_get` | Fetch one memory by ID | `memory_id` |
-| `memory_recent` | List most recently updated memories | `namespace`, `limit` |
-| `memory_get_links` | Get all outgoing links from a memory | `memory_id` |
+| `memory_recent` | Deprecated compatibility listing; prefer no-query `memory_recall` | `namespace`, `limit` |
+| `memory_get_links` | Get outgoing, incoming, or both edge directions | `memory_id`, `direction` |
 | `memory_suggest_links` | Find semantically similar but unlinked memories | `memory_id`, `threshold`, `limit` |
 | `memory_namespaces` | List all namespaces in the database | — |
 | `memory_stats` | Aggregate statistics (counts, breakdowns, coverage) | `namespace` |
 | `memory_activity` | Recent activity feed (creates, updates, archives) | `namespace`, `limit` |
-| `memory_context` | Get namespace context for a working directory | `cwd` |
+| `memory_context` | Assemble a preset-scoped context brief | `namespace`, `cwd`, `preset`, `query` |
+| `memory_resume` | Assemble evidence-backed pickup context without access tracking | `namespace`, `cwd`, `query`, `session_id` |
 
 Individual-memory, recall, recent and embedding reads go directly to SQLite so
 separate MCP processes observe committed changes. Only the namespace list is
@@ -589,9 +597,10 @@ current process.
 
 ### Namespace auto-detection
 
-Five tools accept a `cwd` (working directory) parameter: `memory_remember`,
-`memory_recall`, `memory_capture`, `memory_search`, and `memory_context`. When
-`cwd` is provided and `namespace` is omitted, the server:
+Eight tools accept a `cwd` (working directory) parameter: `memory_remember`,
+`memory_recall`, `memory_capture`, `memory_session_checkpoint`, `memory_search`,
+`memory_context`, `memory_resume`, and `memory_action`. When `cwd` is provided
+and `namespace` is omitted, the server:
 
 1. Searches every ancestor for `.clio-namespace`; the nearest valid file wins, including over a nested package manifest.
 2. Otherwise uses the nearest `.git` marker to derive `project:<repo-name>`.
@@ -611,10 +620,9 @@ These are practical patterns for how AI agents should use Clio during a session.
 At the beginning of a session, an agent should orient itself by loading existing project context:
 
 ```bash
-1. memory_namespaces        → discover what namespaces exist
-2. memory_recent            → see what was worked on recently
-3. memory_recall            → search for context relevant to the current task
-4. memory_search            → find conceptually related memories
+1. memory_resume            → load open work, constraints, decisions and recent activity
+2. memory_recall            → search for context relevant to the current task
+3. memory_search            → find conceptually related memories when embeddings are configured
 ```
 
 This gives the agent awareness of prior decisions, known facts, and existing preferences without the user needing to re-explain everything.
@@ -719,8 +727,8 @@ When you make an architectural decision or discover an important fact:
 
 ```bash
 Session start:
-- Call memory_recent to see recent context
-- Call memory_recall with keywords related to the current task
+- Call memory_resume with cwd (and query for the substantive task)
+- Call memory_recall with keywords when more detail is needed
 
 During work:
 - Store decisions with memory_remember (kind: decision, importance: 4+)
@@ -847,6 +855,25 @@ changing the record.
 }
 ```
 
+### memory_session_checkpoint
+
+```json
+{
+  "text": "Required. Redacted session-delta digest.",
+  "source": "Required. Capturing agent identifier.",
+  "session_id": "Required. Stable client session identifier.",
+  "cursor": "Required. Zero-or-positive monotonic transcript cursor.",
+  "namespace": "Optional explicit override for every extracted memory.",
+  "cwd": "Optional default-namespace detection and provenance.",
+  "branch": "Optional Git branch.",
+  "ticket": "Optional issue identifier; stored as a lowercase ticket:<id> tag."
+}
+```
+
+Retries of the same `source + session_id + cursor` replay the stored result.
+Model work happens without holding the SQLite mutex; accepted memories, review
+items and the checkpoint envelope still commit atomically.
+
 ### memory_link
 
 ```json
@@ -923,6 +950,15 @@ No parameters. Returns a sorted array of all namespace strings in the database.
 }
 ```
 
+### memory_move
+
+```json
+{
+  "memory_id": "Required.",
+  "namespace": "Required target namespace."
+}
+```
+
 ### memory_context
 
 ```json
@@ -942,6 +978,42 @@ The `handoff` preset assembles a ticket-pickup brief: Directly Relevant
 (FTS on the query, which includes memories tagged `ticket:<id>`), Active
 Constraints, and Recent Receipts matching the query or ticket tag. See
 `reference/mcp-contract.md` for the full contract.
+
+### memory_resume
+
+```json
+{
+  "query": "Optional substantive task context.",
+  "namespace": "Optional explicit scope.",
+  "cwd": "Optional namespace auto-detection.",
+  "session_id": "Optional repeat-suppression scope.",
+  "max_items": "20.",
+  "char_budget": "Optional.",
+  "response_format": "markdown | json."
+}
+```
+
+Returns open work, blockers, constraints, decisions, query-relevant knowledge
+and recent activity, each with a reason for inclusion. Reads are untracked.
+
+### memory_action
+
+```json
+{
+  "action": "add | list | eligible | overview | complete | snooze | cancel | attach_external | history. Required.",
+  "id": "Required for complete, snooze, cancel, attach_external and history.",
+  "content": "New task content for add; alternative to memory_id.",
+  "memory_id": "Existing memory for add.",
+  "namespace": "Optional scope.",
+  "cwd": "Optional namespace auto-detection.",
+  "scope": "Optional repeat-suppression scope for eligible/overview.",
+  "evidence": "Optional completion evidence memory ID.",
+  "until": "Required ISO-8601 UTC value for snooze."
+}
+```
+
+See the MCP contract for owner, due/reminder, trigger, external-reference and
+status-filter fields.
 
 ### memory_inbox
 
@@ -963,6 +1035,11 @@ Constraints, and Recent Receipts matching the query or ticket tag. See
 
 Approval preserves the queued item's source, `source_ref`, and metadata. It
 auto-embeds the promoted memory when enabled.
+
+### memory_cache_clear
+
+No parameters. Clears only the current MCP process's 30-second namespace-list
+cache; record, recall and embedding reads are not cached.
 
 ---
 

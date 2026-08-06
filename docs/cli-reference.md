@@ -175,10 +175,14 @@ Sends unstructured text to an LLM for automatic classification.
 clio settings use-capture --api-key sk-...
 
 # Preview classification without storing
-clio capture --text "We decided to use Redis for caching" --dry-run
+clio capture "We decided to use Redis for caching" --dry-run
+
+# Compare another model without changing the active setting
+clio --json capture "We decided to use Redis for caching" \
+  --dry-run --model gpt-5.6-luna --metrics
 
 # Capture and store
-clio capture --text "We decided to use Redis for caching"
+clio capture "We decided to use Redis for caching"
 ```
 
 Capture reports either `Stored` with the memory or `Queued` with a review item
@@ -207,6 +211,93 @@ By default each memory is filed under the **working directory's namespace**
 right project rather than wherever the model guesses. The model may still
 promote a genuinely cross-project fact to `global`. `--namespace` overrides both,
 forcing every extracted memory into the given namespace.
+
+### Checkpoint (exact-once session capture)
+
+`checkpoint` distils a session delta like `distill`, but commits it **exactly
+once** under the identity `source + session-id + cursor`. Retrying a delivered
+key — after a lost response, provider error or outage — replays the stored
+result (the same memory and review IDs) instead of creating duplicates. All
+extracted memories, review items and the checkpoint record commit in one
+transaction; an empty extraction is a successful checkpoint and is never
+redistilled.
+
+```sh
+clio checkpoint - \
+  --source claude-session \
+  --session-id <session-id> \
+  --cursor <transcript-offset> \
+  --branch develop \
+  < session-delta-digest.txt
+```
+
+Pass `-` to read the digest from stdin. `--namespace` overrides every extracted
+memory's namespace; `--branch` and `--ticket` record session context on the
+checkpoint. Requires the capture pipeline to be enabled. With `--json` the
+result envelope includes `replayed`, `stored_memory_ids` and
+`queued_review_ids`.
+
+---
+
+## Resume (pick up where you left off)
+
+`clio resume` builds a deterministic brief of what deserves attention now:
+eligible open work first (each with the reason it surfaced — overdue, reminder
+due, project-session trigger, dormant), then blocked items, active constraints
+(project plus a modest global prior), recent decisions, prompt-relevant
+knowledge (only with `--query`) and recent activity. All reads are untracked —
+an automatic resume never changes recall ranking. With `--session`, items
+surface once per session and are suppressed on repeats until their state
+changes.
+
+```sh
+clio resume                                  # project-level, auto-detected namespace
+clio resume --query "checkpoint retries"     # task-aware, adds relevant knowledge
+clio resume --session <session-id>           # once-per-session surfacing
+```
+
+---
+
+## Follow-up Attention (open loops)
+
+`clio action` manages the attention lifecycle: follow-ups you committed to,
+things you are waiting on, decisions still owed. Statuses are `open`,
+`snoozed`, `resolved` and `cancelled`; resolved and cancelled are terminal.
+Completing an item never rewrites the underlying memory — it records an event
+and, with `--evidence`, a `resolved_by` link to the proof.
+
+```sh
+# Open attention with a new task memory, or on an existing memory
+clio action add "Verify the deployment after release" --owner user --due 2026-08-01T00:00:00Z
+clio action add --memory <id> --trigger project-session
+
+# What needs attention now, and why (overdue, reminder_due, project_session, dormant)
+clio action eligible
+
+clio action list --status open
+clio action snooze <id> --until 2026-08-15T00:00:00Z
+clio action complete <id> --evidence <memory-id> --reason "shipped"
+clio action cancel <id> --reason "obsolete"
+clio action attach-external <id> --system things --ref <external-id>
+clio action history <id>
+```
+
+`<id>` accepts either the attention item ID or the memory ID.
+
+### Effectiveness (event-backed usefulness report)
+
+`clio effectiveness` reports whether the memory system is actually working:
+confirmed checkpoints, attention lifecycle counts, stale open items, unique
+automatic surfacings versus deliberate reads, unresolved contradictions,
+consolidation freshness, external delivery states, review depth and any
+corrupt rows. All reads are untracked — running the report never changes
+recall ranking. Missing client-side data is reported as unavailable, never
+as zero.
+
+```sh
+clio effectiveness            # auto-detected namespace
+clio effectiveness --json     # structured output for dashboards
+```
 
 ---
 
@@ -379,6 +470,8 @@ clio settings use-openai --api-key sk-...  # higher quality, needs key
 
 # Capture pipeline
 clio settings use-capture --api-key sk-... --model gpt-4o-mini
+clio settings show-capture
+clio settings set-capture-model gpt-5.6-luna
 
 # Route shared operations through an SSH host
 clio settings use-remote \
@@ -394,6 +487,10 @@ clio settings disable-remote
 
 After changing the embedding provider or model, restart MCP clients and run
 `clio embed backfill` until all stale vectors have been replaced.
+
+`settings show-capture` and `settings set-capture-model` follow a configured
+shared route, so they read or update Atlas when run from a connected Mac.
+`settings show` remains local because it also shows that Mac's route.
 
 ---
 

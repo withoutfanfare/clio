@@ -14,6 +14,11 @@ const router = createRouter({
       component: () => import("@/views/HomeView.vue"),
     },
     {
+      path: "/attention",
+      name: "attention",
+      component: () => import("@/views/AttentionView.vue"),
+    },
+    {
       path: "/stats",
       name: "stats",
       component: () => import("@/views/StatsView.vue"),
@@ -32,6 +37,11 @@ const router = createRouter({
       path: "/context-builder",
       name: "context-builder",
       component: () => import("@/views/ContextBuilderView.vue"),
+    },
+    {
+      path: "/settings",
+      name: "settings",
+      component: () => import("@/views/SettingsView.vue"),
     },
   ],
 });

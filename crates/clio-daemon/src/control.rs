@@ -181,13 +181,35 @@ fn build_enabled_routes(settings: &clio_core::settings::Settings) -> Vec<String>
         routes.push("capture_pipeline".to_string());
     }
 
-    if settings.daemon.http_port.is_some() {
-        routes.push("http_api".to_string());
-    }
-
     if settings.daemon.auto_link.enabled {
         routes.push("auto_linker".to_string());
     }
 
+    if settings.daemon.maintenance.backup_interval_secs > 0 {
+        routes.push("backup_scheduler".to_string());
+    }
+
+    if settings.daemon.maintenance.integrity_interval_secs > 0 {
+        routes.push("integrity_scheduler".to_string());
+    }
+
     routes
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn enabled_routes_exclude_unimplemented_http_and_include_maintenance() {
+        let mut settings = clio_core::settings::Settings::default();
+        settings.daemon.http_port = Some(8080);
+        settings.daemon.maintenance.backup_interval_secs = 3600;
+        settings.daemon.maintenance.integrity_interval_secs = 7200;
+
+        assert_eq!(
+            build_enabled_routes(&settings),
+            vec!["control_socket", "backup_scheduler", "integrity_scheduler"]
+        );
+    }
 }

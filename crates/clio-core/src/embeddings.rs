@@ -31,7 +31,8 @@ pub enum EmbeddingConfig {
     /// OpenAI API embeddings.
     #[serde(rename = "openai")]
     OpenAi {
-        /// API key. If absent, reads from OPENAI_API_KEY env var.
+        /// API key. If absent, reads OPENAI_API_KEY_CLIO, then the shared
+        /// OPENAI_API_KEY (with a warning).
         #[serde(default)]
         api_key: Option<String>,
         /// Model to use. Default: "text-embedding-3-small".
@@ -184,15 +185,14 @@ pub struct OpenAiBackend {
 #[cfg(feature = "openai-embeddings")]
 impl OpenAiBackend {
     pub fn new(api_key: Option<&str>, model: &str, base_url: Option<&str>) -> Result<Self> {
-        let api_key = match api_key {
-            Some(key) if !key.is_empty() => key.to_string(),
-            _ => std::env::var("OPENAI_API_KEY").map_err(|_| {
-                ClioError::Config(
-                    "OpenAI API key required: set OPENAI_API_KEY or configure api_key in settings"
-                        .into(),
-                )
-            })?,
-        };
+        let api_key = crate::settings::configured_api_key(api_key)
+            .or_else(|| crate::settings::api_key_from_env("openai embeddings"))
+            .ok_or_else(|| {
+                ClioError::Config(format!(
+                    "OpenAI API key required: set {} or configure api_key in settings",
+                    crate::settings::CLIO_API_KEY_ENV
+                ))
+            })?;
 
         let base_url = base_url
             .unwrap_or("https://api.openai.com/v1")
@@ -705,6 +705,7 @@ fn semantic_recall_from_results(
                 memory,
                 rank: Some(rank),
                 linked_from: None,
+                link_context: Vec::new(),
             }
         })
         .collect();
@@ -858,6 +859,28 @@ pub fn suggest_links(
     threshold: f64,
     limit: u32,
 ) -> Result<Vec<(Memory, f64)>> {
+    suggest_links_excluding_kinds(conn, memory_id, backend, threshold, limit, &[], None)
+}
+
+/// As [`suggest_links`], but skips candidates whose `kind` appears in
+/// `exclude_kinds`, and — when `max_target_degree` is set — candidates already
+/// holding that many inferred links in total.
+///
+/// Auto-linking uses both filters: excluded kinds keep boilerplate out of the
+/// graph, and the degree filter stops at-cap candidates consuming `limit` slots —
+/// otherwise a newcomer to a saturated cluster has its whole suggestion budget
+/// eaten by memories it is not allowed to link to, and connects to nothing. An
+/// explicit `suggest-links` request passes neither: a person asking for
+/// suggestions should not have results silently withheld.
+pub fn suggest_links_excluding_kinds(
+    conn: &Connection,
+    memory_id: &str,
+    backend: &dyn EmbeddingBackend,
+    threshold: f64,
+    limit: u32,
+    exclude_kinds: &[String],
+    max_target_degree: Option<u32>,
+) -> Result<Vec<(Memory, f64)>> {
     // Get the embedding for the target memory (generate if needed).
     let target_embedding =
         match get_stored_embedding(conn, memory_id, backend.model_name(), backend.dimensions())? {
@@ -878,14 +901,47 @@ pub fn suggest_links(
             }
         };
 
+    // Candidate scope: the source memory's own namespace only — cross-project
+    // links are review-only and never suggested by default. Archived and
+    // expired memories are never candidates.
+    let source_namespace = crate::repository::get_raw(conn, memory_id)?.namespace;
+
     // Find similar memories, excluding the source memory and any already linked
     // (in either direction). Filtering at the SQL level avoids pulling linked
     // rows into memory and decoding their embeddings.
-    let mut stmt = conn.prepare(
+    // Excluded kinds are filtered in SQL rather than after scoring, so they cannot
+    // consume slots from `limit` — which is applied further down, once candidates are
+    // ranked by similarity.
+    let kind_filter = if exclude_kinds.is_empty() {
+        String::new()
+    } else {
+        let placeholders: Vec<String> = (0..exclude_kinds.len())
+            .map(|i| format!("?{}", i + 5))
+            .collect();
+        format!(" AND m.kind NOT IN ({})", placeholders.join(", "))
+    };
+
+    // Numbered after the kind placeholders, matching the binding order below.
+    let degree_cap = max_target_degree.map(i64::from);
+    let degree_filter = if degree_cap.is_some() {
+        format!(
+            " AND (SELECT COUNT(*) FROM memory_links l
+               WHERE l.relationship = '{AUTO_LINK_RELATIONSHIP}'
+                 AND (l.from_memory_id = e.memory_id OR l.to_memory_id = e.memory_id)
+             ) < ?{}",
+            5 + exclude_kinds.len()
+        )
+    } else {
+        String::new()
+    };
+
+    let sql = format!(
         "SELECT e.memory_id, e.embedding
          FROM memory_embeddings e
          JOIN memories m ON m.id = e.memory_id
          WHERE m.archived_at IS NULL
+           AND (m.valid_until IS NULL OR datetime(m.valid_until) > datetime('now'))
+           AND m.namespace = ?4
            AND e.memory_id != ?1
            AND e.model = ?2
            AND e.dimensions = ?3
@@ -893,16 +949,28 @@ pub fn suggest_links(
                SELECT to_memory_id FROM memory_links WHERE from_memory_id = ?1
                UNION
                SELECT from_memory_id FROM memory_links WHERE to_memory_id = ?1
-           )",
-    )?;
-    let rows = stmt.query_map(
-        params![memory_id, backend.model_name(), backend.dimensions() as i64],
-        |row| {
-            let mid: String = row.get(0)?;
-            let blob: Vec<u8> = row.get(1)?;
-            Ok((mid, blob))
-        },
-    )?;
+           ){kind_filter}{degree_filter}"
+    );
+    // prepare_cached: this runs once per memory in the auto-link loop, and the SQL
+    // varies only with the number of excluded kinds, so the cache hits every time.
+    let mut stmt = conn.prepare_cached(&sql)?;
+
+    let dimensions = backend.dimensions() as i64;
+    let model_name = backend.model_name();
+    let mut bindings: Vec<&dyn rusqlite::ToSql> =
+        vec![&memory_id, &model_name, &dimensions, &source_namespace];
+    for kind in exclude_kinds {
+        bindings.push(kind);
+    }
+    if let Some(ref cap) = degree_cap {
+        bindings.push(cap);
+    }
+
+    let rows = stmt.query_map(bindings.as_slice(), |row| {
+        let mid: String = row.get(0)?;
+        let blob: Vec<u8> = row.get(1)?;
+        Ok((mid, blob))
+    })?;
 
     let mut candidates: Vec<(String, f64)> = Vec::new();
     for row_result in rows {
@@ -946,14 +1014,92 @@ pub fn suggest_links(
 pub struct AutoLinkReport {
     pub memories_processed: u32,
     pub links_created: u32,
+    /// Memories passed over because no embedding could be produced for them.
+    /// Kept distinct from `memories_processed` so a driver can fail loudly on a
+    /// broken embedding backend instead of mistaking it for a finished corpus.
+    #[serde(default)]
+    pub memories_skipped: u32,
     pub last_watermark: Option<String>,
+    /// ID paired with `last_watermark` to resume safely when multiple memories
+    /// share the same update timestamp.
+    #[serde(default)]
+    pub last_watermark_id: Option<String>,
+}
+
+/// Relationship recorded for links inferred from embedding similarity. The prefix
+/// keeps them distinguishable from links a human created, so they can be audited or
+/// removed without touching deliberate ones.
+pub const AUTO_LINK_RELATIONSHIP: &str = "auto:relates_to";
+
+/// Hold the cross-process lock shared by every automatic-linking entry point.
+/// The operating system releases it when this value is dropped.
+#[cfg(unix)]
+pub struct AutoLinkLock {
+    _file: std::fs::File,
+}
+
+#[cfg(not(unix))]
+pub struct AutoLinkLock;
+
+/// Acquire the advisory lock for this database's auto-link pass.
+#[cfg(unix)]
+pub fn acquire_auto_link_lock(db_path: &std::path::Path) -> Result<AutoLinkLock> {
+    use std::os::unix::io::AsRawFd;
+
+    let mut lock_path = db_path.as_os_str().to_owned();
+    lock_path.push(".auto-link.lock");
+    let lock_path = std::path::PathBuf::from(lock_path);
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&lock_path)
+        .map_err(|e| {
+            ClioError::Storage(format!(
+                "could not open auto-link lock {}: {e}",
+                lock_path.display()
+            ))
+        })?;
+
+    // SAFETY: flock operates on a file descriptor owned by `file`; the lock is
+    // released when that descriptor closes.
+    let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+    if rc != 0 {
+        return Err(ClioError::Conflict(format!(
+            "another auto-link run already holds {}; not starting a second",
+            lock_path.display()
+        )));
+    }
+
+    Ok(AutoLinkLock { _file: file })
+}
+
+#[cfg(not(unix))]
+pub fn acquire_auto_link_lock(_db_path: &std::path::Path) -> Result<AutoLinkLock> {
+    Ok(AutoLinkLock)
+}
+
+/// Count the inferred links touching a memory in either direction, so
+/// `max_links_per_memory` bounds total degree — what actually governs how much
+/// context a recall pulls in, since recall walks edges both ways. Counting only
+/// outgoing links let a memory that many others point at grow without bound
+/// (observed at total degree 23 against a configured cap of 5).
+fn count_auto_links(conn: &Connection, memory_id: &str) -> Result<u32> {
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM memory_links
+         WHERE (from_memory_id = ?1 OR to_memory_id = ?1) AND relationship = ?2",
+        rusqlite::params![memory_id, AUTO_LINK_RELATIONSHIP],
+        |row| row.get(0),
+    )?;
+    Ok(count.max(0) as u32)
 }
 
 /// Run a batch of automatic link inference.
 ///
 /// Processes memories updated since `since` (or all if None), generates
 /// embeddings if missing, finds similar memories above the threshold, and
-/// creates links with the "auto:relates_to" relationship.
+/// creates links with the [`AUTO_LINK_RELATIONSHIP`] relationship, up to
+/// `max_links_per_memory` in total per memory across all runs.
 ///
 /// Unembedded memories are batch-fetched and batch-embedded in a single pass
 /// to avoid N sequential round-trips to the embedding backend.
@@ -961,19 +1107,34 @@ pub fn auto_link_batch(
     conn: &Connection,
     backend: &dyn EmbeddingBackend,
     since: Option<&str>,
+    since_id: Option<&str>,
     config: &crate::settings::AutoLinkConfig,
 ) -> Result<AutoLinkReport> {
-    // Query memories updated since the watermark.
-    let mut sql = String::from("SELECT id, updated_at FROM memories WHERE archived_at IS NULL");
+    // Query memories updated since the watermark. `id` breaks timestamp ties so
+    // the processing order — and therefore the resulting link graph — is
+    // reproducible from the same data and settings.
+    let mut sql =
+        String::from("SELECT id, updated_at, kind FROM memories WHERE archived_at IS NULL");
     let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
 
     if let Some(watermark) = since {
         let idx = param_values.len() + 1;
-        sql.push_str(&format!(" AND updated_at > ?{idx}"));
-        param_values.push(Box::new(watermark.to_string()));
+        if let Some(watermark_id) = since_id {
+            let id_idx = idx + 1;
+            sql.push_str(&format!(
+                " AND (updated_at > ?{idx} OR (updated_at = ?{idx} AND id > ?{id_idx}))"
+            ));
+            param_values.push(Box::new(watermark.to_string()));
+            param_values.push(Box::new(watermark_id.to_string()));
+        } else {
+            // An explicit CLI --since timestamp keeps its historical exclusive
+            // semantics. Cursors returned by a batch always include `since_id`.
+            sql.push_str(&format!(" AND updated_at > ?{idx}"));
+            param_values.push(Box::new(watermark.to_string()));
+        }
     }
 
-    sql.push_str(" ORDER BY updated_at ASC");
+    sql.push_str(" ORDER BY updated_at ASC, id ASC");
     let idx = param_values.len() + 1;
     sql.push_str(&format!(" LIMIT ?{idx}"));
     param_values.push(Box::new(config.batch_size));
@@ -985,16 +1146,18 @@ pub fn auto_link_batch(
     let rows = stmt.query_map(param_refs.as_slice(), |row| {
         let id: String = row.get(0)?;
         let updated_at: String = row.get(1)?;
-        Ok((id, updated_at))
+        let kind: String = row.get(2)?;
+        Ok((id, updated_at, kind))
     })?;
 
-    let candidates: Vec<(String, String)> = rows.collect::<std::result::Result<Vec<_>, _>>()?;
+    let candidates: Vec<(String, String, String)> =
+        rows.collect::<std::result::Result<Vec<_>, _>>()?;
 
     // --- Batch embed unembedded candidates ---
     // Collect IDs that lack embeddings.
     let unembedded_ids: Vec<String> = candidates
         .iter()
-        .filter_map(|(id, _)| {
+        .filter_map(|(id, _, _)| {
             match has_embedding_for_space(conn, id, backend.model_name(), backend.dimensions()) {
                 Ok(false) => Some(id.clone()),
                 _ => None,
@@ -1048,41 +1211,85 @@ pub fn auto_link_batch(
     // --- Link inference ---
     let mut memories_processed: u32 = 0;
     let mut links_created: u32 = 0;
+    let mut memories_skipped: u32 = 0;
     let mut last_watermark: Option<String> = None;
+    let mut last_watermark_id: Option<String> = None;
 
-    for (memory_id, updated_at) in &candidates {
+    for (memory_id, updated_at, kind) in &candidates {
+        last_watermark = Some(updated_at.clone());
+        last_watermark_id = Some(memory_id.clone());
+
+        // Excluded kinds are skipped as sources as well as targets, so a boilerplate
+        // memory neither gathers links nor is gathered. Advance the watermark so the
+        // pass still makes progress past it.
+        if config.exclude_kinds.contains(kind) {
+            memories_processed += 1;
+            continue;
+        }
+
         // Skip if embedding is still missing (e.g. both batch and fallback failed).
+        // Counted as skipped, not processed: a whole batch of these means the
+        // embedding backend is broken, and a driver must be able to tell that
+        // apart from an exhausted corpus.
         if !has_embedding_for_space(conn, memory_id, backend.model_name(), backend.dimensions())
             .unwrap_or(false)
         {
             tracing::warn!(memory_id, "auto-link: skipping — no embedding available");
-            last_watermark = Some(updated_at.clone());
+            memories_skipped += 1;
             continue;
         }
 
-        // Find similar memories above threshold.
-        match suggest_links(
+        // `max_links_per_memory` is a total-degree bound, not a per-run allowance.
+        // This loop runs on a timer, so requesting the full quota every pass let
+        // auto-links accumulate without bound — memories were observed holding 17
+        // against a configured 3. Budget against what already exists (in both
+        // directions), and skip a memory that is already at its cap.
+        let existing_auto_links = count_auto_links(conn, memory_id)?;
+        let remaining = config
+            .max_links_per_memory
+            .saturating_sub(existing_auto_links);
+        if remaining == 0 {
+            memories_processed += 1;
+            continue;
+        }
+
+        // Find similar memories above threshold. At-cap candidates are filtered
+        // in SQL so they cannot consume suggestion slots from `remaining`.
+        match suggest_links_excluding_kinds(
             conn,
             memory_id,
             backend,
             config.threshold,
-            config.max_links_per_memory,
+            remaining,
+            &config.exclude_kinds,
+            Some(config.max_links_per_memory),
         ) {
             Ok(suggestions) => {
                 for (target_memory, _similarity) in suggestions {
+                    // A link raises the target's degree too. The suggestion query
+                    // already filters at-cap targets; re-check here because links
+                    // created earlier in this same pass can move a target to its
+                    // cap after the query ran.
+                    let target_degree = count_auto_links(conn, &target_memory.id)?;
+                    if target_degree >= config.max_links_per_memory {
+                        continue;
+                    }
                     let link_input = crate::models::LinkInput {
                         from_memory_id: memory_id.clone(),
                         to_memory_id: target_memory.id.clone(),
-                        relationship: "auto:relates_to".to_string(),
+                        relationship: AUTO_LINK_RELATIONSHIP.to_string(),
                         metadata: serde_json::json!({}),
                     };
                     match crate::repository::link(conn, &link_input) {
                         Ok(_) => links_created += 1,
                         Err(e) => {
-                            tracing::debug!(
+                            // warn, not debug: a run of these (SQLITE_BUSY from a
+                            // concurrent pass) is the only symptom of contention,
+                            // and the CLI's default filter hides debug output.
+                            tracing::warn!(
                                 from = memory_id,
                                 to = target_memory.id,
-                                "auto-link: skipped ({})",
+                                "auto-link: link not created ({})",
                                 e
                             );
                         }
@@ -1095,19 +1302,21 @@ pub fn auto_link_batch(
         }
 
         memories_processed += 1;
-        last_watermark = Some(updated_at.clone());
     }
 
     tracing::info!(
         memories_processed,
         links_created,
+        memories_skipped,
         "auto-link batch complete"
     );
 
     Ok(AutoLinkReport {
         memories_processed,
         links_created,
+        memories_skipped,
         last_watermark,
+        last_watermark_id,
     })
 }
 
@@ -1226,6 +1435,109 @@ pub fn list_embeddings_needing_refresh(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn insert_memory(conn: &Connection, content: &str) -> crate::models::Memory {
+        let input = crate::models::RememberInput {
+            namespace: "project:test".into(),
+            kind: "note".into(),
+            title: Some("t".into()),
+            summary: None,
+            content: content.into(),
+            tags: vec![],
+            source: None,
+            source_ref: None,
+            confidence: None,
+            importance: 3,
+            metadata: serde_json::json!({}),
+            valid_from: None,
+            valid_until: None,
+            upsert: false,
+        };
+        crate::repository::remember(conn, &input, &crate::settings::Settings::default()).unwrap()
+    }
+
+    fn add_link(conn: &Connection, from: &str, to: &str, relationship: &str) {
+        crate::repository::link(
+            conn,
+            &crate::models::LinkInput {
+                from_memory_id: from.to_string(),
+                to_memory_id: to.to_string(),
+                relationship: relationship.to_string(),
+                metadata: serde_json::json!({}),
+            },
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn auto_link_count_ignores_human_links_and_counts_both_directions() {
+        // The per-memory cap is a total-degree budget across timed runs, so it is
+        // counted against inferred links in BOTH directions — recall walks edges
+        // both ways, so an inbound link costs recall exactly what an outbound one
+        // does. Human links must never count, or deliberate curation would exhaust
+        // a memory's inference quota.
+        let conn = crate::db::open_in_memory().unwrap();
+        let a = insert_memory(&conn, "source memory");
+        let b = insert_memory(&conn, "target one");
+        let c = insert_memory(&conn, "target two");
+        let d = insert_memory(&conn, "unrelated source");
+
+        add_link(&conn, &a.id, &b.id, AUTO_LINK_RELATIONSHIP);
+        add_link(&conn, &a.id, &c.id, AUTO_LINK_RELATIONSHIP);
+        add_link(&conn, &a.id, &d.id, "relates_to"); // human link, must not count
+        add_link(&conn, &d.id, &b.id, AUTO_LINK_RELATIONSHIP); // inbound for b
+
+        assert_eq!(
+            count_auto_links(&conn, &a.id).unwrap(),
+            2,
+            "inferred links count toward the cap; the human link must not",
+        );
+        assert_eq!(count_auto_links(&conn, &d.id).unwrap(), 1);
+        assert_eq!(
+            count_auto_links(&conn, &b.id).unwrap(),
+            2,
+            "inbound inferred links count toward total degree",
+        );
+    }
+
+    #[test]
+    fn excluded_kinds_default_to_receipts_only() {
+        // The default must exclude receipts, since that is the measured problem
+        // (mean degree 4.86 against 2.03 for `fact`), and must not quietly exclude
+        // anything else — dropping a substantive kind would lose real connections.
+        let config = crate::settings::AutoLinkConfig::default();
+        assert_eq!(config.exclude_kinds, vec!["receipt".to_string()]);
+    }
+
+    #[test]
+    fn exclude_kinds_survives_a_settings_file_written_before_the_field_existed() {
+        // Existing installs have no exclude_kinds key. Deserialising must fall back to
+        // the default rather than an empty list, or upgrading would silently keep
+        // linking receipts.
+        let json = r#"{"enabled": true, "threshold": 0.6}"#;
+        let config: crate::settings::AutoLinkConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.exclude_kinds, vec!["receipt".to_string()]);
+        assert_eq!(config.max_links_per_memory, 3, "other defaults still apply");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn auto_link_lock_rejects_an_overlapping_holder() {
+        let directory = tempfile::tempdir().unwrap();
+        let db_path = directory.path().join("memory.db");
+
+        let _first = acquire_auto_link_lock(&db_path).unwrap();
+        let second = acquire_auto_link_lock(&db_path);
+
+        assert!(
+            second.is_err(),
+            "CLI and daemon passes must not hold the same auto-link lock concurrently"
+        );
+    }
+
+    // The cap itself (budgeting, saturation on over-cap data, target-side
+    // enforcement) is tested through `auto_link_batch` in tests/integration.rs —
+    // a unit test here could only re-assert the standard library.
 
     #[test]
     fn encode_decode_round_trip() {

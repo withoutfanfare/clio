@@ -174,6 +174,84 @@ The capture pipeline accepts unstructured text and produces a structured memory 
 - Capture returns an explicit `Stored` or `Queued` outcome; a queued outcome is not yet a memory
 - The raw input text is always stored as `content` unchanged
 
+### Session Checkpoints (Exact-Once Capture)
+
+A checkpoint commits the distillation of one session delta exactly once, keyed by `(source, session_id, cursor)`.
+
+1. Preflight: a completed key returns its stored result envelope (`replayed: true`) without calling the model
+2. Model extraction runs strictly outside the write transaction
+3. One `BEGIN IMMEDIATE` transaction rechecks the key under the write lock, stores every extracted memory or review item through the shared capture path, and inserts the checkpoint record — all atomically
+4. Any failure rolls back every write; the key stays open and the client job stays retryable
+5. An empty extraction is a successful checkpoint and is never redistilled
+6. Auto-embedding runs best-effort after commit and can never fail the checkpoint
+
+**Open-loop extraction (within a checkpoint):**
+
+- Distilled atoms may carry optional `attention` data (explicitness, owner, due/remind, trigger, waiting-on, completion condition) and an optional `resolves` identifier
+- Only `explicitness: "explicit"` — a clear user commitment or requested reminder — opens attention automatically, atomically with the stored memory; unknown explicitness values are normalised to `suggested`
+- Suggested/inferred open loops always queue for review regardless of confidence; approving the review item creates the memory and its attention in one transaction (the attention payload rides in the review item's metadata)
+- "Could", "might" and assistant suggestions are never explicit; completed routine steps and externally tracked work are not open loops
+- A `resolves` identifier NEVER auto-completes: it records a visible `resolution_candidate` event on the open/snoozed target (with the storing memory as proposed evidence) for human review — model output distilled from an untrusted transcript cannot close real work. Unknown, fuzzy or terminal targets leave state unchanged; a failed candidate never fails the checkpoint
+- Branch and ticket context is applied deterministically after model parsing: `ticket:<id>` tags (lowercase) and branch metadata come from the checkpoint request, never from the model
+- Immediate explicit capture through `memory_remember`/`memory_action` remains the primary path; checkpoint extraction is the asynchronous safety net
+
+**Checkpoint invariants:**
+- A capture attempt ends in exactly one visible state: durable success (checkpoint row), pending retry (no row) or a surfaced error — never silent loss
+- A repeated or concurrent delivery of the same key replays the original result; no duplicate atoms
+- Per-atom provenance is `source` + `source_ref = {session_id}@{cursor}-{index}`, preserving the `UNIQUE(source, source_ref)` upsert rule
+- Checkpoint rows are the replay proof: never deleted to tidy up
+- Checkpoint idempotency is additional to, and must not weaken, source/source-ref upsert idempotency
+
+### Attention Lifecycle (Open Loops)
+
+An attention item marks one memory as operationally open. Memories record what was said; attention records what is still owed.
+
+- One optional attention row per memory (`UNIQUE(memory_id)`); creation is idempotent and commits atomically with its `attention_opened` event
+- Statuses are only `open`, `snoozed`, `resolved`, `cancelled`; invalid transitions are validation errors, not no-ops; `resolved` and `cancelled` are terminal
+- Completion never deletes or rewrites the source memory — it records a `resolved` event and, when evidence is supplied, a `resolved_by` link from the followed-up memory to the evidence memory
+- Eligibility is a pure read returning a machine-readable reason per item: `overdue` (past `due_at`), `reminder_due` (past `remind_at`, including expired snoozes), `project_session` (the `project-session` trigger in the item's own namespace), `dormant` (untouched for `attention.dormant_days`)
+- An item surfaces at most once per session/topic scope for the same reason and state — the `surfaced` event's idempotency key includes the item's `updated_at`, so any state change re-arms surfacing
+- Automatic surfacing records events but never touches `access_count`/`last_accessed_at` ranking data
+- Existing `task`-kind memories remain valid without attention rows
+- Adapters (CLI `clio action`, MCP `memory_action`) are thin: every rule above lives in `clio-core::attention`
+
+### Occurrences and Cited Consolidation
+
+- Repeated exact evidence strengthens one canonical memory: the capture path records an append-only occurrence (first sighting included) instead of a duplicate row; checkpoint replays add nothing thanks to the provenance unique index
+- Merges transfer occurrences to the kept memory before archiving duplicates
+- Every memory/link/attention/occurrence mutation bumps the namespace's generation via triggers — adapters cannot forget invalidation
+- Consolidation output is structured and cited: every statement carries input memory IDs, validated against the bounded input; an invalid candidate is rejected and the previous singleton stays, visibly stale via its generation watermark
+- Receipts never feed model-authored project truth; contradictions remain separate and labelled unresolved; resume drops a stale consolidated singleton rather than leading with it
+
+### External Delivery (Things / Linear)
+
+- One-tap approval is the only trigger: no external work is ever created from a speculative suggestion
+- Delivery is not successful until read-back verifies the stable external ID; the outbox row and the attention item's external reference update atomically
+- A duplicate approval replays one outbox record (stable `destination:attention_id` key)
+- Every failure (network, auth, create, read-back) leaves the outbox retryable and the Clio attention item open; a crash between create and read-back is visibly `delivering`
+- Verified external completion resolves the attention item by stable ID only; a conflicting local terminal state stays and the disagreement is recorded as an event — no silent last-write-wins
+- Credentials live in the adapters' user process (Keychain/environment), never in Clio's database
+
+### Graph Recall Safety
+
+- Linked recall (`include_links`) follows edges in both directions; each connected memory appears once, carrying every edge context (`from`, `to`, `direction` relative to the anchor, `relationship`, `metadata`)
+- Linked targets reapply the parent query's archive/expiry eligibility — hidden records cannot re-enter recall through graph expansion
+- Link suggestions are candidates only: they default to the source memory's own namespace and never include archived or expired targets; cross-project relations are review-only
+- `same_as`, contradiction, supersession/reversal and every cross-project relation require user acceptance; background auto-linking persists only `auto:relates_to`
+- The relationship vocabulary is open but documented in `docs/reference/schema.md`; a classifier may propose a typed relation but can never accept one
+
+### Resume Briefs (Automatic Surfacing)
+
+One core policy (`assembly::build_resume_brief`) decides what surfaces when work resumes; adapters and hooks only request it.
+
+- Section priority: needs-attention (eligible open work), waiting-on, active constraints (project first, plus at most two global as a modest prior), recent decisions, query-relevant knowledge, recent activity
+- Every item carries a `reason`; attention-backed reasons are machine-readable (`overdue`, `reminder_due`, `project_session`, `dormant`) rendered with their evidence
+- The knowledge section abstains without a query; empty sections are omitted and release capacity; non-empty critical sections keep one reserved slot at small budgets
+- Items deduplicate across sections by memory ID; archived, expired, resolved and cancelled records are excluded
+- All resume reads are untracked (`skip_access_tracking`): automatic delivery must never train recall ranking; deliberate recall stays tracked
+- With a session scope, included attention items record one idempotent `surfaced` event and are suppressed on repeats in that scope until their state changes; event-write failure still returns the brief
+- The character budget counts the serialised representation (title + bounded content + reason), keeping at least one item
+
 ### Migration (Cross-Tool Import)
 
 The migration pipeline imports memories from other AI tools (Claude, ChatGPT) into Clio.
@@ -299,7 +377,7 @@ The daemon runs a periodic background task that finds semantically similar memor
 | `enabled` | bool | — | whether auto-linking is active |
 | `threshold` | f64 | 0.80 | minimum cosine similarity to create a link |
 | `interval_secs` | u64 | 3600 | seconds between inference passes |
-| `max_links_per_memory` | usize | 3 | maximum auto-links created per memory per pass |
+| `max_links_per_memory` | usize | 3 | cap on a memory's **total auto-link degree** (both directions, cumulative across passes); links are created only while both endpoints are below it |
 | `batch_size` | usize | 50 | memories processed per pass |
 
 - Links are created with relationship `auto:relates_to`

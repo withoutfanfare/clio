@@ -223,6 +223,10 @@ pub fn merge_memories(conn: &Connection, keep_id: &str, merge_ids: &[String]) ->
                 params![keep_id],
             )?;
 
+            // Transfer sighting provenance before the duplicate row is
+            // archived, so repeated evidence is never lost in a merge.
+            crate::occurrences::transfer_occurrences(conn, merge_id, keep_id)?;
+
             // Archive the merged-away memory.
             repository::archive(conn, merge_id)?;
         }

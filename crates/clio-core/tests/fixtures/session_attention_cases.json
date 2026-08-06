@@ -1,0 +1,228 @@
+{
+  "description": "Annotated session-attention cases. Each case carries the transcript excerpt (for live-model dry runs), the distillation payload the model is expected to produce, and the operational outcome the checkpoint pipeline must enforce for that payload. Deterministic tests exercise payload -> outcome; live dry runs measure transcript -> payload precision separately.",
+  "cases": [
+    {
+      "name": "explicit_follow_up",
+      "transcript": "User: I'll verify the Atlas deployment tomorrow morning before we widen the rollout.",
+      "payload": {
+        "content": "Verify the Atlas deployment before widening the rollout.",
+        "kind": "task",
+        "title": "Verify Atlas deployment",
+        "summary": "User committed to verifying the deployment tomorrow morning.",
+        "tags": [
+          "deployment"
+        ],
+        "namespace": "project:clio",
+        "importance": 4,
+        "confidence": 0.95,
+        "attention": {
+          "explicitness": "explicit",
+          "owner": "user",
+          "due_at": "2026-07-30T09:00:00Z"
+        }
+      },
+      "expect": {
+        "stored": true,
+        "attention_open": true,
+        "review_queued": false
+      }
+    },
+    {
+      "name": "named_decision_required",
+      "transcript": "User: We can't ship until I decide between Keychain and plaintext for the spool. Remind me next session in this project.",
+      "payload": {
+        "content": "Decide between Keychain encryption and strict-permission plaintext for the capture spool before shipping.",
+        "kind": "task",
+        "title": "Decide spool encryption approach",
+        "summary": "A named decision the user must make before shipping.",
+        "tags": [
+          "security"
+        ],
+        "namespace": "project:clio",
+        "importance": 5,
+        "confidence": 0.9,
+        "attention": {
+          "explicitness": "explicit",
+          "owner": "user",
+          "trigger": "project-session",
+          "completion_condition": "An encryption decision is recorded"
+        }
+      },
+      "expect": {
+        "stored": true,
+        "attention_open": true,
+        "review_queued": false
+      }
+    },
+    {
+      "name": "deferred_verification",
+      "transcript": "User: The migration passed locally but I still need to check it against the production snapshot — I'll do that once the backup finishes.",
+      "payload": {
+        "content": "Check migration 009 against the production snapshot once the backup finishes.",
+        "kind": "task",
+        "title": "Verify migration against production snapshot",
+        "summary": "Verification the user explicitly deferred until the backup completes.",
+        "tags": [
+          "migration"
+        ],
+        "namespace": "project:clio",
+        "importance": 4,
+        "confidence": 0.9,
+        "attention": {
+          "explicitness": "explicit",
+          "owner": "user",
+          "waiting_on": "production backup completion",
+          "completion_condition": "Migration verified against the snapshot"
+        }
+      },
+      "expect": {
+        "stored": true,
+        "attention_open": true,
+        "review_queued": false
+      }
+    },
+    {
+      "name": "waiting_for_external",
+      "transcript": "User: I've asked Marcus for the Atlas SSH key rotation window — nothing moves until he replies.",
+      "payload": {
+        "content": "Waiting on Marcus for the Atlas SSH key rotation window before rotation work can proceed.",
+        "kind": "task",
+        "title": "Awaiting Atlas key rotation window",
+        "summary": "Blocked on an external reply from Marcus.",
+        "tags": [
+          "atlas"
+        ],
+        "namespace": "project:clio",
+        "importance": 3,
+        "confidence": 0.9,
+        "attention": {
+          "explicitness": "explicit",
+          "owner": "user",
+          "waiting_on": "Marcus: rotation window"
+        }
+      },
+      "expect": {
+        "stored": true,
+        "attention_open": true,
+        "review_queued": false
+      }
+    },
+    {
+      "name": "assistant_suggestion_stays_reviewable",
+      "transcript": "Assistant: You might want to add an index on memory_events later if the ledger grows.",
+      "payload": {
+        "content": "Consider adding an index on memory_events if the ledger grows large.",
+        "kind": "task",
+        "title": "Possible memory_events index",
+        "summary": "Assistant suggestion, not a user commitment.",
+        "tags": [
+          "performance"
+        ],
+        "namespace": "project:clio",
+        "importance": 2,
+        "confidence": 0.9,
+        "attention": {
+          "explicitness": "suggested",
+          "owner": "user"
+        }
+      },
+      "expect": {
+        "stored": false,
+        "attention_open": false,
+        "review_queued": true
+      }
+    },
+    {
+      "name": "unknown_explicitness_treated_as_suggested",
+      "transcript": "Assistant: Perhaps revisit the retry backoff constants at some point.",
+      "payload": {
+        "content": "Revisit the retry backoff constants.",
+        "kind": "task",
+        "title": "Revisit retry backoff",
+        "summary": "Vague possibility with no commitment.",
+        "tags": [
+          "reliability"
+        ],
+        "namespace": "project:clio",
+        "importance": 2,
+        "confidence": 0.8,
+        "attention": {
+          "explicitness": "definitely",
+          "owner": "user"
+        }
+      },
+      "expect": {
+        "stored": false,
+        "attention_open": false,
+        "review_queued": true
+      }
+    },
+    {
+      "name": "routine_step_is_plain_memory",
+      "transcript": "User: We decided SQLite stays the system of record; no external services.",
+      "payload": {
+        "content": "SQLite remains the system of record; no external services are introduced.",
+        "kind": "decision",
+        "title": "SQLite stays the system of record",
+        "summary": "Architecture decision.",
+        "tags": [
+          "architecture"
+        ],
+        "namespace": "project:clio",
+        "importance": 4,
+        "confidence": 0.95
+      },
+      "expect": {
+        "stored": true,
+        "attention_open": false,
+        "review_queued": false
+      }
+    },
+    {
+      "name": "stable_id_resolution",
+      "transcript": "User: The deployment check from memory 0195-target is done — verified this morning, evidence in the smoke-test output.",
+      "payload": {
+        "content": "Deployment verification completed: smoke tests passed this morning.",
+        "kind": "receipt",
+        "title": "Deployment verified",
+        "summary": "Explicit completion of a known open loop.",
+        "tags": [
+          "receipt"
+        ],
+        "namespace": "project:clio",
+        "importance": 2,
+        "confidence": 0.9,
+        "resolves": "__TARGET_MEMORY_ID__"
+      },
+      "expect": {
+        "stored": true,
+        "attention_open": false,
+        "review_queued": false,
+        "resolution_candidate": true
+      }
+    },
+    {
+      "name": "fuzzy_resolution_leaves_state_unchanged",
+      "transcript": "User: I think that deployment thing is probably sorted now.",
+      "payload": {
+        "content": "The deployment issue is believed resolved.",
+        "kind": "note",
+        "title": "Deployment believed resolved",
+        "summary": "Vague resolution with no stable identifier.",
+        "tags": [
+          "deployment"
+        ],
+        "namespace": "project:clio",
+        "importance": 2,
+        "confidence": 0.6,
+        "resolves": "no-such-stable-id"
+      },
+      "expect": {
+        "stored": true,
+        "attention_open": false,
+        "review_queued": false,
+        "resolution_candidate": false
+      }
+    }
+  ]
+}

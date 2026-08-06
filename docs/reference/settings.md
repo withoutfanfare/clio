@@ -12,6 +12,7 @@ All configuration keys in `clio-settings.json`. The file lives alongside the dat
 | `context` | object | see below | Namespace auto-detection |
 | `scoring` | object | see below | Temporal relevance scoring |
 | `daemon` | object | see below | Always-on daemon |
+| `attention` | object | see below | Follow-up attention lifecycle policy |
 | `remote` | object? | `null` | Optional shared SSH route used by local adapters |
 
 ## embeddings
@@ -30,7 +31,7 @@ Three variants (tagged by `provider`):
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `provider` | string | `"openai"` | Backend type |
-| `api_key` | string? | `null` | API key (falls back to `OPENAI_API_KEY` env var) |
+| `api_key` | string? | `null` | API key (falls back to the environment — see [API key resolution](#api-key-resolution)) |
 | `model` | string | `"text-embedding-3-small"` | Model name (1,536 dimensions) |
 | `base_url` | string? | `null` | Optional base URL override for proxies |
 
@@ -56,10 +57,68 @@ repeat it with an appropriate `--batch-size` until every memory is refreshed.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `enabled` | bool | `false` | Whether the capture pipeline is active |
-| `api_key` | string? | `null` | OpenAI-compatible API key |
+| `api_key` | string? | `null` | OpenAI-compatible API key (falls back to the environment — see [API key resolution](#api-key-resolution)) |
 | `base_url` | string | `"https://api.openai.com/v1"` | API endpoint |
 | `model` | string | `"gpt-4o-mini"` | Classification model |
 | `review_threshold` | float? | `null` | Confidence below this routes to review queue; `null` disables review |
+
+## API key resolution
+
+Every setting that takes an `api_key` resolves it in this order, using the first
+value that is present and not blank:
+
+1. The `api_key` in settings.
+2. `OPENAI_API_KEY_CLIO` — a key used only by Clio.
+3. `OPENAI_API_KEY` — the shared key, **with a warning** on stderr.
+
+Prefer `OPENAI_API_KEY_CLIO`. A key shared with other tools cannot be attributed
+in provider billing, so there is no way to tell what Clio itself is costing. Step
+3 exists so existing installs keep working; the warning names the caller
+(`capture`, `openai embeddings`, `auto-title`) so it is clear which part of Clio
+reached for the shared key.
+
+Whitespace is trimmed from configured and environment keys. A blank value is
+treated as absent, so resolution falls through to the next step instead of
+sending an unauthenticated request.
+
+Change only the model, without replacing the API key or endpoint:
+
+```sh
+clio settings set-capture-model gpt-5.6-luna
+```
+
+Show the active shared capture configuration without displaying credentials:
+
+```sh
+clio settings show-capture
+```
+
+On a Mac configured with `settings use-remote`, both commands use Atlas. The
+desktop app exposes the same control under **Settings > Capture model** and
+preserves the API key, endpoint and review threshold. Its suggested values are
+the benchmarked `gpt-4.1`, `gpt-5.6-luna` and `gpt-5.6-terra` models, but the
+field accepts another OpenAI-compatible model ID for future comparisons.
+
+The Tauri app and the CLI see the change immediately. Other running MCP
+processes reload non-embedding settings within 30 seconds; they do not need a
+restart.
+
+Use `capture --model <model> --dry-run` or `distill --model <model> --dry-run`
+for a one-off comparison that does not change the active setting. Add
+`--metrics` to include latency and provider-reported token usage.
+
+### Desktop control suitability
+
+The desktop app currently changes only `capture.model`. Other suitable future
+controls are `capture.review_threshold`, auto-title behaviour, recall scoring,
+namespace auto-detection, consolidation thresholds and cleanup defaults. They
+are non-secret values with immediate, understandable effects.
+
+Keep API keys and provider endpoints out of the desktop interface. Embedding
+provider/model changes require client restarts and a vector backfill; remote
+route changes can disconnect the app; daemon settings are local-only and need a
+daemon restart. Those settings should remain guided CLI or deployment tasks
+unless the app also implements their full validation and recovery workflows.
 
 ## context
 
@@ -82,7 +141,7 @@ repeat it with an appropriate `--batch-size` until every memory is refreshed.
 | `inbox_paths` | string[] | `[]` | Directories to watch for inbox drop files |
 | `socket_path` | string? | platform default | Unix domain socket path |
 | `log_dir` | string? | platform default | Rolling log file directory |
-| `http_port` | int? | `null` | Optional HTTP loopback API port |
+| `http_port` | int? | `null` | Reserved compatibility field; currently ignored. The daemon exposes no HTTP listener |
 | `auto_link` | object | see below | Auto-link inference settings |
 | `maintenance` | object | see below | Periodic backup / integrity jobs |
 
@@ -93,8 +152,19 @@ repeat it with an appropriate `--batch-size` until every memory is refreshed.
 | `enabled` | bool | `false` | Whether auto-link inference is active |
 | `threshold` | float | `0.80` | Cosine similarity threshold for linking |
 | `interval_secs` | int | `3600` | Seconds between inference passes |
-| `max_links_per_memory` | int | `3` | Max links created per memory per pass |
+| `max_links_per_memory` | int | `3` | Maximum inferred links a memory may hold in **total degree** — both directions, across all passes. A link is created only while both endpoints are below the cap; recall walks edges both ways, so total degree is what the cap must bound |
 | `batch_size` | int | `50` | Memories processed per pass |
+| `exclude_kinds` | string[] | `["receipt"]` | Memory kinds skipped as both source and target — see below |
+
+`exclude_kinds` keeps boilerplate out of the link graph. Receipts are per-session
+write-ups of what was done; they share a great deal of phrasing, so they attract
+each other on similarity while carrying little conceptual content. Measured on live
+data at threshold 0.6, receipts averaged 4.86 links each against 2.03 for `fact` —
+the most substantive kind was the least connected, and receipts accounted for
+roughly a third of all link mass.
+
+An explicit `clio suggest-links` request is unaffected and still considers every
+candidate: a person asking for suggestions should not have results withheld.
 
 ### daemon.maintenance
 
@@ -107,6 +177,9 @@ not run here; it is triggered per session by the session-stop hook.)
 | `backup_interval_secs` | int | `0` | Seconds between database backups (`0` = off). E.g. `604800` for weekly |
 | `backup_max_backups` | int | `7` | Timestamped backups to retain |
 | `integrity_interval_secs` | int | `0` | Seconds between integrity checks, log-only (`0` = off) |
+
+`clio daemon status` reports `backup_scheduler` and `integrity_scheduler` only
+when their corresponding intervals are non-zero. It never reports an HTTP route.
 
 ## remote
 
@@ -135,6 +208,12 @@ database. `clio --local` bypasses the route. The daemon remains local-only.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `auto_threshold` | int | `10` | Consolidate a namespace automatically once it has this many new memories since the last consolidation (used by `clio consolidate --if-due`) |
+
+## attention
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `dormant_days` | int | `14` | Days an open attention item may sit untouched before eligibility reports it as `dormant`. `0` disables dormancy surfacing |
 
 ## Example
 

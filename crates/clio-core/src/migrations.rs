@@ -184,6 +184,193 @@ const MIGRATIONS: &[Migration] = &[
             ALTER TABLE review_queue ADD COLUMN source_ref TEXT;
         "#,
     },
+    Migration {
+        version: "009_session_checkpoints",
+        sql: r#"
+            CREATE TABLE session_checkpoints (
+                id TEXT PRIMARY KEY,
+                source TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                cursor INTEGER NOT NULL,
+                namespace TEXT,
+                branch TEXT,
+                ticket TEXT,
+                result_json TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+
+            CREATE UNIQUE INDEX idx_session_checkpoints_identity
+                ON session_checkpoints(source, session_id, cursor);
+        "#,
+    },
+    Migration {
+        version: "010_attention_and_events",
+        sql: r#"
+            CREATE TABLE attention_items (
+                id TEXT PRIMARY KEY,
+                memory_id TEXT NOT NULL UNIQUE,
+                namespace TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'open'
+                    CHECK (status IN ('open', 'snoozed', 'resolved', 'cancelled')),
+                owner TEXT,
+                due_at TEXT,
+                remind_at TEXT,
+                trigger_kind TEXT,
+                waiting_on TEXT,
+                completion_condition TEXT,
+                external_system TEXT,
+                external_ref TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                resolved_at TEXT,
+                FOREIGN KEY (memory_id) REFERENCES memories(id) ON DELETE CASCADE
+            );
+
+            CREATE INDEX idx_attention_status ON attention_items(status, namespace);
+
+            CREATE TABLE memory_events (
+                id TEXT PRIMARY KEY,
+                idempotency_key TEXT,
+                memory_id TEXT,
+                namespace TEXT,
+                actor TEXT,
+                session_id TEXT,
+                topic TEXT,
+                event_type TEXT NOT NULL CHECK (length(event_type) BETWEEN 1 AND 40),
+                reason TEXT,
+                metadata_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL
+            );
+
+            CREATE UNIQUE INDEX idx_memory_events_idempotency
+                ON memory_events(idempotency_key) WHERE idempotency_key IS NOT NULL;
+            CREATE INDEX idx_memory_events_memory ON memory_events(memory_id, created_at);
+        "#,
+    },
+    Migration {
+        version: "011_occurrences_and_namespace_state",
+        sql: r#"
+            CREATE TABLE memory_occurrences (
+                id TEXT PRIMARY KEY,
+                memory_id TEXT NOT NULL,
+                source TEXT,
+                source_ref TEXT,
+                session_id TEXT,
+                occurred_at TEXT NOT NULL,
+                metadata_json TEXT NOT NULL DEFAULT '{}',
+                FOREIGN KEY (memory_id) REFERENCES memories(id) ON DELETE CASCADE
+            );
+
+            CREATE INDEX idx_memory_occurrences_memory
+                ON memory_occurrences(memory_id, occurred_at);
+
+            CREATE UNIQUE INDEX idx_memory_occurrences_provenance
+                ON memory_occurrences(memory_id, source, source_ref)
+                WHERE source IS NOT NULL AND source_ref IS NOT NULL;
+
+            CREATE TABLE namespace_state (
+                namespace TEXT PRIMARY KEY,
+                generation INTEGER NOT NULL DEFAULT 0,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE TRIGGER memories_gen_ai AFTER INSERT ON memories BEGIN
+                INSERT INTO namespace_state(namespace, generation, updated_at)
+                VALUES (new.namespace, 1, strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+                ON CONFLICT(namespace) DO UPDATE SET
+                    generation = generation + 1, updated_at = excluded.updated_at;
+            END;
+
+            CREATE TRIGGER memories_gen_au AFTER UPDATE ON memories BEGIN
+                INSERT INTO namespace_state(namespace, generation, updated_at)
+                VALUES (old.namespace, 1, strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+                ON CONFLICT(namespace) DO UPDATE SET
+                    generation = generation + 1, updated_at = excluded.updated_at;
+                INSERT INTO namespace_state(namespace, generation, updated_at)
+                SELECT new.namespace, 1, strftime('%Y-%m-%dT%H:%M:%fZ','now')
+                WHERE new.namespace != old.namespace
+                ON CONFLICT(namespace) DO UPDATE SET
+                    generation = generation + 1, updated_at = excluded.updated_at;
+            END;
+
+            CREATE TRIGGER memories_gen_ad AFTER DELETE ON memories BEGIN
+                INSERT INTO namespace_state(namespace, generation, updated_at)
+                VALUES (old.namespace, 1, strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+                ON CONFLICT(namespace) DO UPDATE SET
+                    generation = generation + 1, updated_at = excluded.updated_at;
+            END;
+
+            CREATE TRIGGER links_gen_ai AFTER INSERT ON memory_links BEGIN
+                INSERT INTO namespace_state(namespace, generation, updated_at)
+                SELECT namespace, 1, strftime('%Y-%m-%dT%H:%M:%fZ','now')
+                FROM memories WHERE id IN (new.from_memory_id, new.to_memory_id)
+                ON CONFLICT(namespace) DO UPDATE SET
+                    generation = generation + 1, updated_at = excluded.updated_at;
+            END;
+
+            CREATE TRIGGER links_gen_ad AFTER DELETE ON memory_links BEGIN
+                INSERT INTO namespace_state(namespace, generation, updated_at)
+                SELECT namespace, 1, strftime('%Y-%m-%dT%H:%M:%fZ','now')
+                FROM memories WHERE id IN (old.from_memory_id, old.to_memory_id)
+                ON CONFLICT(namespace) DO UPDATE SET
+                    generation = generation + 1, updated_at = excluded.updated_at;
+            END;
+
+            CREATE TRIGGER attention_gen_ai AFTER INSERT ON attention_items BEGIN
+                INSERT INTO namespace_state(namespace, generation, updated_at)
+                VALUES (new.namespace, 1, strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+                ON CONFLICT(namespace) DO UPDATE SET
+                    generation = generation + 1, updated_at = excluded.updated_at;
+            END;
+
+            CREATE TRIGGER attention_gen_au AFTER UPDATE ON attention_items BEGIN
+                INSERT INTO namespace_state(namespace, generation, updated_at)
+                VALUES (new.namespace, 1, strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+                ON CONFLICT(namespace) DO UPDATE SET
+                    generation = generation + 1, updated_at = excluded.updated_at;
+            END;
+
+            CREATE TRIGGER occurrences_gen_ai AFTER INSERT ON memory_occurrences BEGIN
+                INSERT INTO namespace_state(namespace, generation, updated_at)
+                SELECT namespace, 1, strftime('%Y-%m-%dT%H:%M:%fZ','now')
+                FROM memories WHERE id = new.memory_id
+                ON CONFLICT(namespace) DO UPDATE SET
+                    generation = generation + 1, updated_at = excluded.updated_at;
+            END;
+        "#,
+    },
+    Migration {
+        version: "012_delivery_outbox",
+        sql: r#"
+            CREATE TABLE delivery_outbox (
+                id TEXT PRIMARY KEY,
+                delivery_key TEXT NOT NULL UNIQUE,
+                attention_id TEXT NOT NULL,
+                destination TEXT NOT NULL,
+                payload_json TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending'
+                    CHECK (status IN ('pending', 'delivering', 'delivered', 'failed')),
+                attempts INTEGER NOT NULL DEFAULT 0,
+                last_error TEXT,
+                external_id TEXT,
+                readback_json TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                delivered_at TEXT,
+                FOREIGN KEY (attention_id) REFERENCES attention_items(id) ON DELETE CASCADE
+            );
+
+            CREATE INDEX idx_delivery_outbox_status ON delivery_outbox(status, destination);
+        "#,
+    },
+    Migration {
+        version: "013_delivery_external_identity",
+        sql: r#"
+            CREATE UNIQUE INDEX idx_delivery_outbox_external
+                ON delivery_outbox(destination, external_id)
+                WHERE external_id IS NOT NULL;
+        "#,
+    },
 ];
 
 /// Run all pending migrations inside a transaction.

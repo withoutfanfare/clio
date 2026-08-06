@@ -320,6 +320,12 @@ struct MoveNamespaceParams {
 struct GetLinksParams {
     /// Memory ID.
     memory_id: String,
+
+    /// Edge direction: outgoing (default, compatible shape), incoming, or
+    /// both. Non-default directions return edge contexts with a `direction`
+    /// field relative to this memory.
+    #[serde(default)]
+    direction: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -334,6 +340,42 @@ struct CaptureParams {
     /// Working dir for namespace detection.
     #[serde(default)]
     cwd: Option<String>,
+
+    /// Namespace detected by a local remote bridge.
+    #[serde(default, rename = "_clio_namespace")]
+    #[schemars(skip)]
+    clio_namespace: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct SessionCheckpointParams {
+    /// Redacted session-delta digest to distil.
+    text: String,
+
+    /// Capturing agent, e.g. claude-session.
+    source: String,
+
+    /// Client session identifier.
+    session_id: String,
+
+    /// Monotonic transcript cursor marking where this delta ends.
+    cursor: i64,
+
+    /// Namespace override applied to every extracted memory.
+    #[serde(default)]
+    namespace: Option<String>,
+
+    /// Working dir for namespace detection.
+    #[serde(default)]
+    cwd: Option<String>,
+
+    /// Git branch active during the session.
+    #[serde(default)]
+    branch: Option<String>,
+
+    /// Ticket/issue identifier associated with the work.
+    #[serde(default)]
+    ticket: Option<String>,
 
     /// Namespace detected by a local remote bridge.
     #[serde(default, rename = "_clio_namespace")]
@@ -508,6 +550,155 @@ struct InboxParams {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+struct ResumeParams {
+    /// Prompt/task context for the relevant-knowledge section. Omit at
+    /// session start; pass the user's task on the first substantive prompt.
+    #[serde(default)]
+    query: Option<String>,
+
+    /// Namespace scope. Auto-detected from cwd if omitted.
+    #[serde(default)]
+    namespace: Option<String>,
+
+    /// Working dir for namespace detection.
+    #[serde(default)]
+    cwd: Option<String>,
+
+    /// Session or topic scope: suppresses repeats within the scope and
+    /// records idempotent `surfaced` events.
+    #[serde(default)]
+    session_id: Option<String>,
+
+    /// Maximum items across all sections.
+    #[serde(default = "default_inbox_limit")]
+    max_items: u32,
+
+    /// Character budget over the serialised items.
+    #[serde(default)]
+    char_budget: Option<u32>,
+
+    /// Format: markdown|json.
+    #[serde(default = "default_response_format")]
+    response_format: String,
+
+    /// Namespace detected by a local remote bridge.
+    #[serde(default, rename = "_clio_namespace")]
+    #[schemars(skip)]
+    clio_namespace: Option<String>,
+}
+
+fn resume_brief_md(brief: &clio_core::assembly::ResumeBrief) -> String {
+    if brief.sections.is_empty() {
+        return format!(
+            "# Resume — {}\n\nNothing to resume: no open work or relevant context.",
+            brief.namespace
+        );
+    }
+    let mut out = format!("# Resume — {}\n", brief.namespace);
+    for section in &brief.sections {
+        out.push_str(&format!("\n## {}\n\n", section.heading));
+        for item in &section.items {
+            let title = item.title.as_deref().unwrap_or("(untitled)");
+            out.push_str(&format!(
+                "- [{}] **{}** ({})\n",
+                item.kind, title, item.memory_id
+            ));
+            out.push_str(&format!("  why: {}\n", item.reason));
+            out.push_str(&format!("  {}\n", item.content));
+        }
+    }
+    out
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct ActionParams {
+    /// Action: add | list | eligible | complete | snooze | cancel | attach_external | history.
+    action: String,
+
+    /// Attention item ID or memory ID. Required for complete, snooze, cancel,
+    /// attach_external and history.
+    #[serde(default, alias = "id")]
+    action_id: Option<String>,
+
+    /// Content for a new task memory (add). Alternative to memory_id.
+    #[serde(default)]
+    content: Option<String>,
+
+    /// Existing memory to attach attention to (add).
+    #[serde(default)]
+    memory_id: Option<String>,
+
+    /// Namespace: context for add/eligible, filter for list.
+    #[serde(default)]
+    namespace: Option<String>,
+
+    /// Working dir for namespace detection.
+    #[serde(default)]
+    cwd: Option<String>,
+
+    /// Who owns the follow-up (add), e.g. user.
+    #[serde(default)]
+    owner: Option<String>,
+
+    /// Hard due date, ISO-8601 UTC (add).
+    #[serde(default)]
+    due_at: Option<String>,
+
+    /// Reminder time, ISO-8601 UTC (add).
+    #[serde(default)]
+    remind_at: Option<String>,
+
+    /// Non-time trigger (add), e.g. project-session.
+    #[serde(default)]
+    trigger: Option<String>,
+
+    /// What or whom this waits on (add).
+    #[serde(default)]
+    waiting_on: Option<String>,
+
+    /// What would prove this complete (add).
+    #[serde(default)]
+    completion_condition: Option<String>,
+
+    /// Session or topic scope for once-per-scope suppression (eligible).
+    #[serde(default)]
+    scope: Option<String>,
+
+    /// Evidence memory ID recording completion proof (complete).
+    #[serde(default)]
+    evidence: Option<String>,
+
+    /// Wake time, ISO-8601 UTC (snooze).
+    #[serde(default)]
+    until: Option<String>,
+
+    /// Why the state changed (complete/cancel).
+    #[serde(default)]
+    reason: Option<String>,
+
+    /// External system name (attach_external), e.g. things or linear.
+    #[serde(default)]
+    external_system: Option<String>,
+
+    /// Stable external item ID (attach_external).
+    #[serde(default)]
+    external_ref: Option<String>,
+
+    /// Status filter (list): open, snoozed, resolved, cancelled.
+    #[serde(default)]
+    status: Option<String>,
+
+    /// Max items/events to return (list/history).
+    #[serde(default = "default_inbox_limit")]
+    limit: u32,
+
+    /// Namespace detected by a local remote bridge.
+    #[serde(default, rename = "_clio_namespace")]
+    #[schemars(skip)]
+    clio_namespace: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 struct CacheClearParams {}
 
 // ---------------------------------------------------------------------------
@@ -665,6 +856,51 @@ mod namespace_tests {
     }
 
     #[test]
+    fn action_params_default_optional_fields() {
+        let params: super::ActionParams = serde_json::from_value(serde_json::json!({
+            "action": "eligible"
+        }))
+        .unwrap();
+        assert!(params.action_id.is_none());
+        assert!(params.namespace.is_none());
+        assert!(params.scope.is_none());
+
+        // `id` is accepted as an alias for action_id.
+        let aliased: super::ActionParams = serde_json::from_value(serde_json::json!({
+            "action": "complete",
+            "id": "0195-some-id"
+        }))
+        .unwrap();
+        assert_eq!(aliased.action_id.as_deref(), Some("0195-some-id"));
+    }
+
+    #[test]
+    fn session_checkpoint_params_default_optional_context() {
+        let params: super::SessionCheckpointParams = serde_json::from_value(serde_json::json!({
+            "text": "digest",
+            "source": "claude-session",
+            "session_id": "session-1",
+            "cursor": 40
+        }))
+        .unwrap();
+        assert!(params.namespace.is_none());
+        assert!(params.branch.is_none());
+        assert!(params.ticket.is_none());
+        assert!(params.clio_namespace.is_none());
+
+        // The local remote bridge injects the detected namespace on the wire.
+        let bridged: super::SessionCheckpointParams = serde_json::from_value(serde_json::json!({
+            "text": "digest",
+            "source": "claude-session",
+            "session_id": "session-1",
+            "cursor": 40,
+            "_clio_namespace": "project:clio"
+        }))
+        .unwrap();
+        assert_eq!(bridged.clio_namespace.as_deref(), Some("project:clio"));
+    }
+
+    #[test]
     fn update_distinguishes_omitted_nullable_fields_from_clear() {
         let omitted: UpdateParams = serde_json::from_value(serde_json::json!({
             "memory_id": "memory-id",
@@ -819,6 +1055,52 @@ fn format_clio_error(err: &ClioError) -> String {
         ClioError::Export(msg) => format!("Export error: {msg}"),
         ClioError::Import(msg) => format!("Import error: {msg}"),
     }
+}
+
+/// Generate a record embedding without holding the shared SQLite mutex, then
+/// persist it only if the record has not changed while provider work ran.
+fn embed_memory_if_current(
+    conn: &Arc<Mutex<rusqlite::Connection>>,
+    backend: &dyn clio_core::embeddings::EmbeddingBackend,
+    memory: &Memory,
+) -> Result<(), String> {
+    let passage = clio_core::embeddings::build_passage(memory);
+    let embedding = backend
+        .embed_one(&passage)
+        .map_err(|e| format_clio_error(&e))?;
+
+    let mut conn = conn.lock().map_err(|e| format!("lock error: {e}"))?;
+    // One immediate transaction around the check and the write. The mutex
+    // above only serialises THIS process; a CLI or daemon pass in another
+    // process could update the memory between a bare check and a bare write,
+    // and the stale vector would be stored as if it described the new text.
+    // BEGIN IMMEDIATE takes the write lock up front, so nothing can slip in
+    // between the freshness check and the store.
+    let tx = conn
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .map_err(|e| format!("could not open embedding transaction: {e}"))?;
+    let current = clio_core::repository::get_many_pub(&tx, std::slice::from_ref(&memory.id))
+        .map_err(|e| format_clio_error(&e))?
+        .into_iter()
+        .next();
+    if current.as_ref().map(|m| &m.updated_at) != Some(&memory.updated_at) {
+        tracing::debug!(
+            memory_id = %memory.id,
+            "memory changed before auto-embedding completed; skipping stale vector"
+        );
+        return Ok(());
+    }
+
+    clio_core::embeddings::store_embedding(
+        &tx,
+        &memory.id,
+        backend.model_name(),
+        backend.dimensions(),
+        &embedding,
+    )
+    .map_err(|e| format_clio_error(&e))?;
+    tx.commit()
+        .map_err(|e| format!("could not commit embedding transaction: {e}"))
 }
 
 // ---------------------------------------------------------------------------
@@ -1233,7 +1515,6 @@ impl ClioServer {
         let settings = self.settings()?;
         let backend = self.embedding_backend.clone();
         tokio::task::spawn_blocking(move || {
-            let conn = conn.lock().map_err(|e| format!("lock error: {e}"))?;
             let cwd_path = params.cwd.as_deref().map(std::path::Path::new);
             let namespace = resolve_mcp_namespace(
                 params.namespace.as_deref(),
@@ -1243,16 +1524,17 @@ impl ClioServer {
             );
             let upsert = params.upsert;
             let input = remember_input(params, namespace, upsert);
-            let memory = cache
-                .remember(&conn, &input, &settings)
-                .map_err(|e| format_clio_error(&e))?;
+            let memory = {
+                let conn = conn.lock().map_err(|e| format!("lock error: {e}"))?;
+                cache
+                    .remember(&conn, &input, &settings)
+                    .map_err(|e| format_clio_error(&e))?
+            };
 
             // Auto-embed if enabled.
             if settings.auto_embed {
                 if let Some(ref be) = *backend {
-                    if let Err(e) =
-                        clio_core::embeddings::embed_and_store(&conn, be.as_ref(), &memory)
-                    {
+                    if let Err(e) = embed_memory_if_current(&conn, be.as_ref(), &memory) {
                         tracing::warn!("auto-embed failed: {e}");
                     }
                 }
@@ -1296,16 +1578,16 @@ impl ClioServer {
         let settings = self.settings()?;
         let backend = self.embedding_backend.clone();
         tokio::task::spawn_blocking(move || {
-            let conn = conn.lock().map_err(|e| format!("lock error: {e}"))?;
-            let memory = cache
-                .update(&conn, &memory_id, &input, &settings)
-                .map_err(|e| format_clio_error(&e))?;
+            let memory = {
+                let conn = conn.lock().map_err(|e| format!("lock error: {e}"))?;
+                cache
+                    .update(&conn, &memory_id, &input, &settings)
+                    .map_err(|e| format_clio_error(&e))?
+            };
 
             if settings.auto_embed {
                 if let Some(ref be) = *backend {
-                    if let Err(e) =
-                        clio_core::embeddings::embed_and_store(&conn, be.as_ref(), &memory)
-                    {
+                    if let Err(e) = embed_memory_if_current(&conn, be.as_ref(), &memory) {
                         tracing::warn!("auto-embed failed: {e}");
                     }
                 }
@@ -1358,6 +1640,7 @@ impl ClioServer {
                 limit,
                 offset: params.offset,
                 scoring,
+                skip_access_tracking: false,
             };
 
             // --global: search all namespaces without scoping.
@@ -1586,14 +1869,34 @@ impl ClioServer {
         Parameters(params): Parameters<GetLinksParams>,
     ) -> Result<String, String> {
         validate_memory_id(&params.memory_id, "memory_id")?;
+        let direction = params
+            .direction
+            .as_deref()
+            .unwrap_or("outgoing")
+            .to_string();
+        if !matches!(direction.as_str(), "outgoing" | "incoming" | "both") {
+            return Err(format!(
+                "unknown direction '{direction}'. Expected outgoing, incoming, or both."
+            ));
+        }
         let conn = self.conn.clone();
         let cache = self.cache.clone();
         tokio::task::spawn_blocking(move || {
             let conn = conn.lock().map_err(|e| format!("lock error: {e}"))?;
-            let links = cache
-                .get_links(&conn, &params.memory_id)
+            if direction == "outgoing" {
+                // Compatible shape for existing callers.
+                let links = cache
+                    .get_links(&conn, &params.memory_id)
+                    .map_err(|e| format_clio_error(&e))?;
+                return serde_json::to_string_pretty(&links)
+                    .map_err(|e| format!("Serialisation error: {e}"));
+            }
+            let mut contexts = clio_core::repository::get_link_contexts(&conn, &params.memory_id)
                 .map_err(|e| format_clio_error(&e))?;
-            serde_json::to_string_pretty(&links).map_err(|e| format!("Serialisation error: {e}"))
+            if direction == "incoming" {
+                contexts.retain(|c| c.direction == "incoming");
+            }
+            serde_json::to_string_pretty(&contexts).map_err(|e| format!("Serialisation error: {e}"))
         })
         .await
         .map_err(|e| format!("Internal error: task failed: {e}"))?
@@ -1612,13 +1915,13 @@ impl ClioServer {
         }
         let conn = self.conn.clone();
         let settings = self.settings()?;
+        let backend = self.embedding_backend.clone();
         tokio::task::spawn_blocking(move || {
-            let conn = conn.lock().map_err(|e| format!("lock error: {e}"))?;
-            // Resolve namespace from cwd if not explicitly provided.
+            // The explicit namespace and the cwd-detected default stay separate:
+            // core resolves them with the same precedence as capture/distill
+            // everywhere else (override → model's global promotion → cwd → model).
             let cwd_path = params.cwd.as_deref().map(std::path::Path::new);
-            let ns_override = if params.namespace.is_some() {
-                params.namespace
-            } else if settings.context.auto_detect {
+            let default_ns = if settings.context.auto_detect {
                 params.clio_namespace.or_else(|| {
                     cwd_path
                         .and_then(clio_core::context::detect_namespace)
@@ -1628,14 +1931,125 @@ impl ClioServer {
                 None
             };
 
-            let result = clio_core::capture::capture(
-                &conn,
-                &params.text,
-                &settings.capture,
-                ns_override.as_deref(),
-                &settings,
-            )
-            .map_err(|e| format_clio_error(&e))?;
+            let classification = clio_core::capture::classify(&params.text, &settings.capture)
+                .map_err(|e| format_clio_error(&e))?;
+            let result = {
+                let conn = conn.lock().map_err(|e| format!("lock error: {e}"))?;
+                clio_core::capture::capture_with_classification_deferred_embedding(
+                    &conn,
+                    &params.text,
+                    &classification,
+                    params.namespace.as_deref(),
+                    default_ns.as_deref(),
+                    &settings,
+                )
+                .map_err(|e| format_clio_error(&e))?
+            };
+
+            if settings.auto_embed {
+                if let (clio_core::capture::CaptureResult::Stored(memory), Some(be)) =
+                    (&result, backend.as_ref())
+                {
+                    if let Err(e) = embed_memory_if_current(&conn, be.as_ref(), memory) {
+                        tracing::warn!(memory_id = %memory.id, "capture auto-embed failed: {e}");
+                    }
+                }
+            }
+            serde_json::to_string_pretty(&result).map_err(|e| format!("Serialisation error: {e}"))
+        })
+        .await
+        .map_err(|e| format!("Internal error: task failed: {e}"))?
+    }
+
+    #[tool(
+        description = "Distil a session delta and commit it as an exact-once checkpoint keyed by \
+                       source + session_id + cursor. Safe to retry: a completed key replays the \
+                       stored result (memory and review IDs) instead of creating duplicates. An \
+                       empty extraction is a successful checkpoint. Requires a configured capture \
+                       model; returns a configuration error otherwise."
+    )]
+    async fn memory_session_checkpoint(
+        &self,
+        Parameters(params): Parameters<SessionCheckpointParams>,
+    ) -> Result<String, String> {
+        if params.text.trim().is_empty() {
+            return Err("text must not be empty.".into());
+        }
+        if params.source.is_empty() {
+            return Err("source is required.".into());
+        }
+        if params.session_id.is_empty() {
+            return Err("session_id is required.".into());
+        }
+        if params.cursor < 0 {
+            return Err("cursor must be zero or positive.".into());
+        }
+        let conn = self.conn.clone();
+        let settings = self.settings()?;
+        let backend = self.embedding_backend.clone();
+        tokio::task::spawn_blocking(move || {
+            // Resolve the default namespace from cwd like memory_capture, but
+            // keep an explicit namespace as the override that always wins.
+            let cwd_path = params.cwd.as_deref().map(std::path::Path::new);
+            let default_namespace = if settings.context.auto_detect {
+                params.clio_namespace.clone().or_else(|| {
+                    cwd_path
+                        .and_then(clio_core::context::detect_namespace)
+                        .map(|ctx| ctx.namespace)
+                })
+            } else {
+                None
+            };
+
+            let request = clio_core::checkpoint::CheckpointRequest {
+                source: params.source,
+                session_id: params.session_id,
+                cursor: params.cursor,
+                namespace_override: params.namespace,
+                default_namespace,
+                cwd: params.cwd,
+                branch: params.branch,
+                ticket: params.ticket,
+            };
+
+            if let Some(existing) = {
+                let conn = conn.lock().map_err(|e| format!("lock error: {e}"))?;
+                clio_core::checkpoint::find_checkpoint(
+                    &conn,
+                    &request.source,
+                    &request.session_id,
+                    request.cursor,
+                )
+                .map_err(|e| format_clio_error(&e))?
+            } {
+                return serde_json::to_string_pretty(&existing)
+                    .map_err(|e| format!("Serialisation error: {e}"));
+            }
+
+            let memories = clio_core::capture::distill(&params.text, &settings.capture)
+                .map_err(|e| format_clio_error(&e))?;
+            let (result, stored_memories) = {
+                let conn = conn.lock().map_err(|e| format!("lock error: {e}"))?;
+                let result =
+                    clio_core::checkpoint::store_checkpoint(&conn, &request, &memories, &settings)
+                        .map_err(|e| format_clio_error(&e))?;
+                let stored_memories = if !result.replayed && settings.auto_embed {
+                    clio_core::repository::get_many_pub(&conn, &result.stored_memory_ids)
+                        .map_err(|e| format_clio_error(&e))?
+                } else {
+                    Vec::new()
+                };
+                (result, stored_memories)
+            };
+
+            if let Some(ref be) = *backend {
+                for memory in &stored_memories {
+                    if let Err(e) = embed_memory_if_current(&conn, be.as_ref(), memory) {
+                        tracing::warn!(memory_id = %memory.id, "checkpoint auto-embed failed: {e}");
+                    }
+                }
+            }
+
             serde_json::to_string_pretty(&result).map_err(|e| format!("Serialisation error: {e}"))
         })
         .await
@@ -1661,8 +2075,6 @@ impl ClioServer {
         let settings = self.settings()?;
         let backend = self.embedding_backend.clone();
         tokio::task::spawn_blocking(move || {
-            let conn = conn.lock().map_err(|e| format!("lock error: {e}"))?;
-
             let be = backend.as_ref().as_ref().ok_or_else(|| {
                 "Embedding backend not available. Ensure embeddings are configured in settings."
                     .to_string()
@@ -1671,6 +2083,8 @@ impl ClioServer {
             let query_embedding = be
                 .embed_one(&params.query)
                 .map_err(|e| format_clio_error(&e))?;
+
+            let conn = conn.lock().map_err(|e| format!("lock error: {e}"))?;
 
             let cwd_path = params.cwd.as_deref().map(std::path::Path::new);
             let detected_ns = resolve_mcp_namespace(
@@ -1977,6 +2391,281 @@ impl ClioServer {
         .map_err(|e| format!("Internal error: task failed: {e}"))?
     }
 
+    #[tool(
+        description = "Build a resume brief: eligible open work, blocked items, constraints, \
+                       recent decisions, prompt-relevant knowledge and recent activity — each \
+                       with the reason it appears now. Call at session start (no query), and \
+                       again with `query` on the first substantive task prompt. Reads are \
+                       untracked and repeats are suppressed per session_id scope."
+    )]
+    async fn memory_resume(
+        &self,
+        Parameters(params): Parameters<ResumeParams>,
+    ) -> Result<String, String> {
+        validate_response_format(&params.response_format)?;
+        let conn = self.conn.clone();
+        let settings = self.settings()?;
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock().map_err(|e| format!("lock error: {e}"))?;
+            let cwd_path = params.cwd.as_deref().map(std::path::Path::new);
+            let namespace = params.namespace.clone().or_else(|| {
+                if settings.context.auto_detect {
+                    params.clio_namespace.clone().or_else(|| {
+                        cwd_path
+                            .and_then(clio_core::context::detect_namespace)
+                            .map(|ctx| ctx.namespace)
+                    })
+                } else {
+                    None
+                }
+            });
+
+            let request = clio_core::assembly::ResumeRequest {
+                namespace,
+                query: params.query,
+                session_id: params.session_id,
+                max_items: cap_limit(params.max_items),
+                char_budget: params.char_budget,
+                scoring: Some(settings.scoring.clone()),
+                dormant_days: settings.attention.dormant_days,
+                now: None,
+            };
+
+            let brief = clio_core::assembly::build_resume_brief(&conn, &request)
+                .map_err(|e| format_clio_error(&e))?;
+            if params.response_format == "json" {
+                serde_json::to_string_pretty(&brief)
+                    .map_err(|e| format!("Serialisation error: {e}"))
+            } else {
+                Ok(resume_brief_md(&brief))
+            }
+        })
+        .await
+        .map_err(|e| format!("Internal error: task failed: {e}"))?
+    }
+
+    #[tool(
+        description = "Manage follow-up attention on memories (open loops). Actions: add (open \
+                       attention on new or existing memory), list, eligible (what needs attention \
+                       now, with a machine-readable reason per item), complete (with optional \
+                       evidence memory), snooze (until a time), cancel, attach_external (record a \
+                       verified Things/Linear reference), history (event audit for an item), \
+                       overview (eligible + open items, review depth and consolidation \
+                       freshness in one call). \
+                       Statuses: open, snoozed, resolved, cancelled. Completion never rewrites \
+                       the source memory."
+    )]
+    async fn memory_action(
+        &self,
+        Parameters(params): Parameters<ActionParams>,
+    ) -> Result<String, String> {
+        use clio_core::attention;
+
+        let action = params.action.to_lowercase();
+        match action.as_str() {
+            "add" => {
+                if params.content.is_none() && params.memory_id.is_none() {
+                    return Err("action 'add' requires content or memory_id".into());
+                }
+            }
+            "complete" | "snooze" | "cancel" | "attach_external" | "history" => {
+                params
+                    .action_id
+                    .as_deref()
+                    .ok_or_else(|| format!("action '{action}' requires an id"))?;
+                if action == "snooze" && params.until.is_none() {
+                    return Err("action 'snooze' requires until".into());
+                }
+                if action == "attach_external"
+                    && (params.external_system.is_none() || params.external_ref.is_none())
+                {
+                    return Err(
+                        "action 'attach_external' requires external_system and external_ref".into(),
+                    );
+                }
+            }
+            "list" | "eligible" | "overview" => {}
+            other => {
+                return Err(format!(
+                    "unknown action '{other}'. Expected add, list, eligible, overview, complete, \
+                     snooze, cancel, attach_external, or history."
+                ));
+            }
+        }
+
+        let limit = cap_limit(params.limit);
+        let conn = self.conn.clone();
+        let settings = self.settings()?;
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock().map_err(|e| format!("lock error: {e}"))?;
+            let cwd_path = params.cwd.as_deref().map(std::path::Path::new);
+            let detected_namespace = params.namespace.clone().or_else(|| {
+                if settings.context.auto_detect {
+                    params.clio_namespace.clone().or_else(|| {
+                        cwd_path
+                            .and_then(clio_core::context::detect_namespace)
+                            .map(|ctx| ctx.namespace)
+                    })
+                } else {
+                    None
+                }
+            });
+
+            match action.as_str() {
+                "add" => {
+                    conn.execute_batch("BEGIN IMMEDIATE")
+                        .map_err(|e| format!("lock error: {e}"))?;
+                    let result = (|| -> Result<attention::AttentionItem, String> {
+                        let memory_id = match (&params.memory_id, &params.content) {
+                            (Some(id), _) => id.clone(),
+                            (None, Some(text)) => {
+                                clio_core::repository::remember(
+                                    &conn,
+                                    &clio_core::models::RememberInput {
+                                        namespace: detected_namespace
+                                            .clone()
+                                            .unwrap_or_else(|| "global".into()),
+                                        kind: "task".into(),
+                                        title: None,
+                                        summary: None,
+                                        content: text.clone(),
+                                        tags: vec!["follow-up".into()],
+                                        source: None,
+                                        source_ref: None,
+                                        confidence: None,
+                                        importance: 3,
+                                        metadata: serde_json::json!({}),
+                                        valid_from: None,
+                                        valid_until: None,
+                                        upsert: false,
+                                    },
+                                    &settings,
+                                )
+                                .map_err(|e| format_clio_error(&e))?
+                                .id
+                            }
+                            (None, None) => unreachable!("validated above"),
+                        };
+                        attention::create_attention(
+                            &conn,
+                            &attention::AttentionInput {
+                                memory_id,
+                                owner: params.owner.clone(),
+                                due_at: params.due_at.clone(),
+                                remind_at: params.remind_at.clone(),
+                                trigger: params.trigger.clone(),
+                                waiting_on: params.waiting_on.clone(),
+                                completion_condition: params.completion_condition.clone(),
+                                actor: Some("agent".into()),
+                            },
+                        )
+                        .map_err(|e| format_clio_error(&e))
+                    })();
+                    match result {
+                        Ok(item) => {
+                            conn.execute_batch("COMMIT")
+                                .map_err(|e| format!("commit error: {e}"))?;
+                            serde_json::to_string_pretty(&item)
+                                .map_err(|e| format!("Serialisation error: {e}"))
+                        }
+                        Err(e) => {
+                            let _ = conn.execute_batch("ROLLBACK");
+                            Err(e)
+                        }
+                    }
+                }
+                "list" => {
+                    let items = attention::list_attention(
+                        &conn,
+                        detected_namespace.as_deref(),
+                        params.status.as_deref(),
+                        limit,
+                    )
+                    .map_err(|e| format_clio_error(&e))?;
+                    serde_json::to_string_pretty(&items)
+                        .map_err(|e| format!("Serialisation error: {e}"))
+                }
+                "overview" => {
+                    let overview = attention::overview(
+                        &conn,
+                        detected_namespace.as_deref(),
+                        params.scope.as_deref(),
+                        settings.attention.dormant_days,
+                    )
+                    .map_err(|e| format_clio_error(&e))?;
+                    serde_json::to_string_pretty(&overview)
+                        .map_err(|e| format!("Serialisation error: {e}"))
+                }
+                "eligible" => {
+                    let context = attention::EligibilityContext {
+                        namespace: detected_namespace,
+                        scope: params.scope.clone(),
+                        now: clio_core::models::now_utc(),
+                        dormant_days: settings.attention.dormant_days,
+                    };
+                    let items =
+                        attention::eligible(&conn, &context).map_err(|e| format_clio_error(&e))?;
+                    serde_json::to_string_pretty(&items)
+                        .map_err(|e| format!("Serialisation error: {e}"))
+                }
+                "complete" => {
+                    let id = params.action_id.as_deref().expect("validated present");
+                    let item = attention::complete(
+                        &conn,
+                        id,
+                        params.evidence.as_deref(),
+                        params.reason.as_deref(),
+                        Some("agent"),
+                    )
+                    .map_err(|e| format_clio_error(&e))?;
+                    serde_json::to_string_pretty(&item)
+                        .map_err(|e| format!("Serialisation error: {e}"))
+                }
+                "snooze" => {
+                    let id = params.action_id.as_deref().expect("validated present");
+                    let until = params.until.as_deref().expect("validated present");
+                    let item = attention::snooze(&conn, id, until, Some("agent"))
+                        .map_err(|e| format_clio_error(&e))?;
+                    serde_json::to_string_pretty(&item)
+                        .map_err(|e| format!("Serialisation error: {e}"))
+                }
+                "cancel" => {
+                    let id = params.action_id.as_deref().expect("validated present");
+                    let item =
+                        attention::cancel(&conn, id, params.reason.as_deref(), Some("agent"))
+                            .map_err(|e| format_clio_error(&e))?;
+                    serde_json::to_string_pretty(&item)
+                        .map_err(|e| format!("Serialisation error: {e}"))
+                }
+                "attach_external" => {
+                    let id = params.action_id.as_deref().expect("validated present");
+                    let item = attention::attach_external(
+                        &conn,
+                        id,
+                        params.external_system.as_deref().expect("validated"),
+                        params.external_ref.as_deref().expect("validated"),
+                        Some("agent"),
+                    )
+                    .map_err(|e| format_clio_error(&e))?;
+                    serde_json::to_string_pretty(&item)
+                        .map_err(|e| format!("Serialisation error: {e}"))
+                }
+                "history" => {
+                    let id = params.action_id.as_deref().expect("validated present");
+                    let item = attention::resolve_attention(&conn, id)
+                        .map_err(|e| format_clio_error(&e))?;
+                    let events = clio_core::events::list_events(&conn, &item.memory_id, limit)
+                        .map_err(|e| format_clio_error(&e))?;
+                    serde_json::to_string_pretty(&events)
+                        .map_err(|e| format!("Serialisation error: {e}"))
+                }
+                _ => unreachable!("action validated above"),
+            }
+        })
+        .await
+        .map_err(|e| format!("Internal error: task failed: {e}"))?
+    }
+
     /// Clear all in-memory caches. Individual record reads are always fresh.
     #[tool(
         description = "Clear bounded recall and namespace caches. Individual memory and embedding reads are not cached. Returns counts of entries cleared."
@@ -2026,7 +2715,18 @@ impl ServerHandler for ClioServer {
                  person-brief, decision-history, active-constraints, recent-activity, handoff, custom. \
                  The handoff preset requires `query` (a ticket id or topic) and returns a pickup \
                  brief: relevant memories, active constraints, recent receipts.\n\
-                 - memory_inbox: review queued captures (list/approve/reject/edit via `action`).\n\n\
+                 - memory_inbox: review queued captures (list/approve/reject/edit via `action`).\n\
+                 - memory_session_checkpoint: distil a session delta exactly once, keyed by \
+                 source + session_id + cursor. Retries replay the stored result; an empty \
+                 extraction is a successful checkpoint. Requires a configured capture model.\n\
+                 - memory_resume: evidence-backed pickup brief (open work, blockers, \
+                 constraints, relevant knowledge — each with why-now). Prefer it over ad hoc \
+                 recall when resuming work; it is untracked and repeat-suppressed per session.\n\
+                 - memory_action: follow-up attention on memories (open loops). When the user \
+                 states an explicit decision or commitment, store it IMMEDIATELY with \
+                 memory_remember or memory_action(add) — do not wait for end-of-session \
+                 distillation, which is only the safety net. Complete with evidence when done. \
+                 action:eligible reports what needs attention now and why.\n\n\
                  TICKET CONVENTION: when working a tracked issue, tag stored memories \
                  `ticket:<issue-id>` (lowercase). Tags are FTS-indexed, so a later handoff \
                  brief for that id finds them.\n\n\
@@ -2163,6 +2863,7 @@ fn acquire_database_lease(db_path: &std::path::Path) -> std::io::Result<File> {
     lock_path.push(".maintenance.lock");
     let file = OpenOptions::new()
         .create(true)
+        .truncate(false)
         .read(true)
         .write(true)
         .open(lock_path)?;
@@ -2275,5 +2976,464 @@ mod maintenance_lock_tests {
         );
         drop(maintenance);
         std::fs::remove_file(lock_path).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod concurrency_tests {
+    use super::*;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::mpsc::{self, Receiver, SyncSender};
+    use std::sync::{Arc, Barrier};
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+    struct BlockingBackend {
+        started: Arc<Barrier>,
+        release: Arc<Barrier>,
+    }
+
+    struct SignallingBackend {
+        started: SyncSender<()>,
+        release: Mutex<Receiver<()>>,
+    }
+
+    impl clio_core::embeddings::EmbeddingBackend for SignallingBackend {
+        fn model_name(&self) -> &str {
+            "signalling-test"
+        }
+
+        fn dimensions(&self) -> usize {
+            1
+        }
+
+        fn embed_one(&self, _text: &str) -> clio_core::error::Result<Vec<f32>> {
+            self.started.send(()).unwrap();
+            self.release.lock().unwrap().recv().unwrap();
+            Ok(vec![1.0])
+        }
+
+        fn embed_batch(&self, texts: &[String]) -> clio_core::error::Result<Vec<Vec<f32>>> {
+            Ok(vec![vec![1.0]; texts.len()])
+        }
+    }
+
+    impl clio_core::embeddings::EmbeddingBackend for BlockingBackend {
+        fn model_name(&self) -> &str {
+            "blocking-test"
+        }
+
+        fn dimensions(&self) -> usize {
+            1
+        }
+
+        fn embed_one(&self, _text: &str) -> clio_core::error::Result<Vec<f32>> {
+            self.started.wait();
+            self.release.wait();
+            Ok(vec![1.0])
+        }
+
+        fn embed_batch(&self, texts: &[String]) -> clio_core::error::Result<Vec<Vec<f32>>> {
+            Ok(vec![vec![1.0]; texts.len()])
+        }
+    }
+
+    fn capture_endpoint(
+        started: Arc<Barrier>,
+        release: Arc<Barrier>,
+        assistant_content: serde_json::Value,
+    ) -> (String, std::thread::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut request = Vec::new();
+            let mut buffer = [0_u8; 4096];
+            loop {
+                let read = stream.read(&mut buffer).unwrap();
+                request.extend_from_slice(&buffer[..read]);
+                if read == 0 || request.windows(4).any(|bytes| bytes == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            let header_end = request
+                .windows(4)
+                .position(|bytes| bytes == b"\r\n\r\n")
+                .unwrap()
+                + 4;
+            let headers = String::from_utf8_lossy(&request[..header_end]);
+            let content_length = headers
+                .lines()
+                .find_map(|line| {
+                    let (name, value) = line.split_once(':')?;
+                    name.eq_ignore_ascii_case("content-length")
+                        .then(|| value.trim().parse::<usize>().unwrap())
+                })
+                .unwrap_or(0);
+            while request.len() < header_end + content_length {
+                let read = stream.read(&mut buffer).unwrap();
+                if read == 0 {
+                    break;
+                }
+                request.extend_from_slice(&buffer[..read]);
+            }
+
+            started.wait();
+            release.wait();
+
+            let body = serde_json::json!({
+                "choices": [{"message": {"content": assistant_content.to_string()}}],
+                "usage": {
+                    "prompt_tokens": 1,
+                    "completion_tokens": 1,
+                    "completion_tokens_details": {"reasoning_tokens": 0},
+                    "prompt_tokens_details": {"cached_tokens": 0}
+                }
+            })
+            .to_string();
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            )
+            .unwrap();
+            stream.flush().unwrap();
+        });
+
+        (format!("http://{address}"), handle)
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn semantic_embedding_does_not_block_unrelated_database_reads() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let db_path = std::env::temp_dir().join(format!(
+            "clio-mcp-concurrency-{}-{unique}.db",
+            std::process::id()
+        ));
+        let conn = clio_core::db::open(&db_path).unwrap();
+        let started = Arc::new(Barrier::new(2));
+        let release = Arc::new(Barrier::new(2));
+        let server = ClioServer::new(
+            db_path.clone(),
+            conn,
+            clio_core::settings::Settings::default(),
+            Some(Box::new(BlockingBackend {
+                started: started.clone(),
+                release: release.clone(),
+            })),
+        );
+
+        let search_server = server.clone();
+        let search = tokio::spawn(async move {
+            search_server
+                .memory_search(Parameters(SearchParams {
+                    query: "concurrency".into(),
+                    namespace: None,
+                    global: true,
+                    cwd: None,
+                    clio_namespace: None,
+                    include_archived: false,
+                    limit: 10,
+                    response_format: "json".into(),
+                }))
+                .await
+        });
+
+        started.wait();
+        let namespace_result =
+            tokio::time::timeout(Duration::from_millis(500), server.memory_namespaces()).await;
+        release.wait();
+        search.await.unwrap().unwrap();
+
+        assert!(
+            namespace_result.is_ok(),
+            "provider work held the SQLite mutex and blocked an unrelated read"
+        );
+
+        drop(server);
+        std::fs::remove_file(db_path).unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn automatic_embedding_does_not_block_unrelated_database_reads() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let db_path = std::env::temp_dir().join(format!(
+            "clio-mcp-auto-embed-{}-{unique}.db",
+            std::process::id()
+        ));
+        let conn = clio_core::db::open(&db_path).unwrap();
+        let started = Arc::new(Barrier::new(2));
+        let release = Arc::new(Barrier::new(2));
+        let server = ClioServer::new(
+            db_path.clone(),
+            conn,
+            clio_core::settings::Settings::default(),
+            Some(Box::new(BlockingBackend {
+                started: started.clone(),
+                release: release.clone(),
+            })),
+        );
+
+        let remember_server = server.clone();
+        let remember = tokio::spawn(async move {
+            remember_server
+                .memory_remember(Parameters(RememberParams {
+                    namespace: Some("global".into()),
+                    cwd: None,
+                    clio_namespace: None,
+                    kind: "fact".into(),
+                    title: Some("Concurrency".into()),
+                    summary: None,
+                    content: "Provider work should not block SQLite reads.".into(),
+                    tags: Vec::new(),
+                    source: None,
+                    source_ref: None,
+                    confidence: None,
+                    importance: 3,
+                    metadata: serde_json::json!({}),
+                    valid_from: None,
+                    valid_until: None,
+                    upsert: false,
+                }))
+                .await
+        });
+
+        started.wait();
+        let namespace_result =
+            tokio::time::timeout(Duration::from_millis(500), server.memory_namespaces()).await;
+        release.wait();
+        remember.await.unwrap().unwrap();
+
+        assert!(
+            namespace_result.is_ok(),
+            "automatic embedding held the SQLite mutex and blocked an unrelated read"
+        );
+
+        drop(server);
+        std::fs::remove_file(db_path).unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn capture_provider_does_not_block_unrelated_database_reads() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let db_path = std::env::temp_dir().join(format!(
+            "clio-mcp-capture-{}-{unique}.db",
+            std::process::id()
+        ));
+        let conn = clio_core::db::open(&db_path).unwrap();
+        let started = Arc::new(Barrier::new(2));
+        let release = Arc::new(Barrier::new(2));
+        let (base_url, endpoint) = capture_endpoint(
+            started.clone(),
+            release.clone(),
+            serde_json::json!({
+                "kind": "fact",
+                "title": "Concurrency",
+                "summary": "Provider calls do not hold the database lock.",
+                "tags": ["mcp"],
+                "namespace": "global",
+                "importance": 3,
+                "confidence": 1.0
+            }),
+        );
+        let mut settings = clio_core::settings::Settings::default();
+        settings.auto_embed = false;
+        settings.capture = clio_core::settings::CaptureConfig {
+            enabled: true,
+            api_key: Some("test-key".into()),
+            base_url,
+            model: "gpt-4.1".into(),
+            review_threshold: None,
+        };
+        let server = ClioServer::new(db_path.clone(), conn, settings, None);
+
+        let capture_server = server.clone();
+        let capture = tokio::spawn(async move {
+            capture_server
+                .memory_capture(Parameters(CaptureParams {
+                    text: "Remember the concurrency contract.".into(),
+                    namespace: Some("global".into()),
+                    cwd: None,
+                    clio_namespace: None,
+                }))
+                .await
+        });
+
+        started.wait();
+        let namespace_result =
+            tokio::time::timeout(Duration::from_millis(500), server.memory_namespaces()).await;
+        release.wait();
+        capture.await.unwrap().unwrap();
+        endpoint.join().unwrap();
+
+        assert!(
+            namespace_result.is_ok(),
+            "capture provider work held the SQLite mutex and blocked an unrelated read"
+        );
+
+        drop(server);
+        std::fs::remove_file(db_path).unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn capture_auto_embedding_uses_cached_backend_without_blocking_database_reads() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let db_path = std::env::temp_dir().join(format!(
+            "clio-mcp-capture-embedding-{}-{unique}.db",
+            std::process::id()
+        ));
+        let conn = clio_core::db::open(&db_path).unwrap();
+        let classification_started = Arc::new(Barrier::new(2));
+        let classification_release = Arc::new(Barrier::new(2));
+        let (base_url, endpoint) = capture_endpoint(
+            classification_started.clone(),
+            classification_release.clone(),
+            serde_json::json!({
+                "kind": "fact",
+                "title": "Capture embedding",
+                "summary": "Capture reuses the MCP embedding backend.",
+                "tags": ["mcp"],
+                "namespace": "global",
+                "importance": 3,
+                "confidence": 1.0
+            }),
+        );
+        let mut settings = clio_core::settings::Settings::default();
+        settings.auto_embed = true;
+        settings.capture = clio_core::settings::CaptureConfig {
+            enabled: true,
+            api_key: Some("test-key".into()),
+            base_url,
+            model: "gpt-4.1".into(),
+            review_threshold: None,
+        };
+        let (embedding_started_tx, embedding_started_rx) = mpsc::sync_channel(1);
+        let (embedding_release_tx, embedding_release_rx) = mpsc::sync_channel(1);
+        let server = ClioServer::new(
+            db_path.clone(),
+            conn,
+            settings,
+            Some(Box::new(SignallingBackend {
+                started: embedding_started_tx,
+                release: Mutex::new(embedding_release_rx),
+            })),
+        );
+
+        let capture_server = server.clone();
+        let capture = tokio::spawn(async move {
+            capture_server
+                .memory_capture(Parameters(CaptureParams {
+                    text: "Remember that capture embedding is non-blocking.".into(),
+                    namespace: Some("global".into()),
+                    cwd: None,
+                    clio_namespace: None,
+                }))
+                .await
+        });
+
+        classification_started.wait();
+        classification_release.wait();
+        let embedding_started = tokio::task::spawn_blocking(move || {
+            embedding_started_rx.recv_timeout(Duration::from_secs(1))
+        })
+        .await
+        .unwrap();
+        if embedding_started.is_ok() {
+            let namespace_result =
+                tokio::time::timeout(Duration::from_millis(500), server.memory_namespaces()).await;
+            embedding_release_tx.send(()).unwrap();
+            assert!(
+                namespace_result.is_ok(),
+                "capture auto-embedding held the SQLite mutex and blocked an unrelated read"
+            );
+        }
+
+        capture.await.unwrap().unwrap();
+        endpoint.join().unwrap();
+        assert!(
+            embedding_started.is_ok(),
+            "capture did not reuse the MCP server's cached embedding backend"
+        );
+
+        drop(server);
+        std::fs::remove_file(db_path).unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn checkpoint_provider_does_not_block_unrelated_database_reads() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let db_path = std::env::temp_dir().join(format!(
+            "clio-mcp-checkpoint-{}-{unique}.db",
+            std::process::id()
+        ));
+        let conn = clio_core::db::open(&db_path).unwrap();
+        let started = Arc::new(Barrier::new(2));
+        let release = Arc::new(Barrier::new(2));
+        let (base_url, endpoint) = capture_endpoint(
+            started.clone(),
+            release.clone(),
+            serde_json::json!({"memories": []}),
+        );
+        let mut settings = clio_core::settings::Settings::default();
+        settings.auto_embed = false;
+        settings.capture = clio_core::settings::CaptureConfig {
+            enabled: true,
+            api_key: Some("test-key".into()),
+            base_url,
+            model: "gpt-4.1".into(),
+            review_threshold: None,
+        };
+        let server = ClioServer::new(db_path.clone(), conn, settings, None);
+
+        let checkpoint_server = server.clone();
+        let checkpoint = tokio::spawn(async move {
+            checkpoint_server
+                .memory_session_checkpoint(Parameters(SessionCheckpointParams {
+                    text: "No durable changes in this session.".into(),
+                    source: "test-session".into(),
+                    session_id: "session-1".into(),
+                    cursor: 1,
+                    namespace: Some("global".into()),
+                    cwd: None,
+                    branch: None,
+                    ticket: None,
+                    clio_namespace: None,
+                }))
+                .await
+        });
+
+        started.wait();
+        let namespace_result =
+            tokio::time::timeout(Duration::from_millis(500), server.memory_namespaces()).await;
+        release.wait();
+        checkpoint.await.unwrap().unwrap();
+        endpoint.join().unwrap();
+
+        assert!(
+            namespace_result.is_ok(),
+            "checkpoint provider work held the SQLite mutex and blocked an unrelated read"
+        );
+
+        drop(server);
+        std::fs::remove_file(db_path).unwrap();
     }
 }

@@ -1,7 +1,9 @@
 pub mod assembly;
+pub mod attention;
 pub mod backup;
 pub mod cache;
 pub mod capture;
+pub mod checkpoint;
 pub mod cleanup;
 pub mod config;
 pub mod consolidate;
@@ -9,13 +11,18 @@ pub mod context;
 pub mod daemon;
 pub mod db;
 pub mod deduplication;
+pub mod delivery;
 pub mod embeddings;
 pub mod error;
+pub mod events;
 pub mod export;
 pub mod integrity;
 pub mod migrate;
 pub mod migrations;
 pub mod models;
+pub mod occurrences;
+#[cfg(feature = "capture")]
+mod openai;
 pub mod repository;
 pub mod review;
 pub mod scoring;

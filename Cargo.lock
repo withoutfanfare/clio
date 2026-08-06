@@ -465,6 +465,7 @@ name = "clio-core"
 version = "0.1.0"
 dependencies = [
  "fastembed",
+ "libc",
  "moka",
  "reqwest 0.12.28",
  "rusqlite",
@@ -526,6 +527,7 @@ dependencies = [
  "tauri-build",
  "tauri-plugin-dialog",
  "tauri-plugin-global-shortcut",
+ "tempfile",
  "thiserror 2.0.18",
  "tokio",
  "tracing",

@@ -80,12 +80,24 @@ Figures cover the `memory_embeddings` BLOB column only; they exclude index overh
 
 ## MCP Limits
 
-Defined in `crates/clio-mcp/src/main.rs`. Applied to all query tools (`memory_recall`, `memory_search`, `memory_list`).
+Defined in `crates/clio-mcp/src/main.rs`. Applied wherever an MCP input exposes
+`limit` or `max_items`, including recall/recent, semantic search, activity,
+suggestions, context, inbox, resume and attention queries.
 
 | Limit | Value | Notes |
 |---|---|---|
 | `MAX_LIMIT` | 500 | Hard cap; all caller-supplied limits are silently clamped to this value |
 | Default limit | 10 | Used when the caller omits the `limit` parameter |
+
+---
+
+## Remote Bridge Limits
+
+Defined in `crates/clio-cli/src/remote_mcp.rs`.
+
+| Limit | Value | Notes |
+|---|---:|---|
+| Maximum newline-delimited MCP request | 8 MiB (8,388,608 bytes) | Includes JSON-RPC framing and newline, sized for the worst-case JSON-escaped 1 MiB payload; a larger line closes the bridge input with an invalid-data error instead of being buffered without bound |
 
 ---
 
@@ -99,6 +111,10 @@ Defined in `crates/clio-daemon/src/watcher.rs`.
 |---|---|---|
 | Maximum inbox file size | 10 MiB (10,485,760 bytes) | Files exceeding this are moved to `_processed/` without being stored |
 
+Empty and oversized files are deliberate rejections. Other files move to
+`_processed/` only after capture/queueing or fallback note storage succeeds; a
+database write failure leaves the source in place for retry.
+
 ### Auto-Link Inference
 
 Defaults defined in `crates/clio-core/src/settings.rs`. All four values are configurable via the `daemon.auto_link` settings block.
@@ -107,7 +123,7 @@ Defaults defined in `crates/clio-core/src/settings.rs`. All four values are conf
 |---|---|---|
 | Batch size | 50 memories per pass | `daemon.auto_link.batch_size` |
 | Interval | 3,600 seconds (1 hour) | `daemon.auto_link.interval_secs` |
-| Max links per memory per pass | 3 | `daemon.auto_link.max_links_per_memory` |
+| Max auto-link degree per memory (total, both directions, cumulative across passes) | 3 | `daemon.auto_link.max_links_per_memory` |
 | Similarity threshold | 0.80 | `daemon.auto_link.threshold` |
 
 Auto-link inference is **disabled by default** (`daemon.auto_link.enabled = false`).

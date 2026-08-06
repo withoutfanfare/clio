@@ -59,7 +59,8 @@ Clio is a local-first memory backbone for AI tooling. One Rust core, multiple ac
 The AI client launches `clio remote-mcp` as its stdio MCP command. The local
 bridge detects the project namespace from each tool call's `cwd`, then forwards
 the request over SSH. Explicit namespaces and `global: true` still take
-precedence.
+precedence. Each newline-delimited request is capped at 2 MiB so a malformed
+client cannot make the bridge buffer an unbounded line.
 
 The server owns `clio-mcp`, its settings, and the single SQLite database. SSH
 uses non-interactive key authentication, so Clio does not expose a network
@@ -134,12 +135,17 @@ Modules:
 - `embeddings.rs` — pluggable embedding backends (local fastembed, OpenAI), cosine similarity, semantic recall, `auto_link_batch`
 - `settings.rs` — load/save `clio-settings.json` for embedding backend, auto-embed toggle, capture config (incl. `review_threshold`), context detection config, daemon config, shared SSH route, `ScoringConfig`, and `AutoLinkConfig`
 - `capture.rs` — LLM-based capture pipeline: `classify()`, `parse_classification()`, `capture()`; gated behind the `capture` feature flag
+- `checkpoint.rs` — exact-once session checkpoints keyed by `(source, session_id, cursor)`: preflight lookup, in-transaction recheck, atomic atom + review + checkpoint storage, stored-result replay; model extraction and embedding stay outside the write transaction
+- `attention.rs` — narrow follow-up lifecycle (`open`/`snoozed`/`resolved`/`cancelled`): idempotent creation, guarded transitions with audit events, evidence-backed completion via `resolved_by` links, pure-read eligibility with machine-readable reasons and once-per-scope surfacing
+- `events.rs` — append-only `memory_events` ledger with a narrow validated vocabulary and idempotency keys; state-changing events share the parent transaction, observational events are fire-and-forget
+- `delivery.rs` — verified external-handoff outbox (Things/Linear): stable delivery keys, attempt history, read-back-proved confirmation, retryable failure and stable-ID completion mirroring; destination API code lives in gated Tauri adapters
+- `occurrences.rs` — append-only sightings of canonical memories (capture dedup provenance), occurrence transfer on merge, and the per-namespace mutation generation that watermarks derived views
 - `migrate.rs` — cross-tool memory importers for Claude and ChatGPT exports; deterministic content-hash `source_ref` for idempotent re-import; optional `--classify` path via capture pipeline
 - `context.rs` — automatic namespace detection from cwd: walks up the directory tree checking `.clio-namespace` file → `.git` → `Cargo.toml`/`package.json`; `detect_namespace()`, `resolve_namespace()`, `resolve_namespace_with_context()`, `init_namespace()`
 - `stats.rs` — analytics queries: `memory_stats()` (counts, namespace/kind breakdown, weekly timeline, tag frequency, link density, embedding coverage), `tag_frequency()`, `timeline()`, `recent_activity()` (create/update/archive event feed)
 - `daemon.rs` — daemon configuration, lifecycle, and health types: `DaemonConfig`, `AutoLinkConfig`, `DaemonStatus`, `DaemonHealth`, `HealthCheck`, `HealthStatus`, `PidFile`; platform path defaults; health check functions for database, embeddings, and capture
 - `review.rs` — review queue for low-confidence captures: `ReviewItem`, `ReviewInput`, `ReviewEdits`, `ReviewStats`; `queue_for_review()`, `list_pending()`, `get_review()`, `approve_review()`, `reject_review()`, `edit_review()`, `review_stats()`
-- `assembly.rs` — context assembly for agent consumption: `ContextPreset` (6 variants), `ContextRequest`, `ContextSection`, `ContextBrief`; `build_context()` combines kind-filtered and recent memories into sectioned briefs
+- `assembly.rs` — context assembly for agent consumption: `ContextPreset` (6 variants), `ContextRequest`, `ContextSection`, `ContextBrief`; `build_context()` combines kind-filtered and recent memories into sectioned briefs. Also the resume policy: `ResumeRequest`/`ResumeBrief` and `build_resume_brief()` — eligible open work with reasons, blocked items, constraints with a global prior, recent decisions, query-relevant knowledge and activity, budget-allocated with critical-section reservations, all reads untracked
 - `validate.rs` — input validation helpers (private to core)
 
 Must NOT depend on: Tauri UI code, MCP-specific types, CLI formatting.
@@ -156,7 +162,13 @@ Must NOT: open ad hoc SQL queries, implement its own validation rules.
 
 Thin MCP adapter. Maps MCP payloads to core input types.
 
-Tools: `memory_remember`, `memory_update`, `memory_recall`, `memory_get`, `memory_recent`, `memory_link`, `memory_archive`, `memory_unarchive`, `memory_delete`, `memory_move`, `memory_namespaces`, `memory_get_links`, `memory_capture`, `memory_search`, `memory_stats`, `memory_activity`, `memory_suggest_links`, `memory_context`, `memory_inbox`, `memory_cache_clear`
+Tools: `memory_remember`, `memory_update`, `memory_recall`, `memory_get`, `memory_recent`, `memory_link`, `memory_archive`, `memory_unarchive`, `memory_delete`, `memory_move`, `memory_namespaces`, `memory_get_links`, `memory_capture`, `memory_session_checkpoint`, `memory_action`, `memory_resume`, `memory_search`, `memory_stats`, `memory_activity`, `memory_suggest_links`, `memory_context`, `memory_inbox`, `memory_cache_clear`
+
+The process reuses one SQLite connection, a bounded namespace cache, cached
+settings and one embedding backend. Semantic search, capture, checkpoint and
+direct-write embedding provider phases run on blocking workers without holding
+the SQLite mutex; database phases remain serialised through the shared
+connection. Embedding configuration changes require a process restart.
 
 Must NOT: duplicate persistence logic, invent alternate search semantics.
 
@@ -172,6 +184,12 @@ Responsibilities:
 - Graceful SIGTERM/SIGINT shutdown with PID file and socket cleanup
 - Health checks for database, embeddings, and capture backends
 - Auto-link inference background task — periodically scans recent memories and creates `auto:relates_to` links between semantically similar memories above a configurable threshold
+- Periodic local backup and integrity schedulers, each disabled when its interval is zero
+
+The watcher acknowledges a file by moving it to `_processed/` only after a
+durable capture/review outcome or fallback note. Failed storage leaves the file
+in place for retry. The retained `http_port` settings field is not implemented;
+the daemon exposes only its owner-only Unix control socket.
 
 Must NOT: become the only way to use Clio, expose network listeners outside localhost, implement storage semantics outside the core.
 
@@ -185,13 +203,14 @@ Desktop UI crate. Vue 3 frontend with Tauri 2 backend for browse/edit/archive/in
 - `stats.rs` — memory statistics and analytics
 - `namespaces.rs` — namespace listing
 - `clipboard.rs` — native clipboard copy (osascript with pbcopy fallback)
+- `settings.rs` — non-secret capture preferences and model changes
 
 **Frontend** (`ui/src/`):
 - Vue 3 + Pinia (state) + Vue Router, built with Vite
 - Components: AppBar, MemoryPage, MemoryDrawer, ComposeArea, CommandPalette, SidePanel, DateGroup, TagInput, LinkList, KindSelector
 - Composables: useAutoSave, useDebounce, useGroupedMemories, useKeyboard
 - Store: `stores/memories.ts` — filtering, sorting, grouping with localStorage persistence
-- Views: HomeView (memory list/grid), StatsView
+- Views: HomeView (memory list/grid), StatsView, SettingsView
 
 ## Storage Engine
 

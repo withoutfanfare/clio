@@ -184,6 +184,47 @@ MCP server cannot be activated from different releases. The first managed
 release also preserves any previous binaries and ONNX Runtime in a timestamped
 legacy directory.
 
+### Capture model changes
+
+From a Mac configured to use Atlas, change only the shared capture model with:
+
+```sh
+clio settings show-capture
+clio settings set-capture-model gpt-5.6-luna
+```
+
+The command preserves Atlas's API key, endpoint and review threshold. The
+benchmarked GPT-5.6 Luna and Terra models use `reasoning_effort: none` and omit
+`temperature`; GPT-4.1, GPT-4o and GPT-4o mini use their supported temperature
+and token-limit parameters. Other recognised GPT-5 family models keep
+`max_completion_tokens` without assuming support for `reasoning_effort: none`.
+Genuinely unrecognised compatible models receive only common request fields
+until their capabilities are added explicitly.
+
+The signed desktop app provides the same switch under **Settings > Capture
+model**. It requires the persisted route created by `clio settings use-remote`;
+environment-only Tauri development routes remain read/write memory connections
+but do not authorise operational settings changes. Other MCP processes reload
+the capture model within 30 seconds.
+
+Compare models without changing the shared setting by running the same text
+through each model:
+
+```sh
+for model in gpt-4.1 gpt-5.6-luna gpt-5.6-terra; do
+  clio --json capture "Decision: use Atlas as Clio's canonical backend." \
+    --dry-run --model "$model" --metrics
+done
+
+clio --json distill - --dry-run --model gpt-5.6-luna --metrics \
+  < session-digest.txt
+```
+
+Dry runs call the provider but never write a memory. Keep the input and rubric
+unchanged between runs, and record model, latency, input/output/reasoning tokens,
+classification and confidence before changing the shared setting. Compare the
+result with the [capture model benchmark baseline](capture-model-benchmark.md).
+
 `status` reports the resolved binary paths and SHA-256 hashes. It also counts
 running `clio-mcp` processes and identifies processes still using an older or
 deleted executable.
@@ -303,6 +344,12 @@ Install the daemon only on a Mac that needs local inbox watching, local
 auto-linking or local maintenance. A daemon always uses local storage; keep it
 disabled on a Mac whose normal tooling should use Atlas.
 
+Inbox acknowledgement is durable: non-empty files within the 10 MiB limit move
+to `_processed/` only after capture/queueing or fallback note storage succeeds.
+Failed database writes leave the source file in place for retry. Daemon status
+reports enabled backup and integrity schedulers separately. The retained
+`http_port` setting is reserved and starts no listener.
+
 With `--with-daemon`, the installer reads an existing LaunchAgent to preserve
 its executable and database paths. It uses `launchctl bootout` before
 replacement, then `launchctl bootstrap` and Clio health checks. If the new
@@ -420,6 +467,52 @@ Complete this after an Atlas or client release:
 - [ ] The optional daemon, if installed, reports healthy after reload.
 - [ ] The optional app, if installed, passes `codesign --verify --deep --strict`.
 - [ ] No background build, development server or unexpected service remains.
+
+## Scheduled work on Atlas and its liveness signal
+
+Two cron entries run as `ubuntu`. Both are hand-installed and are **not yet managed
+by Ansible**, which matters because Ansible already owns part of this crontab — see
+roadmap item CLIO-OPS-003.
+
+| When | Command | Log |
+|---|---|---|
+| `:17` hourly | `clio auto-link` | `~/.local/share/clio/auto-link.log` |
+| `:47` hourly | `clio-healthcheck` | `~/.local/share/clio/healthcheck.log` |
+
+The canonical entries, with binary paths adjusted to the install locations:
+
+```cron
+17 * * * * $HOME/.cargo/bin/clio auto-link >> $HOME/.local/share/clio/auto-link.log 2>&1
+47 * * * * $HOME/bin/clio-healthcheck >> $HOME/.local/share/clio/healthcheck.log 2>&1
+```
+
+The `2>&1` on the auto-link entry is load-bearing: the CLI writes its summary and
+warnings to stderr, and the healthcheck decides "did the last run finish cleanly?"
+by requiring the summary line at the end of that log. Run it plain, not `--json`.
+`scripts/clio-healthcheck-selftest.sh` exercises the healthcheck's alert state
+machine (delivery failure, retry, dedup, recovery) against a local fake webhook and
+verifies that provider/log details are not copied into Slack alerts.
+
+Auto-linking runs from the CLI rather than the daemon, so `atlas-release.sh` keeps it
+current: a separately installed daemon would drift out of step, which is how link
+inference came to be dead for roughly a week in July 2026 without anyone noticing.
+
+`clio-healthcheck` exists because of that incident. It checks that auto-link has run
+recently, that **its own cron entry still exists**, that SQLite integrity passes, that
+live-memory and link counts are non-zero, and — where a capture spool is present — that
+nothing has dead-lettered and the queue is draining.
+
+It is silent when healthy and alerts to Slack **only on a state change**, so a
+persistent fault does not repeat hourly and recovery is reported once. The webhook
+lives in `~/.config/clio/alerting.env` at mode `0600` and is read by the script; it is
+never passed on a command line. Send a deliberate test with:
+
+```sh
+clio-healthcheck --test
+```
+
+Alerts currently go to a shared alerts channel borrowed from another application.
+CLIO-OPS-006 covers moving Clio onto its own channel.
 
 ## Backup gap
 

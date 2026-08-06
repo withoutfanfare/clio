@@ -37,6 +37,7 @@ pub fn generate_title(content: &str) -> String {
     }
 }
 
+#[cfg(feature = "capture")]
 const TITLE_SYSTEM_PROMPT: &str = r#"You generate concise, descriptive titles for knowledge base entries. Given the content of a memory, respond with ONLY a short title (max 80 characters). No quotes, no punctuation at the end, no explanation — just the title text."#;
 
 /// Generate a title using an OpenAI-compatible LLM.
@@ -88,15 +89,7 @@ async fn generate_title_ai_async(
     // Limit content sent to the LLM to avoid excessive token usage.
     let truncated_content: String = content.chars().take(2000).collect();
 
-    let body = serde_json::json!({
-        "model": model,
-        "temperature": 0.3,
-        "max_tokens": 60,
-        "messages": [
-            { "role": "system", "content": TITLE_SYSTEM_PROMPT },
-            { "role": "user", "content": truncated_content }
-        ]
-    });
+    let body = title_request_body(model, &truncated_content);
 
     let client = reqwest::Client::new();
     let response = client
@@ -138,6 +131,19 @@ async fn generate_title_ai_async(
     Ok(cleaned)
 }
 
+#[cfg(feature = "capture")]
+fn title_request_body(model: &str, content: &str) -> serde_json::Value {
+    let mut body = serde_json::json!({
+        "model": model,
+        "messages": [
+            { "role": "system", "content": TITLE_SYSTEM_PROMPT },
+            { "role": "user", "content": content }
+        ]
+    });
+    crate::openai::apply_chat_parameters(&mut body, model, 0.3, Some(60));
+    body
+}
+
 /// Stub when capture feature is not enabled.
 #[cfg(not(feature = "capture"))]
 pub fn generate_title_ai(_content: &str, _settings: &Settings) -> Option<String> {
@@ -166,6 +172,21 @@ pub fn resolve_title(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "capture")]
+    #[test]
+    fn title_request_uses_parameters_supported_by_each_model_family() {
+        let classic = title_request_body("gpt-4.1", "content");
+        assert_eq!(classic["temperature"], 0.3);
+        assert_eq!(classic["max_tokens"], 60);
+        assert!(classic.get("reasoning_effort").is_none());
+
+        let reasoning = title_request_body("gpt-5.6-luna", "content");
+        assert!(reasoning.get("temperature").is_none());
+        assert!(reasoning.get("max_tokens").is_none());
+        assert_eq!(reasoning["reasoning_effort"], "none");
+        assert_eq!(reasoning["max_completion_tokens"], 60);
+    }
 
     #[test]
     fn generate_title_from_plain_text() {
