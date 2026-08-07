@@ -1,0 +1,13 @@
+Project: notes | Branch: main
+Files touched (1): guides/deployment.md
+
+---
+
+## User
+Before you write any more docs for me: I keep having to fix the same things. From now on, in every project, write documentation in British English — organise, colour, behaviour — and always lead with the answer or the action, with the detail underneath. No American spellings anywhere.
+
+## Assistant
+Understood — that applies to all documentation I write for you across every project: British English spelling throughout, and answer-first structure with supporting detail below. I've rewritten guides/deployment.md in that style now: the rollback command is the first line, the explanation follows.
+
+## User
+Perfect, that's exactly the shape I want everywhere.

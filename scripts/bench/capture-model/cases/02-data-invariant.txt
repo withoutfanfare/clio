@@ -1,0 +1,21 @@
+Project: scooda | Branch: fix/refund-mismatch
+Commits made this session:
+- fix(orders): recalculate order total from line items inside the trigger
+
+---
+
+## User
+Refunds are failing for some orders with "amount exceeds order total". Can you find out why?
+
+## Assistant
+Found it. The `orders.total_pence` column must always equal the sum of `order_lines.line_total_pence` for that order — the refund service refunds against `orders.total_pence`, while the payment provider was charged from the summed lines. A promo-code path updated a line after checkout without recalculating the order total, so the two diverged by the discount amount, and any full refund then exceeded the recorded total.
+
+## Tool result
+SELECT o.id FROM orders o JOIN (SELECT order_id, SUM(line_total_pence) s FROM order_lines GROUP BY order_id) l ON l.order_id = o.id WHERE o.total_pence <> l.s;
+-- 47 rows
+
+## User
+So the rule is the total must never drift from the lines. Make sure that can't happen again.
+
+## Assistant
+Done. The BEFORE UPDATE trigger on order_lines now recalculates orders.total_pence in the same transaction, and I've backfilled the 47 divergent orders. This is a hard invariant: any code path that writes order_lines without going through the trigger (bulk COPY, manual SQL in a migration) will silently break refunds again — refunds trust orders.total_pence.

@@ -146,3 +146,46 @@ whether a model over- or under-uses `"global"`, since that is the one namespace
 decision the model still controls.
 
 This does not change the GPT-4.1 decision, which rests on cost at volume.
+
+## Rerun with cheap candidates (7 August 2026)
+
+The original five cases were never preserved, so this rerun reconstructed them
+from the descriptions above as checked-in fixtures: `scripts/bench/capture-model/`
+now holds the cases, an automated judge, and a runner (`run.py`) — a rerun is one
+command against a throwaway DB. Comparisons within this table are like-for-like;
+comparison against the July table is indicative only, because the case text
+differs. This run also used the current distillation prompt, which since today
+states a hard limit of 5 memories plus the receipt.
+
+Two repeats per case per model, `--dry-run --metrics`, local binary, neutral
+working directory (so `global` promotion — the one namespace decision the model
+still controls — is what gets graded):
+
+| Model | Calls | Mean latency | Input (cached) | Output (reasoning) | Est. cost | Failed checks |
+|---|---:|---:|---:|---:|---:|---|
+| GPT-4.1 | 10 | 5,394 ms | 14,312 (6,272) | 4,830 (0) | $0.0579 | routine session → 1 receipt (both repeats) |
+| GPT-4.1 mini | 10 | 10,970 ms | 14,312 (4,992) | 5,461 (0) | $0.0130 | routine session → 2 and 4 status facts |
+| GPT-4o mini | 10 | 6,130 ms | 14,312 (11,776) | 4,107 (0) | $0.0037 | routine session → 2 status facts (both); cross-project preference not promoted to `global` once |
+| GPT-5 mini | 10 | 17,289 ms | 14,302 (6,528) | 18,223 (11,008) | $0.0386 | routine session → 3 memories (both repeats) |
+
+What mattered:
+
+- **Every model passed the July-critical checks**: project memories stayed
+  project-scoped, the injected instruction was ignored by all, exactly one
+  receipt on the substantive session, and the new 6-memory cap was respected.
+- **GPT-4o mini failed a `global`-promotion once** — the one namespace decision
+  the 30 July analysis says still matters. Its 16× saving comes with that risk.
+- **GPT-5 mini is a poor fit for this workload**: default-effort reasoning
+  burned 11k hidden tokens across 10 calls, leaving only a ~1.5× saving at 3×
+  the latency.
+- **The routine session separates discipline, not correctness**: GPT-4.1 emitted
+  a single defensible receipt; the minis added "tests are green"-style status
+  facts — transient state the prompt forbids. The hard cap bounds the blast
+  radius, and `is_session_noise` could be extended to title patterns like
+  "… status" if this shows up in live traffic.
+
+**Recommendation (pending operator approval): GPT-4.1 mini** — 4.5× cheaper
+than the incumbent on identical input, clean on scoping and injection in both
+repeats, with routine-session noise as the known, bounded weakness. GPT-4o mini
+is the aggressive option (16×) only if an occasional missed `global` promotion
+is acceptable. Do not use GPT-5 mini for capture.
