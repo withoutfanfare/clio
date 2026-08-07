@@ -852,6 +852,9 @@ Stop-hook capture retries after a lost response, a provider 429 or an outage. Wi
 
 - `text`, `source` and `session_id` are required and must not be empty
 - `cursor` must be zero or positive
+- an unseen cursor older than the latest committed cursor for the session is
+  rejected; operator dead-letter recovery is available only through the CLI's
+  explicit `checkpoint --recover-stale` flag
 
 ### Behaviour
 

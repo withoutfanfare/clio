@@ -28,7 +28,7 @@ pub(crate) fn run(
         remote_db_override = remote_db.is_some(),
         "starting SSH bridge"
     );
-    let mut child = ssh_command(host)
+    let mut child = ssh_command(host, false)
         .arg(remote_command(remote_binary, remote_db))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -80,9 +80,10 @@ pub(crate) fn run_cli(
     config: &RemoteConfig,
     args: &[OsString],
     namespace: Option<&str>,
+    cwd: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let status = ssh_command(&config.host)
-        .arg(remote_cli_command(config, args, namespace))
+    let status = ssh_command(&config.host, true)
+        .arg(remote_cli_command(config, args, namespace, cwd))
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
@@ -95,24 +96,34 @@ pub(crate) fn run_cli(
     Ok(())
 }
 
-fn ssh_command(host: &str) -> Command {
+fn ssh_command(host: &str, share_connection: bool) -> Command {
     let mut command = Command::new("ssh");
-    command
-        .args([
-            "-T",
+    command.args([
+        "-T",
+        "-o",
+        "BatchMode=yes",
+        "-o",
+        "ConnectTimeout=10",
+        "-o",
+        "ServerAliveInterval=15",
+        "-o",
+        "ServerAliveCountMax=3",
+        "-o",
+        "ClearAllForwardings=yes",
+    ]);
+    // Persistent MCP clients would otherwise consume every channel on the
+    // multiplexed connection used by short-lived CLI and hook commands.
+    if !share_connection {
+        command.args([
             "-o",
-            "BatchMode=yes",
+            "ControlMaster=no",
             "-o",
-            "ConnectTimeout=10",
+            "ControlPath=none",
             "-o",
-            "ServerAliveInterval=15",
-            "-o",
-            "ServerAliveCountMax=3",
-            "-o",
-            "ClearAllForwardings=yes",
-            "--",
-        ])
-        .arg(host);
+            "ControlPersist=no",
+        ]);
+    }
+    command.args(["--"]).arg(host);
     command
 }
 
@@ -222,7 +233,12 @@ fn remote_command(remote_binary: &str, remote_db: Option<&str>) -> String {
     }
 }
 
-fn remote_cli_command(config: &RemoteConfig, args: &[OsString], namespace: Option<&str>) -> String {
+fn remote_cli_command(
+    config: &RemoteConfig,
+    args: &[OsString],
+    namespace: Option<&str>,
+    cwd: Option<&str>,
+) -> String {
     let mut parts = vec![
         "env".to_string(),
         format!("CLIO_DB_PATH={}", shell_quote(&config.db_path)),
@@ -230,11 +246,8 @@ fn remote_cli_command(config: &RemoteConfig, args: &[OsString], namespace: Optio
     if let Some(namespace) = namespace {
         parts.push(format!("CLIO_CONTEXT_NAMESPACE={}", shell_quote(namespace)));
     }
-    if let Ok(cwd) = std::env::current_dir() {
-        parts.push(format!(
-            "CLIO_CONTEXT_CWD={}",
-            shell_quote(&cwd.to_string_lossy())
-        ));
+    if let Some(cwd) = cwd {
+        parts.push(format!("CLIO_CONTEXT_CWD={}", shell_quote(cwd)));
     }
     parts.push(shell_quote(&config.cli_binary));
     parts.extend(
@@ -263,6 +276,23 @@ mod tests {
         fs::create_dir(&path).unwrap();
         fs::write(path.join(".clio-namespace"), "project:bridge-test\n").unwrap();
         path
+    }
+
+    #[test]
+    fn long_lived_mcp_bridge_uses_a_dedicated_ssh_connection() {
+        let dedicated: Vec<_> = ssh_command("atlas", false)
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        let shared: Vec<_> = ssh_command("atlas", true)
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+
+        for option in ["ControlMaster=no", "ControlPath=none", "ControlPersist=no"] {
+            assert!(dedicated.iter().any(|arg| arg == option));
+            assert!(!shared.iter().any(|arg| arg == option));
+        }
     }
 
     #[test]
@@ -390,11 +420,13 @@ mod tests {
         ];
 
         assert_eq!(
-            remote_cli_command(&config, &args, Some("project:clio")),
-            format!(
-                "env CLIO_DB_PATH='/srv/memory db' CLIO_CONTEXT_NAMESPACE='project:clio' CLIO_CONTEXT_CWD={} '/srv/clio'\\''s bin' 'recall' '--query' 'Danny'\\''s notes'",
-                shell_quote(&std::env::current_dir().unwrap().to_string_lossy())
-            )
+            remote_cli_command(
+                &config,
+                &args,
+                Some("project:clio"),
+                Some("/deleted/worktree"),
+            ),
+            "env CLIO_DB_PATH='/srv/memory db' CLIO_CONTEXT_NAMESPACE='project:clio' CLIO_CONTEXT_CWD='/deleted/worktree' '/srv/clio'\\''s bin' 'recall' '--query' 'Danny'\\''s notes'"
         );
     }
 }

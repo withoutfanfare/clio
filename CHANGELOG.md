@@ -51,6 +51,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+**Dead-letter recovery and SSH session isolation (2026-08-07)**
+- Long-lived `clio remote-mcp` bridges now use dedicated SSH connections instead
+  of occupying channels on the multiplexed connection used by short-lived CLI
+  and hook commands. This prevents persistent MCP clients from exhausting the
+  server's per-connection session limit and causing capture commands to fail
+  with `Session open refused by peer`.
+- `clio checkpoint --recover-stale` lets an operator restore a retained older
+  session delta after later cursors have committed. Normal CLI and MCP capture
+  still reject stale cursors, while the recovered checkpoint keeps the same
+  exact-key replay protection as every other checkpoint.
+- Remote CLI forwarding now honours `CLIO_CONTEXT_CWD`, preserving the original
+  session path in recovered jobs even when that worktree no longer exists.
+
 **30 July review fixes (2026-07-30)**
 - `clio-healthcheck` no longer records an alert as sent when the Slack delivery
   failed — a fault during a webhook outage was previously never reported at all.

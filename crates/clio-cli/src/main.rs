@@ -534,6 +534,10 @@ struct CheckpointArgs {
     #[arg(long)]
     cursor: i64,
 
+    /// Recover a retained older checkpoint after this session has advanced.
+    #[arg(long)]
+    recover_stale: bool,
+
     /// Override the namespace suggested by the LLM for every memory.
     #[arg(long)]
     namespace: Option<String>,
@@ -1159,7 +1163,8 @@ fn run_with_routing(cli: Cli, raw_args: &[OsString]) -> Result<(), Box<dyn std::
         if let Some(remote) = local_settings.remote.as_ref() {
             remote.validate()?;
             let namespace = current_namespace();
-            return remote_mcp::run_cli(remote, raw_args, namespace.as_deref());
+            let cwd = current_context_cwd();
+            return remote_mcp::run_cli(remote, raw_args, namespace.as_deref(), cwd.as_deref());
         }
     }
     run(cli)
@@ -2188,6 +2193,7 @@ fn cmd_checkpoint(
         source: args.source,
         session_id: args.session_id,
         cursor: args.cursor,
+        recover_stale: args.recover_stale,
         namespace_override: args.namespace,
         default_namespace,
         cwd,
@@ -3045,7 +3051,11 @@ fn cmd_usage(
     for d in &days {
         println!(
             "{:<12} {:>6} {:>12} {:>10} {:>10} {:>11}",
-            d.day, d.calls, d.input_tokens, d.cached_input_tokens, d.output_tokens,
+            d.day,
+            d.calls,
+            d.input_tokens,
+            d.cached_input_tokens,
+            d.output_tokens,
             d.unrecorded_calls
         );
     }
@@ -4578,6 +4588,7 @@ mod tests {
             source: "claude-session".into(),
             session_id: "session-1".into(),
             cursor: 10,
+            recover_stale: false,
             namespace: None,
             branch: None,
             ticket: None,

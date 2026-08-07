@@ -2005,6 +2005,7 @@ impl ClioServer {
                 source: params.source,
                 session_id: params.session_id,
                 cursor: params.cursor,
+                recover_stale: false,
                 namespace_override: params.namespace,
                 default_namespace,
                 cwd: params.cwd,

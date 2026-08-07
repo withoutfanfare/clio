@@ -237,6 +237,12 @@ checkpoint. Requires the capture pipeline to be enabled. With `--json` the
 result envelope includes `replayed`, `stored_memory_ids` and
 `queued_review_ids`.
 
+Cursors normally advance monotonically within a session; an unseen cursor older
+than the latest committed cursor is rejected as stale. Use `--recover-stale`
+only when deliberately replaying a retained dead-letter job. The exact
+`source + session-id + cursor` key remains idempotent, so retrying that recovery
+replays its stored result rather than creating duplicates.
+
 ---
 
 ## Resume (pick up where you left off)
