@@ -377,6 +377,13 @@ CREATE UNIQUE INDEX idx_session_checkpoints_identity
 | `ticket` | ticket/issue identifier | nullable |
 | `result_json` | stored result envelope: memory IDs and review-item IDs | JSON; never transcript text or secrets |
 | `created_at` | when the checkpoint committed | ISO-8601 UTC |
+| `model` | capture model that distilled this delta | nullable; added by `014_checkpoint_usage` |
+| `input_tokens` | provider-reported prompt tokens | nullable; added by `014_checkpoint_usage` |
+| `cached_input_tokens` | portion of `input_tokens` served from the provider's prompt cache | nullable; added by `014_checkpoint_usage` |
+| `output_tokens` | provider-reported completion tokens | nullable; added by `014_checkpoint_usage` |
+| `reasoning_tokens` | provider-reported hidden reasoning tokens | nullable; added by `014_checkpoint_usage` |
+
+Usage columns are stamped best-effort after the checkpoint commits (fire-and-forget, like access tracking); `NULL` means the checkpoint predates recording, was replayed, or the stamp failed. Aggregate with `clio usage`.
 
 ### Checkpoint rules
 

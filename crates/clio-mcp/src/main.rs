@@ -2026,13 +2026,22 @@ impl ClioServer {
                     .map_err(|e| format!("Serialisation error: {e}"));
             }
 
-            let memories = clio_core::capture::distill(&params.text, &settings.capture)
-                .map_err(|e| format_clio_error(&e))?;
+            let (memories, usage) =
+                clio_core::capture::distill_with_usage(&params.text, &settings.capture)
+                    .map_err(|e| format_clio_error(&e))?;
             let (result, stored_memories) = {
                 let conn = conn.lock().map_err(|e| format!("lock error: {e}"))?;
                 let result =
                     clio_core::checkpoint::store_checkpoint(&conn, &request, &memories, &settings)
                         .map_err(|e| format_clio_error(&e))?;
+                if !result.replayed {
+                    clio_core::usage::record_checkpoint_usage(
+                        &conn,
+                        &result.checkpoint_id,
+                        &settings.capture.model,
+                        &usage,
+                    );
+                }
                 let stored_memories = if !result.replayed && settings.auto_embed {
                     clio_core::repository::get_many_pub(&conn, &result.stored_memory_ids)
                         .map_err(|e| format_clio_error(&e))?

@@ -29,4 +29,5 @@ pub mod scoring;
 pub mod settings;
 pub mod stats;
 pub mod title;
+pub mod usage;
 mod validate;

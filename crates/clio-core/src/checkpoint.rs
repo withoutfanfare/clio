@@ -420,11 +420,12 @@ pub fn checkpoint(
     }
 
     // Provider work strictly outside the write transaction.
-    let memories = crate::capture::distill(digest, config)?;
+    let (memories, usage) = crate::capture::distill_with_usage(digest, config)?;
 
     let result = store_checkpoint(conn, req, &memories, settings)?;
 
     if !result.replayed {
+        crate::usage::record_checkpoint_usage(conn, &result.checkpoint_id, &config.model, &usage);
         embed_checkpoint_memories(conn, &result.stored_memory_ids, settings);
     }
 
