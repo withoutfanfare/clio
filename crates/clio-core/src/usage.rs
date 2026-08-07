@@ -54,7 +54,9 @@ pub struct UsageDay {
 }
 
 /// Aggregate recorded checkpoint usage per UTC day, most recent first,
-/// covering the last `days` days (at least 1).
+/// covering the last `days` UTC calendar days including today (at least 1) —
+/// so `--days 1` is today only, never a rolling 24-hour window that splits
+/// across two dates.
 pub fn usage_by_day(conn: &Connection, days: u32) -> Result<Vec<UsageDay>> {
     let days = days.max(1);
     let mut stmt = conn.prepare_cached(
@@ -66,11 +68,11 @@ pub fn usage_by_day(conn: &Connection, days: u32) -> Result<Vec<UsageDay>> {
                 COALESCE(SUM(reasoning_tokens), 0),
                 SUM(CASE WHEN input_tokens IS NULL THEN 1 ELSE 0 END)
          FROM session_checkpoints
-         WHERE created_at >= datetime('now', ?1)
+         WHERE created_at >= datetime('now', 'start of day', ?1)
          GROUP BY day
          ORDER BY day DESC",
     )?;
-    let rows = stmt.query_map(params![format!("-{days} days")], |row| {
+    let rows = stmt.query_map(params![format!("-{} days", days - 1)], |row| {
         Ok(UsageDay {
             day: row.get(0)?,
             calls: row.get(1)?,
@@ -162,6 +164,29 @@ mod tests {
         assert_eq!(today.output_tokens, 800);
         assert_eq!(today.reasoning_tokens, 7);
         assert_eq!(today.unrecorded_calls, 1);
+    }
+
+    #[test]
+    fn usage_window_counts_calendar_days_not_rolling_hours() {
+        let conn = crate::db::open_in_memory().unwrap();
+        let id = checkpoint(&conn, 10);
+        record_checkpoint_usage(&conn, &id, "gpt-4.1", &CaptureUsage::default());
+        // Move the checkpoint to two calendar days ago (any hour).
+        conn.execute(
+            "UPDATE session_checkpoints SET created_at = datetime('now', '-2 days')",
+            [],
+        )
+        .unwrap();
+
+        assert!(
+            usage_by_day(&conn, 1).unwrap().is_empty(),
+            "--days 1 is today only"
+        );
+        assert_eq!(
+            usage_by_day(&conn, 3).unwrap().len(),
+            1,
+            "--days 3 reaches two calendar days back"
+        );
     }
 
     #[test]

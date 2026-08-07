@@ -3045,17 +3045,18 @@ fn cmd_usage(
     }
 
     println!(
-        "{:<12} {:>6} {:>12} {:>10} {:>10} {:>11}",
-        "day", "calls", "input", "cached", "output", "unrecorded"
+        "{:<12} {:>6} {:>12} {:>10} {:>10} {:>10} {:>11}",
+        "day", "calls", "input", "cached", "output", "reasoning", "unrecorded"
     );
     for d in &days {
         println!(
-            "{:<12} {:>6} {:>12} {:>10} {:>10} {:>11}",
+            "{:<12} {:>6} {:>12} {:>10} {:>10} {:>10} {:>11}",
             d.day,
             d.calls,
             d.input_tokens,
             d.cached_input_tokens,
             d.output_tokens,
+            d.reasoning_tokens,
             d.unrecorded_calls
         );
     }

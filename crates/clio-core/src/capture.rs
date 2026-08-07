@@ -572,28 +572,36 @@ pub fn parse_distillation(raw: &str) -> Result<Vec<DistilledMemory>> {
     Ok(cap_distilled_memories(memories))
 }
 
-/// Hard ceiling on memories accepted from one distillation call: 5 knowledge
-/// atoms plus one receipt. The prompt instructs the model to stay within this;
-/// the cap is the deterministic backstop for when it does not.
-pub const MAX_DISTILLED_MEMORIES: usize = 6;
+/// Hard ceiling on knowledge atoms accepted from one distillation call.
+/// `parse_distillation` separately keeps only the first receipt, so the two
+/// limits compose to "5 knowledge atoms plus one receipt". The prompt
+/// instructs the model to stay within this; the cap is the deterministic
+/// backstop for when it does not.
+pub const MAX_KNOWLEDGE_ATOMS: usize = 5;
 
-/// Enforce [`MAX_DISTILLED_MEMORIES`] deterministically. The receipt ranks
-/// first, then atoms carrying an open loop (`attention`), then highest
-/// importance with confidence as the tiebreak — so only a pathological
-/// response loses a receipt or an open loop. Survivors keep their original
+/// Total ceiling per distillation: the knowledge budget plus the receipt slot.
+pub const MAX_DISTILLED_MEMORIES: usize = MAX_KNOWLEDGE_ATOMS + 1;
+
+/// Enforce [`MAX_KNOWLEDGE_ATOMS`] deterministically over the non-receipt
+/// atoms (the single receipt never competes for a knowledge slot and is never
+/// dropped here). Atoms carrying an open loop (`attention`) rank first, then
+/// highest importance with confidence as the tiebreak — so only a
+/// pathological response loses an open loop. Survivors keep their original
 /// order so provenance refs stay stable across a retry.
 fn cap_distilled_memories(memories: Vec<DistilledMemory>) -> Vec<DistilledMemory> {
-    if memories.len() <= MAX_DISTILLED_MEMORIES {
+    let knowledge_atoms = memories.iter().filter(|m| m.kind != "receipt").count();
+    if knowledge_atoms <= MAX_KNOWLEDGE_ATOMS {
         return memories;
     }
-    let dropped = memories.len() - MAX_DISTILLED_MEMORIES;
+    let dropped = knowledge_atoms - MAX_KNOWLEDGE_ATOMS;
 
-    let mut ranked: Vec<usize> = (0..memories.len()).collect();
+    let mut ranked: Vec<usize> = (0..memories.len())
+        .filter(|&i| memories[i].kind != "receipt")
+        .collect();
     ranked.sort_by(|&a, &b| {
         let key = |i: usize| {
             let m = &memories[i];
             (
-                m.kind != "receipt",
                 m.attention.is_none(),
                 -(m.importance as i64),
                 // Total order: NaN or equal confidence falls through to index.
@@ -604,13 +612,13 @@ fn cap_distilled_memories(memories: Vec<DistilledMemory>) -> Vec<DistilledMemory
         key(a).cmp(&key(b))
     });
 
-    let mut keep: Vec<usize> = ranked.into_iter().take(MAX_DISTILLED_MEMORIES).collect();
+    let mut keep: Vec<usize> = ranked.into_iter().take(MAX_KNOWLEDGE_ATOMS).collect();
+    keep.extend((0..memories.len()).filter(|&i| memories[i].kind == "receipt"));
     keep.sort_unstable();
 
     tracing::warn!(
-        "distillation returned {} memories; kept {MAX_DISTILLED_MEMORIES}, dropped {dropped} \
-         lowest-ranked (the prompt's hard limit was ignored)",
-        memories.len()
+        "distillation returned {knowledge_atoms} knowledge atoms; kept {MAX_KNOWLEDGE_ATOMS}, \
+         dropped {dropped} lowest-ranked (the prompt's hard limit was ignored)"
     );
 
     let mut memories = memories;
@@ -1291,6 +1299,23 @@ mod tests {
             .unwrap()
         });
         assert_eq!(contents, sorted_by_input_order);
+    }
+
+    #[test]
+    fn parse_distillation_caps_knowledge_atoms_even_without_a_receipt() {
+        // Six knowledge atoms and no receipt must still cap at five: the
+        // receipt slot is not a spare knowledge slot.
+        let items: Vec<String> = (1..=6)
+            .map(|i| {
+                format!(
+                    r#"{{"content":"Standalone durable fact {i}.","kind":"fact","title":"Fact {i}","summary":"","tags":["t"],"namespace":"project:clio","importance":3,"confidence":0.9}}"#
+                )
+            })
+            .collect();
+        let raw = format!("[{}]", items.join(","));
+        let memories = parse_distillation(&raw).expect("parse failed");
+        assert_eq!(memories.len(), MAX_KNOWLEDGE_ATOMS);
+        assert!(memories.iter().all(|m| m.kind != "receipt"));
     }
 
     #[test]

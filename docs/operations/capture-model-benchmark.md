@@ -184,6 +184,16 @@ What mattered:
   radius, and `is_session_noise` could be extended to title patterns like
   "… status" if this shows up in live traffic.
 
+*Correction (same day):* the case-04 fixture used in this run declared a touched
+file and prior formatting work, which the distillation prompt defines as
+substantive work deserving exactly one receipt — so GPT-4.1's receipt was
+compliant output marked as a failure, while the minis' status facts were
+genuinely non-compliant. The fixture has been corrected to indicate no work at
+all, and the runner now exits non-zero on errors (2) or failed judge checks (1)
+so automated gating cannot accept a broken run. The comparative conclusion and
+recommendation are unchanged; rerun the corrected cases at the next model
+decision.
+
 **Recommendation (pending operator approval): GPT-4.1 mini** — 4.5× cheaper
 than the incumbent on identical input, clean on scoping and injection in both
 repeats, with routine-session noise as the known, bounded weakness. GPT-4o mini

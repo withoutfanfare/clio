@@ -111,6 +111,7 @@ def main() -> int:
         return 1
 
     all_results = []
+    total_errors = total_failed_checks = 0
     for model in args.models.split(","):
         model = model.strip()
         latencies, in_tok, cache_tok, out_tok, reason_tok = [], 0, 0, 0, 0
@@ -144,10 +145,19 @@ def main() -> int:
         print(f"   tokens: {in_tok:,} in ({cache_tok:,} cached), {out_tok:,} out, "
               f"{reason_tok:,} reasoning   est cost {cost}")
         print("   PASS" if not fail_lines else "\n".join(["   FAILED CHECKS:"] + fail_lines))
+        total_errors += errors
+        total_failed_checks += len(fail_lines) - errors
 
     if args.out:
         Path(args.out).write_text(json.dumps(all_results, indent=1))
         print(f"\nfull results -> {args.out}")
+
+    # Non-zero exit so automated gating cannot accept a broken run or model:
+    # 2 for call errors (harness/provider failure), 1 for failed judge checks.
+    if total_errors:
+        return 2
+    if total_failed_checks:
+        return 1
     return 0
 
 
