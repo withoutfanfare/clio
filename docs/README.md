@@ -62,6 +62,7 @@ For AI agents using Clio via MCP:
 | [Security Review](security-review.md) | Codebase security audit findings |
 | [Deployment Runbook](operations/deployment.md) | Releasing Atlas and installing native Mac components |
 | [Capture Model Benchmark](operations/capture-model-benchmark.md) | Repeatable model comparison and current selection evidence |
+| [OpenAI Cost Analysis (Aug 2026)](operations/openai-cost-analysis-2026-08-07.md) | Where API spend goes, the three cost levers, and what was implemented |
 | [Operational Roadmap](operations/roadmap.md) | Prioritised deployment and infrastructure work still to complete |
 
 ### Project Context

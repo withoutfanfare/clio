@@ -194,7 +194,10 @@ when confidence is below the configured threshold.
 the LLM and extracts **zero or more** self-contained, durable memories
 (decisions, facts, constraints, insights). Routine input yields nothing, so
 noise is filtered by design. Uses the same capture pipeline (review routing,
-auto-embed) per extracted memory.
+auto-embed) per extracted memory. One call yields at most **6 memories** (5
+plus the single session receipt): the prompt states the limit and the parser
+enforces it deterministically, keeping the receipt, open loops and the highest
+importance first.
 
 ```sh
 # Preview the durable memories without storing
@@ -427,7 +430,15 @@ clio stats
 clio stats --namespace project:clio
 clio activity
 clio activity --namespace project:clio --limit 20
+clio usage             # distillation token spend per day (default 30 days)
+clio usage --days 7 --json
 ```
+
+`usage` aggregates the token counts recorded on each checkpoint since
+migration `014_checkpoint_usage`: calls, input tokens (with the cached
+portion), output tokens and reasoning tokens per UTC day. Checkpoints that
+predate recording — or whose best-effort stamp failed — appear in the
+`unrecorded` column rather than being counted as zero-cost.
 
 ---
 

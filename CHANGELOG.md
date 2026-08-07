@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+**Distillation output hard-capped at 6 memories (2026-08-07)**
+- One distillation call now stores at most 6 memories: 5 knowledge atoms plus
+  the single session receipt. The prompt states the limit and a stricter
+  leave-it-out bar; `parse_distillation` enforces it deterministically, ranking
+  the receipt first, then open loops, then importance with confidence as the
+  tiebreak, and preserving original order so provenance refs stay stable across
+  a retry. Motivated by live volume — 892 distilled memories stored on 6 August
+  alone — where model-written text at output-token prices was the second-largest
+  cost component and the largest source of recall noise.
+
 **One namespace precedence for capture and distill (2026-07-30)**
 - `capture` now resolves namespaces through the same rule as `distill`: explicit
   override → the model's `global` promotion → the working directory → the model's
@@ -36,6 +46,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   nothing further. Existing over-cap links are left in place.
 
 ### Added
+
+**Per-checkpoint token accounting and `clio usage` (2026-08-07)**
+- Migration `014_checkpoint_usage` adds model and token columns to
+  `session_checkpoints`; the checkpoint path (core and MCP) stamps them
+  best-effort after commit — fire-and-forget, like access tracking, so
+  recording can never fail a capture. `clio usage [--days N]` aggregates
+  calls, input (with cached portion), output and reasoning tokens per UTC
+  day, with pre-recording checkpoints surfaced as `unrecorded` rather than
+  counted as zero. Replaces character-count estimates for cost questions.
+
+**Reproducible capture-model benchmark (2026-08-07)**
+- `scripts/bench/capture-model/` holds the five distillation cases as
+  checked-in fixtures with an automated judge and runner, so the comparison in
+  `docs/operations/capture-model-benchmark.md` is one command against a
+  throwaway DB instead of archaeology. The 7 August rerun with cheap
+  candidates is recorded there.
 
 **Scheduled auto-linking (2026-07-30)**
 - New `clio auto-link` runs a single auto-link inference pass, so link inference can
