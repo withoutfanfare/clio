@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "vue-tsc --noEmit && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test": "node --experimental-strip-types --test src/composables/*.test.mjs src/utils/*.test.mjs"
   },
   "dependencies": {
     "@stuntrocket/ui": "^0.6.0",
