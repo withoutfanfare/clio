@@ -674,6 +674,86 @@ A JSON array of namespace strings, sorted lexicographically.
 
 - storage failure
 
+## `memory_namespace_details`
+
+List every namespace with its memory count and most recent activity.
+
+### Why it exists
+
+Allows a client to show the impact of deleting a workspace before asking for
+confirmation, including when the database is reached through the remote MCP
+bridge.
+
+### Input
+
+No input parameters.
+
+### Behaviour
+
+- includes archived memories in each count
+- returns one entry per namespace, sorted lexicographically
+- returns an empty array when the database has no memories
+
+### Response
+
+```json
+[
+  {
+    "name": "project:my-app",
+    "memory_count": 12,
+    "last_activity": "2026-08-15T07:42:10Z"
+  }
+]
+```
+
+### Failure cases
+
+- storage failure
+
+## `memory_namespace_delete`
+
+Permanently delete one non-global namespace and all its memories, after taking
+a database backup.
+
+### Why it exists
+
+Provides the remote desktop bridge with the same recoverable workspace deletion
+flow as a local database. It is intentionally narrower than the general cleanup
+workflow: the caller must name exactly one workspace.
+
+### Input
+
+```json
+{
+  "namespace": "project:unused-app"
+}
+```
+
+### Behaviour
+
+- reject an empty namespace or `global`
+- take a transactionally consistent SQLite backup before deleting anything
+- permanently delete every memory in the named namespace
+- clear the server cache after successful deletion
+- return success with a zero count if the named namespace has no memories
+
+### Response
+
+```json
+{
+  "backup_path": "/path/to/backups/clio-backup-2026-08-15T08-00-00.db",
+  "namespaces_deleted": ["project:unused-app"],
+  "memories_purged": 12
+}
+```
+
+### Failure cases
+
+- empty namespace
+- protected `global` namespace
+- backup failure (nothing is deleted)
+- storage failure
+
 ## `memory_get_links`
 
 Get all typed links originating from a memory.
@@ -1497,6 +1577,8 @@ Recommended annotation intent:
 | `memory_delete` | false | true | true |
 | `memory_move` | false | false | false |
 | `memory_namespaces` | true | false | true |
+| `memory_namespace_details` | true | false | true |
+| `memory_namespace_delete` | false | true | true |
 | `memory_get_links` | true | false | true |
 | `memory_capture` | false | false | false |
 | `memory_session_checkpoint` | false | false | true |

@@ -22,7 +22,7 @@ const ctxConfirming = ref(false);
 const ctxDeleting = ref(false);
 
 async function openDeleteMenu(e: MouseEvent, ns: string) {
-  if (store.isRemote || ns === "global") return;
+  if (ns === "global") return;
   e.preventDefault();
   e.stopPropagation();
   ctxConfirming.value = false;
@@ -171,7 +171,7 @@ async function createProject() {
         v-for="ns in store.allNamespaces"
         :key="ns"
         class="workspace-row"
-        :class="{ 'is-deletable': !store.isRemote && ns !== 'global' }"
+        :class="{ 'is-deletable': ns !== 'global' }"
       >
         <SSidebarLink
           class="workspace-link"
@@ -183,7 +183,7 @@ async function createProject() {
           <span class="workspace-name">{{ ns }}</span>
         </SSidebarLink>
         <button
-          v-if="!store.isRemote && ns !== 'global'"
+          v-if="ns !== 'global'"
           class="workspace-delete"
           type="button"
           :aria-label="`Delete workspace ${ns}`"
@@ -200,7 +200,7 @@ async function createProject() {
     <!-- Right-click context menu -->
     <Teleport to="body">
       <div
-        v-if="ctxMenu && !store.isRemote"
+        v-if="ctxMenu"
         class="ctx-menu"
         :style="{ left: ctxMenu.x + 'px', top: ctxMenu.y + 'px' }"
         @click.stop

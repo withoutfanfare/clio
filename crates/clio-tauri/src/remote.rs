@@ -310,6 +310,7 @@ fn is_mutating_tool(tool: &str) -> bool {
             | "memory_capture"
             | "memory_inbox"
             | "memory_cache_clear"
+            | "memory_namespace_delete"
     )
 }
 
@@ -349,6 +350,7 @@ mod tests {
     fn classifies_unknown_outcome_tool_timeouts() {
         assert!(is_mutating_tool("memory_remember"));
         assert!(is_mutating_tool("memory_capture"));
+        assert!(is_mutating_tool("memory_namespace_delete"));
         assert!(!is_mutating_tool("memory_recall"));
         assert!(!is_mutating_tool("memory_stats"));
     }
