@@ -18,6 +18,7 @@ const {
   startResize,
   resize,
   stopResize,
+  stopResizeAfterCaptureLoss,
   resizeWithKeyboard,
 } = useSidebarResize();
 
@@ -352,6 +353,7 @@ async function createProject() {
       @pointermove="resize"
       @pointerup="stopResize"
       @pointercancel="stopResize"
+      @lostpointercapture="stopResizeAfterCaptureLoss"
       @keydown="resizeWithKeyboard"
     />
   </aside>

@@ -6,11 +6,20 @@ const KEYBOARD_RESIZE_STEP = 10;
 
 type SidebarWidthStorage = Pick<Storage, "getItem" | "setItem">;
 
-export function useSidebarResize(storage: SidebarWidthStorage = localStorage) {
+export function useSidebarResize(storage?: SidebarWidthStorage) {
+  let availableStorage = storage;
   let storedWidth: string | null = null;
 
+  if (!availableStorage && typeof window !== "undefined") {
+    try {
+      availableStorage = window.localStorage;
+    } catch {
+      // Storage is an enhancement; resizing must still work when it is unavailable.
+    }
+  }
+
   try {
-    storedWidth = storage.getItem(SIDEBAR_WIDTH_STORAGE_KEY);
+    storedWidth = availableStorage?.getItem(SIDEBAR_WIDTH_STORAGE_KEY) ?? null;
   } catch {
     // Storage is an enhancement; resizing must still work when it is unavailable.
   }
@@ -22,7 +31,7 @@ export function useSidebarResize(storage: SidebarWidthStorage = localStorage) {
 
   function persistWidth() {
     try {
-      storage.setItem(SIDEBAR_WIDTH_STORAGE_KEY, String(width.value));
+      availableStorage?.setItem(SIDEBAR_WIDTH_STORAGE_KEY, String(width.value));
     } catch {
       // Keep the current in-memory width when persistence is unavailable.
     }
@@ -48,16 +57,25 @@ export function useSidebarResize(storage: SidebarWidthStorage = localStorage) {
     width.value = normaliseSidebarWidth(dragStartWidth + event.clientX - dragStartX);
   }
 
+  function finishResize() {
+    if (!isResizing.value) return;
+
+    isResizing.value = false;
+    persistWidth();
+  }
+
   function stopResize(event: PointerEvent) {
     if (!isResizing.value) return;
 
+    finishResize();
     const handle = event.currentTarget as HTMLElement | null;
     if (handle?.hasPointerCapture?.(event.pointerId)) {
       handle.releasePointerCapture(event.pointerId);
     }
+  }
 
-    isResizing.value = false;
-    persistWidth();
+  function stopResizeAfterCaptureLoss() {
+    finishResize();
   }
 
   function resizeWithKeyboard(event: KeyboardEvent) {
@@ -75,6 +93,7 @@ export function useSidebarResize(storage: SidebarWidthStorage = localStorage) {
     startResize,
     resize,
     stopResize,
+    stopResizeAfterCaptureLoss,
     resizeWithKeyboard,
   };
 }
