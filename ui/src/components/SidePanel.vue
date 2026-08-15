@@ -20,6 +20,7 @@ const ctxMenu = ref<{
 } | null>(null);
 const ctxConfirming = ref(false);
 const ctxDeleting = ref(false);
+let ctxMenuRequest = 0;
 
 async function openDeleteMenu(e: MouseEvent, ns: string) {
   if (ns === "global") return;
@@ -36,17 +37,20 @@ async function openDeleteMenu(e: MouseEvent, ns: string) {
     ns,
     memoryCount: null,
   };
+  const request = ++ctxMenuRequest;
   nextTick(() => document.addEventListener("click", closeCtxMenu, { once: true }));
 
   try {
     const details = await api.namespaceDetails();
     const current = ctxMenu.value;
-    if (current?.ns === ns) {
+    if (request === ctxMenuRequest && current?.ns === ns) {
       current.memoryCount = details.find((item) => item.name === ns)?.memory_count ?? 0;
     }
   } catch {
-    closeCtxMenu();
-    store.pushToast(`Couldn't load workspace details for "${ns}"`, "error");
+    if (request === ctxMenuRequest && ctxMenu.value?.ns === ns) {
+      closeCtxMenu();
+      store.pushToast(`Couldn't load workspace details for "${ns}"`, "error");
+    }
   }
 }
 

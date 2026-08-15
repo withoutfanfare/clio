@@ -25,6 +25,7 @@ const mergeTarget = ref("");
 
 // Delete
 const confirmingDelete = ref<string | null>(null);
+const deletingNs = ref<string | null>(null);
 
 // Consolidate
 const consolidatingNs = ref<string | null>(null);
@@ -140,18 +141,20 @@ async function applyMerge() {
 }
 
 async function deleteNs(ns: string) {
+  if (deletingNs.value !== null) return;
   if (confirmingDelete.value !== ns) {
     confirmingDelete.value = ns;
     return;
   }
+  deletingNs.value = ns;
   error.value = null;
   try {
     const count = await api.purgeNamespace(ns);
     success.value = `Deleted workspace '${ns}' and ${count} ${count === 1 ? "memory" : "memories"}. A database backup was saved first.`;
     if (store.selectedNamespace === ns) {
       store.setNamespace(null);
-      await store.loadRecent();
     }
+    await store.loadRecent();
     confirmingDelete.value = null;
     store.invalidateSearchCache();
     await loadNamespaces();
@@ -159,6 +162,8 @@ async function deleteNs(ns: string) {
   } catch (e) {
     error.value = String(e);
     confirmingDelete.value = null;
+  } finally {
+    deletingNs.value = null;
   }
 }
 
@@ -415,12 +420,14 @@ onMounted(() => {
                 v-if="ns.name !== 'global'"
                 class="ns-action-btn"
                 :class="{ danger: confirmingDelete === ns.name }"
+                :disabled="deletingNs !== null"
                 @click="deleteNs(ns.name)"
                 :title="confirmingDelete === ns.name
                   ? `Click again to permanently delete ${ns.memory_count} ${ns.memory_count === 1 ? 'memory' : 'memories'}`
                   : 'Delete workspace'"
               >
-                <template v-if="confirmingDelete === ns.name && ns.memory_count > 0">
+                <template v-if="deletingNs === ns.name">Deleting…</template>
+                <template v-else-if="confirmingDelete === ns.name && ns.memory_count > 0">
                   Delete {{ ns.memory_count }} permanently?
                 </template>
                 <svg v-else width="12" height="12" viewBox="0 0 16 16" fill="none">
