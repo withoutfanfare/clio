@@ -3,13 +3,23 @@ import { ref, computed, nextTick } from "vue";
 import { SButton, SFormField, SInput, SSidebarLink, SKbd } from "@stuntrocket/ui";
 import { useMemoryStore } from "@/stores/memories";
 import { useNamespaceColours } from "@/composables/useNamespaceColours";
+import { useSidebarResize } from "@/composables/useSidebarResize";
 import { useRouter } from "vue-router";
 import { open } from "@tauri-apps/plugin-dialog";
 import * as api from "@/api/memory";
+import { MAX_SIDEBAR_WIDTH, MIN_SIDEBAR_WIDTH } from "@/utils/sidebarWidth";
 
 const store = useMemoryStore();
 const { getColour } = useNamespaceColours();
 const router = useRouter();
+const {
+  width: sidebarWidth,
+  isResizing,
+  startResize,
+  resize,
+  stopResize,
+  resizeWithKeyboard,
+} = useSidebarResize();
 
 // Workspace deletion state
 const ctxMenu = ref<{
@@ -157,7 +167,11 @@ async function createProject() {
 </script>
 
 <template>
-  <aside class="side-panel">
+  <aside
+    class="side-panel"
+    :class="{ 'is-resizing': isResizing }"
+    :style="{ width: `${sidebarWidth}px`, minWidth: `${sidebarWidth}px` }"
+  >
     <!-- Section label -->
     <div class="section-label">Workspaces</div>
 
@@ -324,6 +338,22 @@ async function createProject() {
         <SKbd>N</SKbd>
       </SSidebarLink>
     </div>
+
+    <div
+      class="resize-handle"
+      role="separator"
+      aria-label="Resize sidebar"
+      aria-orientation="vertical"
+      :aria-valuemin="MIN_SIDEBAR_WIDTH"
+      :aria-valuemax="MAX_SIDEBAR_WIDTH"
+      :aria-valuenow="sidebarWidth"
+      tabindex="0"
+      @pointerdown="startResize"
+      @pointermove="resize"
+      @pointerup="stopResize"
+      @pointercancel="stopResize"
+      @keydown="resizeWithKeyboard"
+    />
   </aside>
 </template>
 
@@ -331,6 +361,8 @@ async function createProject() {
 .side-panel {
   width: 220px;
   min-width: 220px;
+  flex: 0 0 auto;
+  position: relative;
   background: rgba(18, 16, 22, 0.82);
   backdrop-filter: blur(24px) saturate(1.5);
   -webkit-backdrop-filter: blur(24px) saturate(1.5);
@@ -345,6 +377,43 @@ async function createProject() {
   padding: var(--space-2) var(--space-3) var(--space-3);
   overflow: hidden;
   z-index: 10;
+}
+
+.resize-handle {
+  position: absolute;
+  inset: 0 0 0 auto;
+  width: 12px;
+  border: 0;
+  cursor: col-resize;
+  touch-action: none;
+}
+
+.resize-handle::after {
+  content: "";
+  position: absolute;
+  top: var(--space-3);
+  right: 0;
+  bottom: var(--space-3);
+  width: 1px;
+  border-radius: 1px;
+  background: transparent;
+  transition: background-color 120ms ease, box-shadow 120ms ease;
+}
+
+.resize-handle:hover::after,
+.resize-handle:focus-visible::after,
+.side-panel.is-resizing .resize-handle::after {
+  background: var(--color-accent);
+  box-shadow: -2px 0 8px rgba(139, 92, 246, 0.22);
+}
+
+.resize-handle:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: -3px;
+}
+
+.side-panel.is-resizing {
+  user-select: none;
 }
 
 /* ── Brand ── */
