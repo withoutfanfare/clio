@@ -20,9 +20,10 @@ const ctxMenu = ref<{
 } | null>(null);
 const ctxConfirming = ref(false);
 const ctxDeleting = ref(false);
+let ctxMenuRequest = 0;
 
 async function openDeleteMenu(e: MouseEvent, ns: string) {
-  if (store.isRemote || ns === "global") return;
+  if (ns === "global") return;
   e.preventDefault();
   e.stopPropagation();
   ctxConfirming.value = false;
@@ -36,17 +37,20 @@ async function openDeleteMenu(e: MouseEvent, ns: string) {
     ns,
     memoryCount: null,
   };
+  const request = ++ctxMenuRequest;
   nextTick(() => document.addEventListener("click", closeCtxMenu, { once: true }));
 
   try {
     const details = await api.namespaceDetails();
     const current = ctxMenu.value;
-    if (current?.ns === ns) {
+    if (request === ctxMenuRequest && current?.ns === ns) {
       current.memoryCount = details.find((item) => item.name === ns)?.memory_count ?? 0;
     }
   } catch {
-    closeCtxMenu();
-    store.pushToast(`Couldn't load workspace details for "${ns}"`, "error");
+    if (request === ctxMenuRequest && ctxMenu.value?.ns === ns) {
+      closeCtxMenu();
+      store.pushToast(`Couldn't load workspace details for "${ns}"`, "error");
+    }
   }
 }
 
@@ -171,7 +175,7 @@ async function createProject() {
         v-for="ns in store.allNamespaces"
         :key="ns"
         class="workspace-row"
-        :class="{ 'is-deletable': !store.isRemote && ns !== 'global' }"
+        :class="{ 'is-deletable': ns !== 'global' }"
       >
         <SSidebarLink
           class="workspace-link"
@@ -183,7 +187,7 @@ async function createProject() {
           <span class="workspace-name">{{ ns }}</span>
         </SSidebarLink>
         <button
-          v-if="!store.isRemote && ns !== 'global'"
+          v-if="ns !== 'global'"
           class="workspace-delete"
           type="button"
           :aria-label="`Delete workspace ${ns}`"
@@ -200,7 +204,7 @@ async function createProject() {
     <!-- Right-click context menu -->
     <Teleport to="body">
       <div
-        v-if="ctxMenu && !store.isRemote"
+        v-if="ctxMenu"
         class="ctx-menu"
         :style="{ left: ctxMenu.x + 'px', top: ctxMenu.y + 'px' }"
         @click.stop

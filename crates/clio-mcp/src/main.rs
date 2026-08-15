@@ -317,6 +317,12 @@ struct MoveNamespaceParams {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+struct NamespaceDeleteParams {
+    /// Namespace to permanently delete. The global namespace is protected.
+    namespace: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 struct GetLinksParams {
     /// Memory ID.
     memory_id: String,
@@ -830,9 +836,12 @@ fn remember_input(params: RememberParams, namespace: String, upsert: bool) -> Re
 
 #[cfg(test)]
 mod namespace_tests {
-    use clio_core::models::UpdateInput;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
-    use super::{UpdateParams, resolve_mcp_namespace};
+    use clio_core::models::{NamespaceInfo, RememberInput, UpdateInput};
+    use rmcp::handler::server::wrapper::Parameters;
+
+    use super::{ClioServer, NamespaceDeleteParams, UpdateParams, resolve_mcp_namespace};
 
     #[test]
     fn local_detected_namespace_respects_precedence_and_setting() {
@@ -853,6 +862,100 @@ mod namespace_tests {
                 expected
             );
         }
+    }
+
+    #[tokio::test]
+    async fn workspace_tools_report_counts_and_delete_after_backing_up() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let test_dir = std::env::temp_dir().join(format!(
+            "clio-mcp-workspace-delete-{}-{unique}",
+            std::process::id()
+        ));
+        std::fs::create_dir(&test_dir).unwrap();
+        let db_path = test_dir.join("clio.db");
+        let conn = clio_core::db::open(&db_path).unwrap();
+        let settings = clio_core::settings::Settings::default();
+        for (namespace, content) in [("project:unused", "remove me"), ("project:kept", "keep me")] {
+            clio_core::repository::remember(
+                &conn,
+                &RememberInput {
+                    namespace: namespace.into(),
+                    kind: "note".into(),
+                    title: None,
+                    summary: None,
+                    content: content.into(),
+                    tags: Vec::new(),
+                    source: None,
+                    source_ref: None,
+                    confidence: None,
+                    importance: 3,
+                    metadata: serde_json::json!({}),
+                    valid_from: None,
+                    valid_until: None,
+                    upsert: false,
+                },
+                &settings,
+            )
+            .unwrap();
+        }
+        let server = ClioServer::new(db_path.clone(), conn, settings, None);
+        assert!(server.tool_router.has_route("memory_namespace_details"));
+        assert!(server.tool_router.has_route("memory_namespace_delete"));
+
+        let details: Vec<NamespaceInfo> =
+            serde_json::from_str(&server.memory_namespace_details().await.unwrap()).unwrap();
+        assert_eq!(
+            details
+                .iter()
+                .find(|detail| detail.name == "project:unused")
+                .map(|detail| detail.memory_count),
+            Some(1)
+        );
+
+        let protected = server
+            .memory_namespace_delete(Parameters(NamespaceDeleteParams {
+                namespace: "global".into(),
+            }))
+            .await
+            .unwrap_err();
+        assert_eq!(protected, "the global namespace cannot be deleted.");
+
+        let report: clio_core::cleanup::CleanupReport = serde_json::from_str(
+            &server
+                .memory_namespace_delete(Parameters(NamespaceDeleteParams {
+                    namespace: "project:unused".into(),
+                }))
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(report.memories_purged, 1);
+        assert_eq!(report.namespaces_deleted, ["project:unused"]);
+
+        let remaining = server.memory_namespaces().await.unwrap();
+        assert!(!remaining.contains("project:unused"));
+        assert!(remaining.contains("project:kept"));
+
+        let backup_path = report.backup_path.unwrap();
+        let backup = rusqlite::Connection::open(&backup_path).unwrap();
+        let backed_up: i64 = backup
+            .query_row(
+                "SELECT COUNT(*) FROM memories WHERE namespace = 'project:unused'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(backed_up, 1);
+
+        drop(backup);
+        drop(server);
+        std::fs::remove_file(backup_path).unwrap();
+        std::fs::remove_file(db_path).unwrap();
+        std::fs::remove_dir(test_dir.join("backups")).unwrap();
+        std::fs::remove_dir(test_dir).unwrap();
     }
 
     #[test]
@@ -1857,6 +1960,56 @@ impl ClioServer {
                 .map_err(|e| format_clio_error(&e))?;
             serde_json::to_string_pretty(&namespaces)
                 .map_err(|e| format!("Serialisation error: {e}"))
+        })
+        .await
+        .map_err(|e| format!("Internal error: task failed: {e}"))?
+    }
+
+    /// List namespaces with memory counts and last activity.
+    #[tool(description = "List all namespaces with memory counts and last activity.")]
+    async fn memory_namespace_details(&self) -> Result<String, String> {
+        let conn = self.conn.clone();
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock().map_err(|e| format!("lock error: {e}"))?;
+            let details = clio_core::repository::namespace_details(&conn)
+                .map_err(|e| format_clio_error(&e))?;
+            serde_json::to_string_pretty(&details).map_err(|e| format!("Serialisation error: {e}"))
+        })
+        .await
+        .map_err(|e| format!("Internal error: task failed: {e}"))?
+    }
+
+    /// Permanently delete a namespace and its memories after taking a backup.
+    #[tool(
+        description = "Permanently delete a non-global namespace and all its memories. Takes a database backup first."
+    )]
+    async fn memory_namespace_delete(
+        &self,
+        Parameters(params): Parameters<NamespaceDeleteParams>,
+    ) -> Result<String, String> {
+        let namespace = params.namespace.trim();
+        if namespace.is_empty() {
+            return Err("namespace must not be empty.".into());
+        }
+        if namespace == "global" {
+            return Err("the global namespace cannot be deleted.".into());
+        }
+
+        let namespace = namespace.to_string();
+        let conn = self.conn.clone();
+        let db_path = self.db_path.clone();
+        let cache = self.cache.clone();
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock().map_err(|e| format!("lock error: {e}"))?;
+            let report = clio_core::cleanup::execute_cleanup(
+                &conn,
+                db_path.as_path(),
+                std::slice::from_ref(&namespace),
+                10,
+            )
+            .map_err(|e| format_clio_error(&e))?;
+            cache.clear_all();
+            serde_json::to_string_pretty(&report).map_err(|e| format!("Serialisation error: {e}"))
         })
         .await
         .map_err(|e| format!("Internal error: task failed: {e}"))?

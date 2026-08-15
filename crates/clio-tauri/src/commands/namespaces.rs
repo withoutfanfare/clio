@@ -78,9 +78,15 @@ pub async fn cmd_namespaces(state: State<'_, AppState>) -> Result<Vec<String>, C
 }
 
 #[tauri::command]
-pub fn cmd_namespace_details(
+pub async fn cmd_namespace_details(
     state: State<'_, AppState>,
 ) -> Result<Vec<NamespaceInfo>, CommandError> {
+    if let Some(remote) = state.remote() {
+        return remote
+            .call_json("memory_namespace_details", serde_json::json!({}))
+            .await;
+    }
+
     let app = state.local()?;
     let details = clio_core::repository::namespace_details(&app.conn)?;
     Ok(details)
@@ -121,10 +127,20 @@ pub fn cmd_delete_namespace(
 }
 
 #[tauri::command]
-pub fn cmd_purge_namespace(
+pub async fn cmd_purge_namespace(
     state: State<'_, AppState>,
     namespace: String,
 ) -> Result<u32, CommandError> {
+    if let Some(remote) = state.remote() {
+        let report: CleanupReport = remote
+            .call_json(
+                "memory_namespace_delete",
+                serde_json::json!({ "namespace": namespace }),
+            )
+            .await?;
+        return Ok(report.memories_purged as u32);
+    }
+
     let app = state.local()?;
     let report = purge_workspace(&app.conn, &app.db_path, &namespace)?;
     app.cache.clear_all();
