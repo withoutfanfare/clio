@@ -37,7 +37,7 @@ AI coding assistants forget everything between sessions. You re-explain your pro
 
 - **One memory, every agent** — Claude Code, Codex, Cursor, Windsurf, Gemini, Copilot, OpenCode, Kilo, Kimi all share the same knowledge over MCP. Automatic lifecycle capture (session-start context briefs + session-end distillation, including a per-session `receipt` of what was done) runs for Claude Code and Codex; other tools read and write via MCP.
 - **Zero cloud dependency** — SQLite on your machine, embeddings run locally by default
-- **Automatic scoping** — memories are scoped to projects via directory detection, no manual namespace management
+- **Automatic scoping** — memories are scoped to projects via directory detection, with desktop workspace management when manual cleanup is needed
 - **Semantic search** — find conceptually related context even when keywords don't match
 - **Knowledge graph** — link related memories to build a navigable web of context
 
@@ -51,7 +51,7 @@ AI coding assistants forget everything between sessions. You re-explain your pro
 - **Handoff briefs** — `clio brief --preset handoff --query <ticket-id>` assembles everything needed to pick up a ticket: relevant memories (including any tagged `ticket:<id>`), active constraints, and recent session receipts
 - **Always-on daemon** — inbox watcher, background linking, health checks
 - **10+ agent integrations** — Claude Code, Codex, Cursor, Windsurf, Gemini, Copilot, OpenCode, Kilo, Kimi, and any MCP-compatible client
-- **Desktop UI** — Tauri-based browse/edit/archive interface
+- **Desktop UI** — Tauri-based browse/edit/archive interface with backup-first workspace deletion
 
 ## Quick Start
 

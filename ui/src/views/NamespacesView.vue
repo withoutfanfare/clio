@@ -86,7 +86,7 @@ async function createNamespace() {
       source: "desktop",
       tags: ["system"],
     });
-    success.value = `Namespace '${newName.value.trim()}' created`;
+    success.value = `Workspace '${newName.value.trim()}' created`;
     newName.value = "";
     showCreate.value = false;
     store.invalidateSearchCache();
@@ -139,19 +139,18 @@ async function applyMerge() {
   }
 }
 
-async function deleteNs(ns: string, memoryCount: number) {
+async function deleteNs(ns: string) {
   if (confirmingDelete.value !== ns) {
     confirmingDelete.value = ns;
     return;
   }
   error.value = null;
   try {
-    if (memoryCount > 0) {
-      const count = await api.purgeNamespace(ns);
-      success.value = `Deleted namespace '${ns}' and ${count} ${count === 1 ? "memory" : "memories"}`;
-    } else {
-      await api.deleteNamespace(ns);
-      success.value = `Namespace '${ns}' deleted`;
+    const count = await api.purgeNamespace(ns);
+    success.value = `Deleted workspace '${ns}' and ${count} ${count === 1 ? "memory" : "memories"}. A database backup was saved first.`;
+    if (store.selectedNamespace === ns) {
+      store.setNamespace(null);
+      await store.loadRecent();
     }
     confirmingDelete.value = null;
     store.invalidateSearchCache();
@@ -200,7 +199,7 @@ async function runCleanupSelected() {
   try {
     const report = await api.runCleanup(targets);
     success.value =
-      `Purged ${report.namespaces_deleted.length} namespace(s) and ` +
+      `Purged ${report.namespaces_deleted.length} workspace(s) and ` +
       `${report.memories_purged} ${report.memories_purged === 1 ? "memory" : "memories"}.` +
       (report.backup_path ? " A backup was saved first." : "");
     showCleanup.value = false;
@@ -238,13 +237,13 @@ onMounted(() => {
 <template>
   <div class="ns-view">
     <div class="ns-header">
-      <h1 class="ns-title">Namespaces</h1>
+      <h1 class="ns-title">Workspaces</h1>
       <div class="ns-header-actions">
         <button class="ns-create-btn ghost" @click="findStale(); clearMessages()">
           <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
             <path d="M2 4h12M4 4l.8 8.4a1 1 0 001 .9h4.4a1 1 0 001-.9L13 4M6 7v4M10 7v4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
           </svg>
-          Find stale
+          Find unused
         </button>
         <button class="ns-create-btn" @click="showCreate = !showCreate; clearMessages()">
           <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
@@ -260,7 +259,7 @@ onMounted(() => {
         <input
           v-model="newName"
           class="ns-input"
-          placeholder="Namespace name..."
+          placeholder="Workspace name..."
           @keydown.enter="createNamespace"
         />
         <button
@@ -276,15 +275,15 @@ onMounted(() => {
     <Transition name="fade">
       <div v-if="showCleanup" class="cleanup-panel">
         <div class="cleanup-head">
-          <span class="cleanup-title">Stale namespace cleanup</span>
+          <span class="cleanup-title">Unused workspace cleanup</span>
           <button class="ns-action-btn" @click="showCleanup = false">Close</button>
         </div>
 
-        <div v-if="cleanupLoading" class="ns-loading">Scanning for stale namespaces…</div>
+        <div v-if="cleanupLoading" class="ns-loading">Scanning for unused workspaces…</div>
 
         <template v-else>
           <div v-if="!cleanupCandidates.length" class="cleanup-empty">
-            Nothing stale found — your namespaces all look active.
+            Nothing unused found — your workspaces all look active.
           </div>
 
           <template v-else>
@@ -413,15 +412,16 @@ onMounted(() => {
                 </svg>
               </button>
               <button
+                v-if="ns.name !== 'global'"
                 class="ns-action-btn"
                 :class="{ danger: confirmingDelete === ns.name }"
-                @click="deleteNs(ns.name, ns.memory_count)"
+                @click="deleteNs(ns.name)"
                 :title="confirmingDelete === ns.name
-                  ? `Click again to delete ${ns.memory_count} ${ns.memory_count === 1 ? 'memory' : 'memories'}`
-                  : 'Delete namespace'"
+                  ? `Click again to permanently delete ${ns.memory_count} ${ns.memory_count === 1 ? 'memory' : 'memories'}`
+                  : 'Delete workspace'"
               >
                 <template v-if="confirmingDelete === ns.name && ns.memory_count > 0">
-                  Delete {{ ns.memory_count }}?
+                  Delete {{ ns.memory_count }} permanently?
                 </template>
                 <svg v-else width="12" height="12" viewBox="0 0 16 16" fill="none">
                   <path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
@@ -433,7 +433,7 @@ onMounted(() => {
       </div>
 
       <div v-if="!namespaces.length && !loading" class="ns-empty">
-        No namespaces found. Create one to get started.
+        No workspaces found. Create one to get started.
       </div>
     </div>
   </div>

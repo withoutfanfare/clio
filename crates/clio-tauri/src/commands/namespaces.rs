@@ -126,9 +126,17 @@ pub fn cmd_purge_namespace(
     namespace: String,
 ) -> Result<u32, CommandError> {
     let app = state.local()?;
-    let count = clio_core::repository::delete_namespace_with_memories(&app.conn, &namespace)?;
+    let report = purge_workspace(&app.conn, &app.db_path, &namespace)?;
     app.cache.clear_all();
-    Ok(count as u32)
+    Ok(report.memories_purged as u32)
+}
+
+fn purge_workspace(
+    conn: &rusqlite::Connection,
+    db_path: &Path,
+    namespace: &str,
+) -> clio_core::error::Result<CleanupReport> {
+    cleanup::execute_cleanup(conn, db_path, &[namespace.to_string()], 10)
 }
 
 #[tauri::command]
@@ -214,4 +222,61 @@ pub fn cmd_restore(
     let result = clio_core::backup::restore(&app.db_path, bp)?;
     app.cache.clear_all();
     Ok(result)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clio_core::models::RememberInput;
+    use clio_core::settings::Settings;
+
+    fn remember(conn: &rusqlite::Connection, namespace: &str, content: &str) {
+        clio_core::repository::remember(
+            conn,
+            &RememberInput {
+                namespace: namespace.to_string(),
+                kind: "note".into(),
+                title: None,
+                summary: None,
+                content: content.into(),
+                tags: vec![],
+                source: None,
+                source_ref: None,
+                confidence: None,
+                importance: 3,
+                metadata: serde_json::json!({}),
+                valid_from: None,
+                valid_until: None,
+                upsert: false,
+            },
+            &Settings::default(),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn purge_workspace_deletes_its_memories_after_taking_a_backup() {
+        let directory = tempfile::tempdir().unwrap();
+        let db_path = directory.path().join("clio.db");
+        let conn = clio_core::db::open(&db_path).unwrap();
+        remember(&conn, "project:unused", "delete me");
+        remember(&conn, "project:kept", "keep me");
+
+        let report = purge_workspace(&conn, &db_path, "project:unused").unwrap();
+
+        assert_eq!(report.namespaces_deleted, vec!["project:unused"]);
+        assert_eq!(report.memories_purged, 1);
+        let backup_path = report.backup_path.expect("cleanup should create a backup");
+        assert!(Path::new(&backup_path).is_file());
+        assert_eq!(
+            clio_core::repository::list_namespaces(&conn).unwrap(),
+            vec!["project:kept"]
+        );
+
+        let backup = rusqlite::Connection::open(backup_path).unwrap();
+        assert_eq!(
+            clio_core::repository::list_namespaces(&backup).unwrap(),
+            vec!["project:kept", "project:unused"]
+        );
+    }
 }

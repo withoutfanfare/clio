@@ -11,44 +11,79 @@ const store = useMemoryStore();
 const { getColour } = useNamespaceColours();
 const router = useRouter();
 
-// Context menu state
-const ctxMenu = ref<{ x: number; y: number; ns: string } | null>(null);
+// Workspace deletion state
+const ctxMenu = ref<{
+  x: number;
+  y: number;
+  ns: string;
+  memoryCount: number | null;
+} | null>(null);
 const ctxConfirming = ref(false);
+const ctxDeleting = ref(false);
 
-function onContextMenu(e: MouseEvent, ns: string) {
-  if (store.isRemote) return;
+async function openDeleteMenu(e: MouseEvent, ns: string) {
+  if (store.isRemote || ns === "global") return;
   e.preventDefault();
+  e.stopPropagation();
   ctxConfirming.value = false;
-  ctxMenu.value = { x: e.clientX, y: e.clientY, ns };
+  ctxDeleting.value = false;
+  const target = e.currentTarget as HTMLElement;
+  const bounds = target.getBoundingClientRect();
+  const openedFromButton = e.type === "click";
+  ctxMenu.value = {
+    x: openedFromButton ? bounds.right + 6 : e.clientX,
+    y: openedFromButton ? bounds.top : e.clientY,
+    ns,
+    memoryCount: null,
+  };
   nextTick(() => document.addEventListener("click", closeCtxMenu, { once: true }));
+
+  try {
+    const details = await api.namespaceDetails();
+    const current = ctxMenu.value;
+    if (current?.ns === ns) {
+      current.memoryCount = details.find((item) => item.name === ns)?.memory_count ?? 0;
+    }
+  } catch {
+    closeCtxMenu();
+    store.pushToast(`Couldn't load workspace details for "${ns}"`, "error");
+  }
 }
 
 function closeCtxMenu() {
   ctxMenu.value = null;
   ctxConfirming.value = false;
+  ctxDeleting.value = false;
 }
 
 async function ctxDelete() {
-  if (!ctxMenu.value) return;
+  if (!ctxMenu.value || ctxMenu.value.memoryCount === null || ctxDeleting.value) return;
   if (!ctxConfirming.value) {
     ctxConfirming.value = true;
     return;
   }
   const ns = ctxMenu.value.ns;
+  ctxDeleting.value = true;
   try {
-    await api.purgeNamespace(ns);
+    const count = await api.purgeNamespace(ns);
     ctxMenu.value = null;
     ctxConfirming.value = false;
     if (store.selectedNamespace === ns) {
       selectNamespace(null);
+    } else {
+      await store.loadRecent();
     }
     await store.fetchNamespaces();
-    store.loadRecent();
-    store.pushToast(`Deleted project "${ns}"`, "info");
+    store.pushToast(
+      `Deleted workspace "${ns}" and ${count} ${count === 1 ? "memory" : "memories"}. Backup saved.`,
+      "info",
+    );
   } catch {
     ctxMenu.value = null;
     ctxConfirming.value = false;
-    store.pushToast(`Couldn't delete project "${ns}"`, "error");
+    store.pushToast(`Couldn't delete workspace "${ns}"`, "error");
+  } finally {
+    ctxDeleting.value = false;
   }
 }
 
@@ -120,7 +155,7 @@ async function createProject() {
 <template>
   <aside class="side-panel">
     <!-- Section label -->
-    <div class="section-label">Namespaces</div>
+    <div class="section-label">Workspaces</div>
 
     <nav class="panel-nav">
       <SSidebarLink
@@ -132,16 +167,34 @@ async function createProject() {
         </svg>
         <span>All memories</span>
       </SSidebarLink>
-      <SSidebarLink
+      <div
         v-for="ns in store.allNamespaces"
         :key="ns"
-        :active="store.selectedNamespace === ns"
-        @click="selectNamespace(ns)"
-        @contextmenu="onContextMenu($event, ns)"
+        class="workspace-row"
+        :class="{ 'is-deletable': !store.isRemote && ns !== 'global' }"
       >
-        <span class="ns-dot" :style="{ background: getColour(ns) }" />
-        <span>{{ ns }}</span>
-      </SSidebarLink>
+        <SSidebarLink
+          class="workspace-link"
+          :active="store.selectedNamespace === ns"
+          @click="selectNamespace(ns)"
+          @contextmenu="openDeleteMenu($event, ns)"
+        >
+          <span class="ns-dot" :style="{ background: getColour(ns) }" />
+          <span class="workspace-name">{{ ns }}</span>
+        </SSidebarLink>
+        <button
+          v-if="!store.isRemote && ns !== 'global'"
+          class="workspace-delete"
+          type="button"
+          :aria-label="`Delete workspace ${ns}`"
+          :title="`Delete workspace ${ns}`"
+          @click="openDeleteMenu($event, ns)"
+        >
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+            <path d="M3.5 4.5h9M6 4.5V3h4v1.5M5 6.5v5M8 6.5v5M11 6.5v5M4.5 4.5l.6 8.5h5.8l.6-8.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </button>
+      </div>
     </nav>
 
     <!-- Right-click context menu -->
@@ -154,12 +207,20 @@ async function createProject() {
       >
         <button
           class="ctx-item danger"
+          :disabled="ctxMenu.memoryCount === null || ctxDeleting"
           @click="ctxDelete"
         >
           <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
             <path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
           </svg>
-          {{ ctxConfirming ? `Delete "${ctxMenu.ns}" and all memories?` : `Delete project` }}
+          <template v-if="ctxDeleting">Deleting…</template>
+          <template v-else-if="ctxMenu.memoryCount === null">Checking memories…</template>
+          <template v-else-if="ctxConfirming">
+            {{ ctxMenu.memoryCount === 0
+              ? "Permanently delete workspace?"
+              : `Permanently delete ${ctxMenu.memoryCount} ${ctxMenu.memoryCount === 1 ? "memory" : "memories"}?` }}
+          </template>
+          <template v-else>Delete workspace</template>
         </button>
       </div>
     </Teleport>
@@ -228,7 +289,7 @@ async function createProject() {
         <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
           <path d="M2 4.5A1.5 1.5 0 013.5 3h3.379a1.5 1.5 0 011.06.44l.622.62a1.5 1.5 0 001.06.44H12.5A1.5 1.5 0 0114 6v5.5a1.5 1.5 0 01-1.5 1.5h-9A1.5 1.5 0 012 11.5v-7z" stroke="currentColor" stroke-width="1.1"/>
         </svg>
-        Manage namespaces
+        Manage workspaces
       </SSidebarLink>
       <SSidebarLink @click="router.push({ name: 'context-builder' })">
         <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
@@ -366,6 +427,52 @@ async function createProject() {
   min-height: 0;
 }
 
+.workspace-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-items: center;
+  min-width: 0;
+}
+
+.workspace-row.is-deletable {
+  grid-template-columns: minmax(0, 1fr) 36px;
+}
+
+.workspace-link {
+  min-width: 0;
+}
+
+.workspace-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workspace-delete {
+  width: 36px;
+  height: 36px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-text-tertiary);
+  cursor: pointer;
+}
+
+.workspace-delete:hover {
+  color: var(--color-danger);
+  background: var(--color-danger-subtle);
+}
+
+.workspace-delete:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 1px;
+  color: var(--color-danger);
+}
+
 /* Sidebar link overrides — fix icon shrinking, add gap, improve readability */
 .panel-nav :deep(button),
 .panel-footer :deep(button) {
@@ -495,6 +602,11 @@ async function createProject() {
 
 .ctx-item.danger {
   color: var(--color-danger);
+}
+
+.ctx-item:disabled {
+  cursor: wait;
+  opacity: 0.65;
 }
 
 .ctx-item.danger:hover {
