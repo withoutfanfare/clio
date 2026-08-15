@@ -435,6 +435,7 @@ fn checkpoint_request() -> clio_core::checkpoint::CheckpointRequest {
         source: "claude-session".into(),
         session_id: "race-session".into(),
         cursor: 40,
+        recover_stale: false,
         namespace_override: None,
         default_namespace: Some("project:multi-machine".into()),
         cwd: None,

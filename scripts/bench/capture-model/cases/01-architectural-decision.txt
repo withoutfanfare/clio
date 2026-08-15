@@ -1,0 +1,19 @@
+Project: scooda | Branch: develop
+Files touched (2): app/Jobs/ProcessArtworkUpload.php, app/Http/Controllers/ArtworkController.php
+
+---
+
+## User
+The artwork upload endpoint keeps timing out on big TIFF files. Should we move the processing off the request?
+
+## Assistant
+Yes. Processing a 400MB TIFF inline holds the PHP-FPM worker for up to 90 seconds, which is what's tripping the 60-second gateway timeout. I propose moving colour-profile conversion and thumbnail generation to a queued job: the controller stores the original to S3, dispatches ProcessArtworkUpload onto the `media` queue, and the UI polls a status endpoint.
+
+## User
+Agreed — let's do the queue. Use the existing Horizon setup rather than adding a new worker system, and keep the original file untouched so we can reprocess if the pipeline changes.
+
+## Assistant
+Decision recorded. Implementation sketch: ProcessArtworkUpload job with 3 tries and a 300s timeout on the `media` queue; originals stay immutable in s3://scooda-artwork/originals/; derived files go to /derived. Horizon already supervises the `media` queue so no new infrastructure is needed. Reprocessing is then a matter of re-dispatching over the originals.
+
+## User
+Good. We'll pick up the implementation tomorrow with a fresh session.

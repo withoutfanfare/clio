@@ -141,6 +141,10 @@ enum Command {
     /// Show memory statistics and analytics.
     Stats(StatsArgs),
 
+    /// Aggregated distillation token usage per day (from recorded
+    /// checkpoint usage; older checkpoints predate recording).
+    Usage(UsageArgs),
+
     /// Event-backed usefulness report: capture, attention, surfacing and
     /// delivery state. Untracked reads only — never changes ranking.
     Effectiveness(EffectivenessArgs),
@@ -530,6 +534,10 @@ struct CheckpointArgs {
     #[arg(long)]
     cursor: i64,
 
+    /// Recover a retained older checkpoint after this session has advanced.
+    #[arg(long)]
+    recover_stale: bool,
+
     /// Override the namespace suggested by the LLM for every memory.
     #[arg(long)]
     namespace: Option<String>,
@@ -559,6 +567,13 @@ struct StatsArgs {
     /// Scope statistics to a specific namespace.
     #[arg(long)]
     namespace: Option<String>,
+}
+
+#[derive(Parser)]
+struct UsageArgs {
+    /// Number of days to cover, counting back from now.
+    #[arg(long, default_value_t = 30)]
+    days: u32,
 }
 
 #[derive(Parser)]
@@ -1148,7 +1163,8 @@ fn run_with_routing(cli: Cli, raw_args: &[OsString]) -> Result<(), Box<dyn std::
         if let Some(remote) = local_settings.remote.as_ref() {
             remote.validate()?;
             let namespace = current_namespace();
-            return remote_mcp::run_cli(remote, raw_args, namespace.as_deref());
+            let cwd = current_context_cwd();
+            return remote_mcp::run_cli(remote, raw_args, namespace.as_deref(), cwd.as_deref());
         }
     }
     run(cli)
@@ -1197,6 +1213,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         Command::Action(args) => cmd_action(cli.db_path.as_deref(), cli.json, args),
         Command::Inbox(args) => cmd_inbox(cli.db_path.as_deref(), cli.json, args),
         Command::Stats(args) => cmd_stats(cli.db_path.as_deref(), cli.json, args),
+        Command::Usage(args) => cmd_usage(cli.db_path.as_deref(), cli.json, args),
         Command::Effectiveness(args) => cmd_effectiveness(cli.db_path.as_deref(), cli.json, args),
         Command::Activity(args) => cmd_activity(cli.db_path.as_deref(), cli.json, args),
         Command::SuggestLinks(args) => cmd_suggest_links(cli.db_path.as_deref(), cli.json, args),
@@ -2176,6 +2193,7 @@ fn cmd_checkpoint(
         source: args.source,
         session_id: args.session_id,
         cursor: args.cursor,
+        recover_stale: args.recover_stale,
         namespace_override: args.namespace,
         default_namespace,
         cwd,
@@ -3005,6 +3023,43 @@ fn cmd_stats(
         print_stats(&memory_stats);
     }
 
+    Ok(())
+}
+
+fn cmd_usage(
+    db_path: Option<&str>,
+    json: bool,
+    args: UsageArgs,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let conn = open_db(db_path)?;
+    let days = clio_core::usage::usage_by_day(&conn, args.days)?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&days)?);
+        return Ok(());
+    }
+
+    if days.is_empty() {
+        println!("No checkpoints in the last {} day(s).", args.days.max(1));
+        return Ok(());
+    }
+
+    println!(
+        "{:<12} {:>6} {:>12} {:>10} {:>10} {:>10} {:>11}",
+        "day", "calls", "input", "cached", "output", "reasoning", "unrecorded"
+    );
+    for d in &days {
+        println!(
+            "{:<12} {:>6} {:>12} {:>10} {:>10} {:>10} {:>11}",
+            d.day,
+            d.calls,
+            d.input_tokens,
+            d.cached_input_tokens,
+            d.output_tokens,
+            d.reasoning_tokens,
+            d.unrecorded_calls
+        );
+    }
     Ok(())
 }
 
@@ -4534,6 +4589,7 @@ mod tests {
             source: "claude-session".into(),
             session_id: "session-1".into(),
             cursor: 10,
+            recover_stale: false,
             namespace: None,
             branch: None,
             ticket: None,

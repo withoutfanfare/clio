@@ -198,6 +198,9 @@ A checkpoint commits the distillation of one session delta exactly once, keyed b
 **Checkpoint invariants:**
 - A capture attempt ends in exactly one visible state: durable success (checkpoint row), pending retry (no row) or a surfaced error — never silent loss
 - A repeated or concurrent delivery of the same key replays the original result; no duplicate atoms
+- An unseen cursor older than the session head is rejected during normal capture.
+  Explicit operator recovery may accept a retained older delta, but the same
+  checkpoint identity and per-atom provenance still apply.
 - Per-atom provenance is `source` + `source_ref = {session_id}@{cursor}-{index}`, preserving the `UNIQUE(source, source_ref)` upsert rule
 - Checkpoint rows are the replay proof: never deleted to tidy up
 - Checkpoint idempotency is additional to, and must not weaken, source/source-ref upsert idempotency

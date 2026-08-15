@@ -24,6 +24,10 @@ pub struct CheckpointRequest {
     pub session_id: String,
     /// Monotonic transcript cursor: how far into the session this delta ends.
     pub cursor: i64,
+    /// Operator-authorised recovery of a retained checkpoint that arrived
+    /// after a later cursor. Exact-key replay still prevents duplicates.
+    #[serde(default)]
+    pub recover_stale: bool,
     /// Explicit namespace override — always wins.
     pub namespace_override: Option<String>,
     /// Working-directory namespace used when the model does not promote a
@@ -133,8 +137,9 @@ pub fn store_checkpoint(
         }
 
         // Cursors are monotonic per session. An older cursor arriving after a
-        // newer one committed means stale or overlapping client state (e.g. a
-        // lost spool) — reject it visibly rather than re-applying old deltas.
+        // newer one committed means stale or overlapping client state — reject
+        // it unless an operator is explicitly recovering a retained delta.
+        // Exact-key replay above still makes recovery idempotent.
         let latest: Option<i64> = conn.query_row(
             "SELECT MAX(cursor) FROM session_checkpoints
              WHERE source = ?1 AND session_id = ?2",
@@ -142,7 +147,7 @@ pub fn store_checkpoint(
             |row| row.get(0),
         )?;
         if let Some(latest) = latest {
-            if req.cursor < latest {
+            if req.cursor < latest && !req.recover_stale {
                 return Err(ClioError::Validation(format!(
                     "cursor {} is behind this session's latest committed cursor {latest}; \
                      stale delta rejected",
@@ -420,11 +425,12 @@ pub fn checkpoint(
     }
 
     // Provider work strictly outside the write transaction.
-    let memories = crate::capture::distill(digest, config)?;
+    let (memories, usage) = crate::capture::distill_with_usage(digest, config)?;
 
     let result = store_checkpoint(conn, req, &memories, settings)?;
 
     if !result.replayed {
+        crate::usage::record_checkpoint_usage(conn, &result.checkpoint_id, &config.model, &usage);
         embed_checkpoint_memories(conn, &result.stored_memory_ids, settings);
     }
 
@@ -464,6 +470,7 @@ mod tests {
             source: "claude-session".into(),
             session_id: "session-1".into(),
             cursor,
+            recover_stale: false,
             namespace_override: None,
             default_namespace: Some("project:checkpoint-test".into()),
             cwd: Some("/tmp/project".into()),
@@ -556,6 +563,30 @@ mod tests {
         let later =
             store_checkpoint(&conn, &request(30), &[atom("next delta")], &settings).unwrap();
         assert!(!later.replayed);
+    }
+
+    #[test]
+    fn operator_recovery_accepts_a_missing_stale_checkpoint_exactly_once() {
+        let conn = test_conn();
+        let settings = Settings::default();
+
+        store_checkpoint(&conn, &request(20), &[atom("newer delta")], &settings).unwrap();
+
+        let mut recovery = request(10);
+        recovery.recover_stale = true;
+        let recovered =
+            store_checkpoint(&conn, &recovery, &[atom("retained old delta")], &settings).unwrap();
+
+        assert!(!recovered.replayed);
+        assert_eq!(memory_count(&conn), 2);
+        assert_eq!(checkpoint_count(&conn), 2);
+
+        let replay = store_checkpoint(&conn, &recovery, &[atom("different")], &settings).unwrap();
+        assert!(replay.replayed);
+        assert_eq!(replay.checkpoint_id, recovered.checkpoint_id);
+        assert_eq!(replay.stored_memory_ids, recovered.stored_memory_ids);
+        assert_eq!(memory_count(&conn), 2);
+        assert_eq!(checkpoint_count(&conn), 2);
     }
 
     #[test]

@@ -8,6 +8,24 @@ against a copy of a database and never modify live data.
 | `link-invariants.sh` | Does auto-linking obey its design rules? |
 | `recall-eval.py` | Does retrieval return the *right* memories? |
 | `dial-in.sh` | Which threshold and cap maximise retrieval quality? |
+| `capture-model/run.py` | Which capture model distils correctly, and at what cost? |
+
+## capture-model/run.py
+
+The five distillation cases from `docs/operations/capture-model-benchmark.md` as
+checked-in fixtures, with an automated judge (kinds, namespace scoping, prompt
+injection, receipt count, the 6-memory cap) and per-model token/latency/cost
+totals. Unlike the other benchmarks this one makes REAL, paid model calls —
+a full four-model run is a few dozen small requests. `--dry-run` inside the
+harness means nothing is stored; point it at a throwaway DB whose settings
+enable capture, and run it from a non-project directory so `global` promotion
+is what gets graded:
+
+```sh
+printf '{"capture":{"enabled":true}}' > /tmp/bench-settings/clio-settings.json  # sibling of the DB
+CLIO_BIN=./target/debug/clio scripts/bench/capture-model/run.py \
+  --db /tmp/bench-settings/bench.db --repeats 2 --out /tmp/bench-results.json
+```
 
 ## link-invariants.sh
 

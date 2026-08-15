@@ -194,7 +194,10 @@ when confidence is below the configured threshold.
 the LLM and extracts **zero or more** self-contained, durable memories
 (decisions, facts, constraints, insights). Routine input yields nothing, so
 noise is filtered by design. Uses the same capture pipeline (review routing,
-auto-embed) per extracted memory.
+auto-embed) per extracted memory. One call yields at most **6 memories** (5
+plus the single session receipt): the prompt states the limit and the parser
+enforces it deterministically, keeping the receipt, open loops and the highest
+importance first.
 
 ```sh
 # Preview the durable memories without storing
@@ -236,6 +239,12 @@ memory's namespace; `--branch` and `--ticket` record session context on the
 checkpoint. Requires the capture pipeline to be enabled. With `--json` the
 result envelope includes `replayed`, `stored_memory_ids` and
 `queued_review_ids`.
+
+Cursors normally advance monotonically within a session; an unseen cursor older
+than the latest committed cursor is rejected as stale. Use `--recover-stale`
+only when deliberately replaying a retained dead-letter job. The exact
+`source + session-id + cursor` key remains idempotent, so retrying that recovery
+replays its stored result rather than creating duplicates.
 
 ---
 
@@ -421,7 +430,15 @@ clio stats
 clio stats --namespace project:clio
 clio activity
 clio activity --namespace project:clio --limit 20
+clio usage             # distillation token spend per day (default 30 days)
+clio usage --days 7 --json
 ```
+
+`usage` aggregates the token counts recorded on each checkpoint since
+migration `014_checkpoint_usage`: calls, input tokens (with the cached
+portion), output tokens and reasoning tokens per UTC day. Checkpoints that
+predate recording — or whose best-effort stamp failed — appear in the
+`unrecorded` column rather than being counted as zero-cost.
 
 ---
 

@@ -178,6 +178,8 @@ Do NOT capture:
 
 Each captured memory must be SELF-CONTAINED: a reader with no access to this session must understand it. Prefer fewer, higher-value memories. If the session produced nothing durable, return an empty array — this is the correct and expected outcome for most routine sessions.
 
+HARD LIMIT: emit at most 5 memories, plus the single receipt described below. A typical session yields 0–2. If more candidates exist, keep only the most durable and drop the rest — do not merge several weak items into one to smuggle them past the limit. When in doubt whether something is durable, it is not: leave it out.
+
 Additionally, if (and only if) the session performed substantive work — commits made, files changed, a bug diagnosed, a document produced — emit EXACTLY ONE extra memory with "kind": "receipt": a 2–4 sentence record of what was done, what was deliberately left undone, and why the session stopped where it did. Write it so someone picking the work up cold understands the state of play. Use "importance": 2 and include the tag "receipt". Sessions with no substantive work get no receipt.
 
 Respond ONLY with a JSON object of the form {"memories": [...]} (the array possibly empty). Each element is an object with:
@@ -567,7 +569,66 @@ pub fn parse_distillation(raw: &str) -> Result<Vec<DistilledMemory>> {
         })
         .collect();
 
-    Ok(memories)
+    Ok(cap_distilled_memories(memories))
+}
+
+/// Hard ceiling on knowledge atoms accepted from one distillation call.
+/// `parse_distillation` separately keeps only the first receipt, so the two
+/// limits compose to "5 knowledge atoms plus one receipt". The prompt
+/// instructs the model to stay within this; the cap is the deterministic
+/// backstop for when it does not.
+pub const MAX_KNOWLEDGE_ATOMS: usize = 5;
+
+/// Total ceiling per distillation: the knowledge budget plus the receipt slot.
+pub const MAX_DISTILLED_MEMORIES: usize = MAX_KNOWLEDGE_ATOMS + 1;
+
+/// Enforce [`MAX_KNOWLEDGE_ATOMS`] deterministically over the non-receipt
+/// atoms (the single receipt never competes for a knowledge slot and is never
+/// dropped here). Atoms carrying an open loop (`attention`) rank first, then
+/// highest importance with confidence as the tiebreak — so only a
+/// pathological response loses an open loop. Survivors keep their original
+/// order so provenance refs stay stable across a retry.
+fn cap_distilled_memories(memories: Vec<DistilledMemory>) -> Vec<DistilledMemory> {
+    let knowledge_atoms = memories.iter().filter(|m| m.kind != "receipt").count();
+    if knowledge_atoms <= MAX_KNOWLEDGE_ATOMS {
+        return memories;
+    }
+    let dropped = knowledge_atoms - MAX_KNOWLEDGE_ATOMS;
+
+    let mut ranked: Vec<usize> = (0..memories.len())
+        .filter(|&i| memories[i].kind != "receipt")
+        .collect();
+    ranked.sort_by(|&a, &b| {
+        let key = |i: usize| {
+            let m = &memories[i];
+            (
+                m.attention.is_none(),
+                -(m.importance as i64),
+                // Total order: NaN or equal confidence falls through to index.
+                -(m.confidence * 1000.0) as i64,
+                i,
+            )
+        };
+        key(a).cmp(&key(b))
+    });
+
+    let mut keep: Vec<usize> = ranked.into_iter().take(MAX_KNOWLEDGE_ATOMS).collect();
+    keep.extend((0..memories.len()).filter(|&i| memories[i].kind == "receipt"));
+    keep.sort_unstable();
+
+    tracing::warn!(
+        "distillation returned {knowledge_atoms} knowledge atoms; kept {MAX_KNOWLEDGE_ATOMS}, \
+         dropped {dropped} lowest-ranked (the prompt's hard limit was ignored)"
+    );
+
+    let mut memories = memories;
+    let mut index = 0;
+    memories.retain(|_| {
+        let kept = keep.binary_search(&index).is_ok();
+        index += 1;
+        kept
+    });
+    memories
 }
 
 /// True when a distilled memory's title describes the working session or commit
@@ -1186,6 +1247,86 @@ mod tests {
         let memories = parse_distillation(raw).expect("parse failed");
         assert_eq!(memories.len(), 1);
         assert_eq!(memories[0].content, "First receipt.");
+    }
+
+    #[test]
+    fn parse_distillation_caps_memories_keeping_receipt_attention_and_importance() {
+        let mut items: Vec<String> = (1..=7)
+            .map(|i| {
+                format!(
+                    r#"{{"content":"Durable fact number {i}.","kind":"fact","title":"Fact {i}","summary":"","tags":["t"],"namespace":"project:clio","importance":{},"confidence":0.9}}"#,
+                    if i <= 2 { 5 } else { 3 - (i % 2) }
+                )
+            })
+            .collect();
+        items.push(
+            r#"{"content":"Follow up with the vendor.","kind":"task","title":"Open loop","summary":"","tags":["t"],"namespace":"project:clio","importance":1,"confidence":0.5,"attention":{"explicitness":"explicit","owner":"user"}}"#.into(),
+        );
+        items.push(
+            r#"{"content":"Did the work; stopped at tests.","kind":"receipt","title":"Session receipt","summary":"","tags":["receipt"],"namespace":"project:clio","importance":2,"confidence":0.9}"#.into(),
+        );
+        let raw = format!("[{}]", items.join(","));
+
+        let memories = parse_distillation(&raw).expect("parse failed");
+        assert_eq!(memories.len(), MAX_DISTILLED_MEMORIES);
+        assert!(
+            memories.iter().any(|m| m.kind == "receipt"),
+            "receipt survives the cap"
+        );
+        assert!(
+            memories.iter().any(|m| m.attention.is_some()),
+            "open loop survives the cap despite low importance"
+        );
+        // Both importance-5 atoms survive; the dropped ones are low-importance.
+        assert_eq!(memories.iter().filter(|m| m.importance == 5).count(), 2);
+        // Original order is preserved among survivors.
+        let contents: Vec<&str> = memories.iter().map(|m| m.content.as_str()).collect();
+        let mut sorted_by_input_order = contents.clone();
+        sorted_by_input_order.sort_by_key(|c| {
+            [
+                "Durable fact number 1.",
+                "Durable fact number 2.",
+                "Durable fact number 3.",
+                "Durable fact number 4.",
+                "Durable fact number 5.",
+                "Durable fact number 6.",
+                "Durable fact number 7.",
+                "Follow up with the vendor.",
+                "Did the work; stopped at tests.",
+            ]
+            .iter()
+            .position(|x| x == c)
+            .unwrap()
+        });
+        assert_eq!(contents, sorted_by_input_order);
+    }
+
+    #[test]
+    fn parse_distillation_caps_knowledge_atoms_even_without_a_receipt() {
+        // Six knowledge atoms and no receipt must still cap at five: the
+        // receipt slot is not a spare knowledge slot.
+        let items: Vec<String> = (1..=6)
+            .map(|i| {
+                format!(
+                    r#"{{"content":"Standalone durable fact {i}.","kind":"fact","title":"Fact {i}","summary":"","tags":["t"],"namespace":"project:clio","importance":3,"confidence":0.9}}"#
+                )
+            })
+            .collect();
+        let raw = format!("[{}]", items.join(","));
+        let memories = parse_distillation(&raw).expect("parse failed");
+        assert_eq!(memories.len(), MAX_KNOWLEDGE_ATOMS);
+        assert!(memories.iter().all(|m| m.kind != "receipt"));
+    }
+
+    #[test]
+    fn parse_distillation_under_cap_is_untouched() {
+        let raw = r#"[
+            {"content":"Fact one.","kind":"fact","title":"F1","summary":"","tags":["t"],"namespace":"project:clio","importance":1,"confidence":0.1},
+            {"content":"Fact two.","kind":"fact","title":"F2","summary":"","tags":["t"],"namespace":"project:clio","importance":1,"confidence":0.1}
+        ]"#;
+        let memories = parse_distillation(raw).expect("parse failed");
+        assert_eq!(memories.len(), 2);
+        assert_eq!(memories[0].content, "Fact one.");
     }
 
     #[test]

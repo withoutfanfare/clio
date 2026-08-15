@@ -31,6 +31,13 @@ There is no long-running `clio-mcp` service and no systemd unit to deploy.
 Every `clio remote-mcp` SSH connection starts one `clio-mcp` child process.
 That process exits when its client disconnects.
 
+Long-lived `remote-mcp` bridges deliberately bypass SSH connection sharing.
+Short-lived CLI and hook commands still honour the host's `ControlMaster`
+configuration, but giving each persistent MCP client its own connection keeps
+those clients from exhausting Atlas's per-connection SSH session limit.
+Remote CLI forwarding also honours an explicit `CLIO_CONTEXT_CWD`, allowing a
+retained capture job to record its original path after that worktree is gone.
+
 Activating a new executable therefore does not interrupt an existing session.
 An existing process keeps using the old executable inode until its AI client is
 restarted. Restart every client after a release when all machines must use the

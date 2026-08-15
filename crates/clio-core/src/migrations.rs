@@ -371,6 +371,16 @@ const MIGRATIONS: &[Migration] = &[
                 WHERE external_id IS NOT NULL;
         "#,
     },
+    Migration {
+        version: "014_checkpoint_usage",
+        sql: r#"
+            ALTER TABLE session_checkpoints ADD COLUMN model TEXT;
+            ALTER TABLE session_checkpoints ADD COLUMN input_tokens INTEGER;
+            ALTER TABLE session_checkpoints ADD COLUMN cached_input_tokens INTEGER;
+            ALTER TABLE session_checkpoints ADD COLUMN output_tokens INTEGER;
+            ALTER TABLE session_checkpoints ADD COLUMN reasoning_tokens INTEGER;
+        "#,
+    },
 ];
 
 /// Run all pending migrations inside a transaction.

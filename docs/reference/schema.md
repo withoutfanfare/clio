@@ -377,10 +377,20 @@ CREATE UNIQUE INDEX idx_session_checkpoints_identity
 | `ticket` | ticket/issue identifier | nullable |
 | `result_json` | stored result envelope: memory IDs and review-item IDs | JSON; never transcript text or secrets |
 | `created_at` | when the checkpoint committed | ISO-8601 UTC |
+| `model` | capture model that distilled this delta | nullable; added by `014_checkpoint_usage` |
+| `input_tokens` | provider-reported prompt tokens | nullable; added by `014_checkpoint_usage` |
+| `cached_input_tokens` | portion of `input_tokens` served from the provider's prompt cache | nullable; added by `014_checkpoint_usage` |
+| `output_tokens` | provider-reported completion tokens | nullable; added by `014_checkpoint_usage` |
+| `reasoning_tokens` | provider-reported hidden reasoning tokens | nullable; added by `014_checkpoint_usage` |
+
+Usage columns are stamped best-effort after the checkpoint commits (fire-and-forget, like access tracking); `NULL` means the checkpoint predates recording, was replayed, or the stamp failed. Aggregate with `clio usage`.
 
 ### Checkpoint rules
 
 - The identity is `(source, session_id, cursor)`: a repeated or concurrently delivered key replays the stored `result_json` instead of storing new atoms.
+- Normal capture rejects an unseen cursor older than the session's latest
+  checkpoint. The CLI's explicit operator-recovery path may accept a retained
+  older delta without changing the exact-key replay rule.
 - The extracted memories, review items and checkpoint row commit in one transaction; any failure rolls back all of them. No partial session can persist.
 - Model extraction and embedding happen strictly outside the write transaction; auto-embedding runs best-effort after commit.
 - An intentionally empty extraction is a successful checkpoint and is never redistilled.
