@@ -1,9 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-const sidebarWidth = await import("./sidebarWidth.ts").catch(() => ({
-  normaliseSidebarWidth: () => Number.NaN,
-}));
+const sidebarWidth = await import("./sidebarWidth.ts");
 
 test("uses the default width when the stored value is missing or invalid", () => {
   assert.equal(sidebarWidth.normaliseSidebarWidth(null), 220);
