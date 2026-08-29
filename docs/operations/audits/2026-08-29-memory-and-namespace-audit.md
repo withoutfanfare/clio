@@ -2,13 +2,16 @@
 
 ## Status
 
-This is a read-only audit of the live Atlas corpus. No memory, namespace,
-attention item, link, archive state or database row was changed.
+The audit and approved first repair slice are complete. At 14:47 UTC, Atlas
+atomically archived 103 obsolete derived projections, moved 84 durable memories
+to approved canonical namespaces and removed 193 now-invalid automatic links.
+No memory was deleted, no human-authored link was removed and ambiguous queues
+remain unchanged.
 
-Local implementation has since added the fail-closed repair mechanism and
-corrected Waypoint's projection source. Those changes are not installed on
-Atlas. Manifest review and explicit apply approval remain mandatory before any
-live schema or data change.
+Clio release `4d07219d3552f9af2b26f8603404f42f1886c6ca` is active on Atlas. The
+Waypoint source correction is pushed on `develop`, but still needs activation
+in the installed Waypoint desktop/CLI build before recurrence prevention is
+operationally complete.
 
 The corpus is live and may move slightly after the snapshot. Counts below are
 from the complete paginated snapshot taken at 03:51 UTC on 29 August 2026.
@@ -64,11 +67,10 @@ These 89 records claim to describe current worktree state. They are
 high-confidence archive candidates because their derived subject no longer
 exists. They are not durable project history.
 
-Waypoint currently builds the Clio namespace as `project:<repository-slug>` in
-`worktree_projection_service.rs` and only upserts the projection. There is no
-corresponding Clio archive/deprojection operation when the worktree lifecycle
-becomes archived. The writer therefore both fragments namespaces and leaves
-retired projections active.
+The installed Waypoint build used the repository slug as the namespace and only
+upserted projections. The pushed correction instead requires an explicit
+override or `.clio-namespace`, retains the slug only as `repo:` provenance and
+archives an archived worktree's projection by stable source reference.
 
 ### 2. Temporary repository tests polluted the live corpus
 
@@ -195,32 +197,29 @@ manifest.
 Counts in this table are categories, not a sum: some records can appear in more
 than one review category.
 
-## Mutation gate
+## Mutation gate result
 
 No live cleanup should be applied through a sequence of ordinary `clio move`
 or per-record archive calls. The approved design requires:
 
 1. fix and verify Waypoint's canonical namespace and retirement behaviour —
-   complete locally, not installed;
+   implemented, tested and pushed; installed-build activation remains;
 2. implement Clio's history-preserving audit, repair journal and conditional
-   rollback path — complete locally, not installed;
+   rollback path — complete and active on Atlas;
 3. verify linked recall excludes archived or expired memories — covered by the
    full green workspace test run;
-4. take an online Atlas backup and require `PRAGMA quick_check = ok` — complete
-   for the private proposal;
+4. take an online Atlas backup and require `PRAGMA quick_check = ok` — complete;
 5. generate a complete private manifest tied to that backup and review its
    aggregate counts — complete and rehearsed below;
-6. obtain explicit approval for the reviewed schema and data mutation set;
+6. obtain explicit approval for the reviewed schema and data mutation set —
+   complete for the refreshed state-bound digest;
 7. install the repair-capable CLI and apply the complete set in one transaction
-   with compare-and-swap checks;
-8. run post-repair recall, link, namespace and rollback canaries.
+   with compare-and-swap checks — complete;
+8. run post-repair recall, link, namespace and rollback canaries — complete.
 
-Until the gate is deployed, reviewed and explicitly approved, the audit is the
-disposition preview. It must not be treated as permission to change live data.
+## Implementation evidence
 
-## Local implementation evidence
-
-The first two gate prerequisites are now implemented locally:
+The repair mechanism is installed on Atlas:
 
 - migration `015_memory_repair_journal` adds immutable transaction and journal
   tables, closed journals and a database-wide generation for cross-process
@@ -245,10 +244,9 @@ The first two gate prerequisites are now implemented locally:
 A fresh pre-manifest read found the candidate counts unchanged: 124 active
 Waypoint projections, 21 current paths, 88 missing paths, 103 unique archive
 intents after synthetic-test overlap, and 84 approved move intents. The private
-intent file is outside Git. This remains proposal evidence, not mutation
-authority.
+intent file remains outside Git.
 
-## Private Atlas proposal evidence
+## Private Atlas execution evidence
 
 A fresh online Atlas backup was taken for the proposal and copied to a private
 local directory. The remote and local files matched by SHA-256 and byte count,
@@ -258,9 +256,16 @@ backup is 83,718,144 bytes with SHA-256
 The temporary remote copy was removed after verification. Every regenerated
 repair snapshot, manifest and journal also has mode `0600`.
 
-The resulting private manifest has digest
-`ef2954a1e29e958a93770c02189371813a89f37b9245e6a4c755ba4a5b4de80c` and
-contains:
+The original reviewed manifest had digest
+`ef2954a1e29e958a93770c02189371813a89f37b9245e6a4c755ba4a5b4de80c`.
+It was not applied because 36 unrelated memories arrived before the mutation
+gate, so its full compare-and-swap snapshot correctly became stale.
+
+Both stable Clio entry points were then gated and the existing MCP processes
+stopped to create a controlled maintenance window. A refreshed manifest had
+digest `4aaedecc369f72b21dff0e823d22c5b073b54352c1e64ec76219730281e83f21`.
+Its complete approved mutation payload hashed identically to the original and
+contained:
 
 - 187 unique targets: 103 archives and 84 namespace moves;
 - no attached attention changes;
@@ -268,20 +273,35 @@ contains:
 - 193 automatic links that would become invalid and must be removed;
 - no human-authored link in the touching set.
 
-The exact manifest was applied to a disposable copy of the validated backup.
+The refreshed exact manifest was applied to a disposable copy of its validated
+backup.
 All 187 after-states matched, all 193 planned links were absent, the database
 remained healthy and the immutable forward journal contained 380 entries. A
 conditional rollback then restored all 187 before-states and all 246 touching
 links exactly, recorded a separate 380-entry rollback journal and again passed
 `PRAGMA quick_check`.
 
-A final read-only Atlas check still reported migration `014_checkpoint_usage`,
-no repair tables, 9,850 memories, 9,722 active, 128 archived and
-`PRAGMA quick_check = ok`. No live repair schema or data mutation has occurred.
-The private manifest remains proposal evidence pending explicit approval.
+A fresh live backup was retained immediately before the approved apply. Its
+SHA-256 is
+`69f21dce327982a8d8451a07d701139edde032681a13a053db0d68d4733527a7`.
+Migration 015 and the repair then committed in one transaction with 380
+immutable journal entries. The exported rollback journal has SHA-256
+`e4fa670123c29114760b132aafb7a4b97f9ce4423823ff4a9f294b6f347812c3`.
+Every private manifest, backup and journal has mode `0600`.
 
-## Proposed first live repair slice
+## First live repair result
 
-The reviewed first slice contains only the 103 archive candidates and 84
-approved namespace moves. The ambiguous namespace, receipt, attention and
-privacy queues remain excluded and should follow as separately reviewed slices.
+Post-commit checks matched all 187 after-states and all 246 planned touching-link
+outcomes. Atlas now has 9,886 memories: 9,655 active and 231 archived. All 103
+obsolete Waypoint projections are archived, 21 current projections remain
+active, none of the 193 invalid planned links remains, journal re-export is
+byte-identical and `PRAGMA quick_check = ok`.
+
+Default recall hid a repaired archived projection while
+`--include-archived` returned it. Aggregate stats, semantic search and a
+transient MCP initialise handshake passed through the activated release. The
+maintenance gate was removed and both stable binaries resolve to `4d07219`.
+
+The ambiguous namespace, receipt, attention and privacy queues remain excluded
+and require separately reviewed slices. The conditional rollback is retained
+but was not run against live Atlas because every post-repair canary passed.
