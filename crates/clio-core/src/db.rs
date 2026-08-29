@@ -26,24 +26,74 @@ pub fn open(path: &Path) -> Result<Connection> {
         ))
     })?;
 
-    apply_pragmas(&conn)?;
+    enable_wal(&conn)?;
+    apply_connection_pragmas(&conn)?;
     migrations::run(&conn)?;
 
+    Ok(conn)
+}
+
+/// Open an existing database without applying pending migrations or changing
+/// its persistent journal mode.
+///
+/// This is intentionally narrow: evidence-backed repair commands need to put
+/// migration installation and data mutation inside one outer transaction.
+pub fn open_existing_unmigrated(path: &Path) -> Result<Connection> {
+    if !path.is_file() {
+        return Err(ClioError::Config(format!(
+            "database does not exist at {}",
+            path.display()
+        )));
+    }
+    let conn = Connection::open(path).map_err(|e| {
+        ClioError::Storage(format!(
+            "database could not be opened at {}: {e}",
+            path.display()
+        ))
+    })?;
+    apply_connection_pragmas(&conn)?;
+    Ok(conn)
+}
+
+/// Open an existing database read-only without migrations or persistent
+/// pragmas. Repair journal export uses this path so evidence retrieval cannot
+/// change the database it is inspecting.
+pub fn open_existing_read_only(path: &Path) -> Result<Connection> {
+    if !path.is_file() {
+        return Err(ClioError::Config(format!(
+            "database does not exist at {}",
+            path.display()
+        )));
+    }
+    let conn = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .map_err(|e| {
+            ClioError::Storage(format!(
+                "database could not be opened read-only at {}: {e}",
+                path.display()
+            ))
+        })?;
+    conn.busy_timeout(std::time::Duration::from_millis(5000))?;
+    conn.execute_batch("PRAGMA query_only = ON; PRAGMA foreign_keys = ON;")?;
     Ok(conn)
 }
 
 /// Open an in-memory database for testing. Applies pragmas and runs migrations.
 pub fn open_in_memory() -> Result<Connection> {
     let conn = Connection::open_in_memory()?;
-    apply_pragmas(&conn)?;
+    enable_wal(&conn)?;
+    apply_connection_pragmas(&conn)?;
     migrations::run(&conn)?;
     Ok(conn)
 }
 
-fn apply_pragmas(conn: &Connection) -> Result<()> {
+fn enable_wal(conn: &Connection) -> Result<()> {
+    conn.execute_batch("PRAGMA journal_mode = WAL;")?;
+    Ok(())
+}
+
+fn apply_connection_pragmas(conn: &Connection) -> Result<()> {
     conn.execute_batch(
-        "PRAGMA journal_mode = WAL;
-         PRAGMA foreign_keys = ON;
+        "PRAGMA foreign_keys = ON;
          PRAGMA busy_timeout = 5000;
          PRAGMA synchronous = NORMAL;
          PRAGMA temp_store = MEMORY;

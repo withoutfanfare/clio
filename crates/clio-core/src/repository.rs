@@ -1178,6 +1178,39 @@ pub fn archive(conn: &Connection, id: &str) -> Result<Memory> {
     get_raw(conn, id)
 }
 
+/// Soft-archive the exact memory identified by its stable provenance.
+///
+/// A missing identity is a successful no-op so derived projections can retire
+/// idempotently even when their optional Clio write never succeeded.
+pub fn archive_by_source_ref(
+    conn: &Connection,
+    source: &str,
+    source_ref: &str,
+) -> Result<Option<Memory>> {
+    if source.trim().is_empty() || source_ref.trim().is_empty() {
+        return Err(ClioError::Validation(
+            "source and source_ref are required to archive by provenance".into(),
+        ));
+    }
+
+    crate::db::with_savepoint(conn, "archive_by_source_ref", || {
+        let Some(id) = find_by_source_ref(conn, source, source_ref)? else {
+            return Ok(None);
+        };
+        let current = get_raw(conn, &id)?;
+        if current.archived_at.is_some() {
+            return Ok(Some(current));
+        }
+        let now = now_utc();
+        conn.execute(
+            "UPDATE memories SET archived_at = ?1, updated_at = ?1
+             WHERE id = ?2 AND archived_at IS NULL",
+            params![now, id],
+        )?;
+        Ok(Some(get_raw(conn, &id)?))
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Unarchive
 // ---------------------------------------------------------------------------

@@ -1,7 +1,8 @@
 mod remote_mcp;
 
 use std::ffi::OsString;
-use std::io::{self, Read};
+use std::fs::OpenOptions;
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process;
 
@@ -9,6 +10,7 @@ use clap::{Parser, Subcommand};
 use tracing::error;
 
 use clio_core::assembly::{self, ContextBrief, ContextPreset, ContextRequest};
+use clio_core::backup;
 use clio_core::capture::CaptureResult;
 use clio_core::config::resolve_db_path;
 use clio_core::context;
@@ -20,6 +22,7 @@ use clio_core::models::{
     LinkInput, Memory, MemoryLink, MemoryStats, RecallQuery, RecallResult, RecentEntry,
     RememberInput, SortOrder,
 };
+use clio_core::repair::{self, RepairJournalExport, RepairManifest, RepairPlan};
 use clio_core::repository;
 use clio_core::review;
 use clio_core::settings;
@@ -73,10 +76,7 @@ enum Command {
     Recent(RecentArgs),
 
     /// Soft-archive a memory.
-    Archive {
-        /// The memory ID to archive.
-        id: String,
-    },
+    Archive(ArchiveArgs),
 
     /// Restore an archived memory.
     Unarchive {
@@ -95,6 +95,9 @@ enum Command {
 
     /// Find and optionally purge stale namespaces (dry-run by default).
     Cleanup(CleanupArgs),
+
+    /// Build, apply, export or roll back a private evidence-backed repair.
+    Repair(RepairArgs),
 
     /// Roll a namespace's memories into a single AI-curated consolidated memory.
     Consolidate(ConsolidateArgs),
@@ -348,6 +351,20 @@ struct RecentArgs {
 }
 
 #[derive(Parser)]
+struct ArchiveArgs {
+    /// Memory ID to archive. Omit when using --source and --source-ref.
+    id: Option<String>,
+
+    /// Stable source identity for a derived projection.
+    #[arg(long, requires = "source_ref")]
+    source: Option<String>,
+
+    /// Stable source reference for a derived projection.
+    #[arg(long, requires = "source")]
+    source_ref: Option<String>,
+}
+
+#[derive(Parser)]
 struct MoveArgs {
     /// Memory ID to move. Omit to move all memories in --from namespace.
     #[arg(long)]
@@ -385,6 +402,67 @@ struct CleanupArgs {
     /// backup is always taken before purging.
     #[arg(long)]
     execute: bool,
+}
+
+#[derive(Parser)]
+struct RepairArgs {
+    #[command(subcommand)]
+    command: RepairCommand,
+}
+
+#[derive(Subcommand)]
+enum RepairCommand {
+    /// Build a state-bound manifest from a private intent plan and online backup.
+    Manifest {
+        /// Private JSON repair plan.
+        #[arg(long)]
+        plan: PathBuf,
+        /// Private manifest output path.
+        #[arg(long)]
+        output: PathBuf,
+        /// Directory for the pre-manifest online backup.
+        #[arg(long)]
+        backup_dir: Option<PathBuf>,
+    },
+    /// Apply a manifest atomically after taking a fresh online backup.
+    Apply {
+        /// Private manifest JSON file.
+        #[arg(long)]
+        manifest: PathBuf,
+        /// Exact manifest digest shown during review.
+        #[arg(long)]
+        confirm: String,
+        /// Private committed journal output path.
+        #[arg(long)]
+        rollback_output: PathBuf,
+        /// Directory for the pre-apply online backup.
+        #[arg(long)]
+        backup_dir: Option<PathBuf>,
+    },
+    /// Re-export a committed repair or rollback journal.
+    Export {
+        /// Committed repair or rollback transaction ID.
+        #[arg(long)]
+        transaction: String,
+        /// Private journal output path.
+        #[arg(long)]
+        output: PathBuf,
+    },
+    /// Conditionally roll back one committed repair after a fresh backup.
+    Rollback {
+        /// Forward repair transaction ID.
+        #[arg(long)]
+        transaction: String,
+        /// Repeat the exact forward transaction ID.
+        #[arg(long)]
+        confirm: String,
+        /// Private rollback transaction journal output path.
+        #[arg(long)]
+        rollback_output: PathBuf,
+        /// Directory for the pre-rollback online backup.
+        #[arg(long)]
+        backup_dir: Option<PathBuf>,
+    },
 }
 
 #[derive(Parser)]
@@ -1195,11 +1273,12 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         Command::Recall(args) => cmd_recall(cli.db_path.as_deref(), cli.json, args),
         Command::Show { id } => cmd_show(cli.db_path.as_deref(), cli.json, &id),
         Command::Recent(args) => cmd_recent(cli.db_path.as_deref(), cli.json, args),
-        Command::Archive { id } => cmd_archive(cli.db_path.as_deref(), cli.json, &id),
+        Command::Archive(args) => cmd_archive(cli.db_path.as_deref(), cli.json, args),
         Command::Unarchive { id } => cmd_unarchive(cli.db_path.as_deref(), cli.json, &id),
         Command::Move(args) => cmd_move(cli.db_path.as_deref(), cli.json, args),
         Command::Delete { id } => cmd_delete(cli.db_path.as_deref(), cli.json, &id),
         Command::Cleanup(args) => cmd_cleanup(cli.db_path.as_deref(), cli.json, args),
+        Command::Repair(args) => cmd_repair(cli.db_path.as_deref(), cli.json, args),
         Command::Consolidate(args) => cmd_consolidate(cli.db_path.as_deref(), cli.json, args),
         Command::Namespaces => cmd_namespaces(cli.db_path.as_deref(), cli.json),
         Command::Link(args) => cmd_link(cli.db_path.as_deref(), cli.json, args),
@@ -1296,6 +1375,353 @@ fn open_db(explicit: Option<&str>) -> Result<rusqlite::Connection, Box<dyn std::
     let path = resolve_db_path(explicit)?;
     let conn = db::open(&path)?;
     Ok(conn)
+}
+
+fn cmd_repair(
+    db_path: Option<&str>,
+    json: bool,
+    args: RepairArgs,
+) -> Result<(), Box<dyn std::error::Error>> {
+    match args.command {
+        RepairCommand::Manifest {
+            plan,
+            output,
+            backup_dir,
+        } => cmd_repair_manifest(db_path, json, &plan, &output, backup_dir.as_deref()),
+        RepairCommand::Apply {
+            manifest,
+            confirm,
+            rollback_output,
+            backup_dir,
+        } => cmd_repair_apply(
+            db_path,
+            json,
+            &manifest,
+            &confirm,
+            &rollback_output,
+            backup_dir.as_deref(),
+        ),
+        RepairCommand::Export {
+            transaction,
+            output,
+        } => cmd_repair_export(db_path, json, &transaction, &output),
+        RepairCommand::Rollback {
+            transaction,
+            confirm,
+            rollback_output,
+            backup_dir,
+        } => cmd_repair_rollback(
+            db_path,
+            json,
+            &transaction,
+            &confirm,
+            &rollback_output,
+            backup_dir.as_deref(),
+        ),
+    }
+}
+
+fn cmd_repair_manifest(
+    db_path: Option<&str>,
+    json: bool,
+    plan_path: &Path,
+    output: &Path,
+    backup_dir: Option<&Path>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let live_path = resolve_db_path(db_path)?;
+    require_existing_database(&live_path)?;
+    let plan: RepairPlan = read_json_file(plan_path)?;
+    let backup = backup::backup(&live_path, backup_dir, u32::MAX)?;
+    let backup_path = PathBuf::from(&backup.path);
+    verify_database_quick_check(&backup_path)?;
+
+    // Pending migrations are applied only to the immutable backup. Manifest
+    // generation must never mutate the live Atlas schema.
+    let snapshot = db::open(&backup_path)?;
+    let manifest = repair::build_manifest(&snapshot, &plan)?;
+    write_private_json(output, &manifest)?;
+
+    print_repair_summary(
+        json,
+        &serde_json::json!({
+            "operation": "manifest",
+            "digest": manifest.digest,
+            "transaction_id": manifest.transaction_id,
+            "targets": manifest.targets.len(),
+            "touching_links": manifest.touching_links.len(),
+            "removed_links": manifest.removed_links.len(),
+            "quick_check": manifest.quick_check,
+            "backup_path": backup.path,
+            "backup_size_bytes": backup.size_bytes,
+            "output": output,
+        }),
+    )
+}
+
+fn cmd_repair_apply(
+    db_path: Option<&str>,
+    json: bool,
+    manifest_path: &Path,
+    confirm: &str,
+    rollback_output: &Path,
+    backup_dir: Option<&Path>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let manifest: RepairManifest = read_json_file(manifest_path)?;
+    if confirm != manifest.digest {
+        return Err(clio_core::error::ClioError::Validation(
+            "repair confirmation must exactly match the manifest digest".to_string(),
+        )
+        .into());
+    }
+
+    let live_path = resolve_db_path(db_path)?;
+    require_existing_database(&live_path)?;
+    let backup = backup::backup(&live_path, backup_dir, u32::MAX)?;
+    verify_database_quick_check(Path::new(&backup.path))?;
+    let conn = db::open_existing_unmigrated(&live_path)?;
+    let outcome = repair::apply_manifest_with_pending_migrations(&conn, &manifest)?;
+    let journal = repair::export_transaction(&conn, &outcome.transaction_id)?;
+    write_private_json(rollback_output, &journal).map_err(|error| {
+        clio_core::error::ClioError::Export(format!(
+            "repair {} committed, but the private journal export failed: {error}; re-run `clio repair export --transaction {} --output {}`",
+            outcome.transaction_id,
+            outcome.transaction_id,
+            rollback_output.display()
+        ))
+    })?;
+
+    print_repair_summary(
+        json,
+        &serde_json::json!({
+            "operation": "apply",
+            "transaction_id": outcome.transaction_id,
+            "replayed": outcome.replayed,
+            "journal_entries": outcome.journal_entries,
+            "backup_path": backup.path,
+            "backup_size_bytes": backup.size_bytes,
+            "rollback_output": rollback_output,
+        }),
+    )
+}
+
+fn cmd_repair_export(
+    db_path: Option<&str>,
+    json: bool,
+    transaction_id: &str,
+    output: &Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let live_path = resolve_db_path(db_path)?;
+    require_existing_database(&live_path)?;
+    let conn = db::open_existing_read_only(&live_path)?;
+    let journal = repair::export_transaction(&conn, transaction_id)?;
+    write_private_json(output, &journal)?;
+    print_repair_summary(
+        json,
+        &serde_json::json!({
+            "operation": "export",
+            "transaction_id": journal.transaction_id,
+            "journal_entries": journal.entries.len(),
+            "output": output,
+        }),
+    )
+}
+
+fn cmd_repair_rollback(
+    db_path: Option<&str>,
+    json: bool,
+    transaction_id: &str,
+    confirm: &str,
+    rollback_output: &Path,
+    backup_dir: Option<&Path>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if confirm != transaction_id {
+        return Err(clio_core::error::ClioError::Validation(
+            "rollback confirmation must exactly match the forward transaction ID".to_string(),
+        )
+        .into());
+    }
+
+    let live_path = resolve_db_path(db_path)?;
+    require_existing_database(&live_path)?;
+    let backup = backup::backup(&live_path, backup_dir, u32::MAX)?;
+    verify_database_quick_check(Path::new(&backup.path))?;
+    let conn = db::open_existing_unmigrated(&live_path)?;
+    let outcome = repair::rollback_transaction(&conn, transaction_id)?;
+    let journal: RepairJournalExport = repair::export_transaction(&conn, &outcome.transaction_id)?;
+    write_private_json(rollback_output, &journal).map_err(|error| {
+        clio_core::error::ClioError::Export(format!(
+            "rollback {} committed, but the private journal export failed: {error}; re-run `clio repair export --transaction {} --output {}`",
+            outcome.transaction_id,
+            outcome.transaction_id,
+            rollback_output.display()
+        ))
+    })?;
+
+    print_repair_summary(
+        json,
+        &serde_json::json!({
+            "operation": "rollback",
+            "transaction_id": outcome.transaction_id,
+            "forward_transaction_id": transaction_id,
+            "replayed": outcome.replayed,
+            "journal_entries": outcome.journal_entries,
+            "backup_path": backup.path,
+            "backup_size_bytes": backup.size_bytes,
+            "rollback_output": rollback_output,
+        }),
+    )
+}
+
+fn require_existing_database(path: &Path) -> Result<(), clio_core::error::ClioError> {
+    if path.is_file() {
+        Ok(())
+    } else {
+        Err(clio_core::error::ClioError::Config(format!(
+            "repair requires an existing database at {}",
+            path.display()
+        )))
+    }
+}
+
+fn verify_database_quick_check(path: &Path) -> Result<(), clio_core::error::ClioError> {
+    let conn = rusqlite::Connection::open(path).map_err(|error| {
+        clio_core::error::ClioError::Storage(format!(
+            "could not open backup {}: {error}",
+            path.display()
+        ))
+    })?;
+    let quick_check: String = conn.query_row("PRAGMA quick_check", [], |row| row.get(0))?;
+    if quick_check == "ok" {
+        Ok(())
+    } else {
+        Err(clio_core::error::ClioError::Storage(format!(
+            "backup {} failed quick_check: {quick_check}",
+            path.display()
+        )))
+    }
+}
+
+fn read_json_file<T: serde::de::DeserializeOwned>(
+    path: &Path,
+) -> Result<T, Box<dyn std::error::Error>> {
+    let bytes = std::fs::read(path)?;
+    Ok(serde_json::from_slice(&bytes)?)
+}
+
+fn write_private_json(
+    path: &Path,
+    value: &impl serde::Serialize,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut bytes = serde_json::to_vec_pretty(value)?;
+    bytes.push(b'\n');
+    if path.exists() {
+        if std::fs::read(path)? == bytes {
+            restrict_private_permissions(path)?;
+            return Ok(());
+        }
+        return Err(clio_core::error::ClioError::Conflict(format!(
+            "private output already exists with different content: {}",
+            path.display()
+        ))
+        .into());
+    }
+
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    std::fs::create_dir_all(parent)?;
+    let filename = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("repair.json");
+    let mut temporary = None;
+    for attempt in 0..100_u32 {
+        let candidate = parent.join(format!(
+            ".{filename}.{}.{}.tmp",
+            std::process::id(),
+            attempt
+        ));
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        match options.open(&candidate) {
+            Ok(file) => {
+                temporary = Some((candidate, file));
+                break;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error.into()),
+        }
+    }
+    let (temporary_path, mut file) = temporary.ok_or_else(|| {
+        clio_core::error::ClioError::Export(format!(
+            "could not allocate a temporary file beside {}",
+            path.display()
+        ))
+    })?;
+    let result = (|| -> Result<(), Box<dyn std::error::Error>> {
+        file.write_all(&bytes)?;
+        file.sync_all()?;
+        drop(file);
+        publish_private_file(&temporary_path, path, &bytes)
+    })();
+    let _ = std::fs::remove_file(&temporary_path);
+    result
+}
+
+fn publish_private_file(
+    temporary_path: &Path,
+    path: &Path,
+    expected_bytes: &[u8],
+) -> Result<(), Box<dyn std::error::Error>> {
+    match std::fs::hard_link(temporary_path, path) {
+        Ok(()) => {
+            restrict_private_permissions(path)?;
+            Ok(())
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            if std::fs::read(path)? == expected_bytes {
+                restrict_private_permissions(path)?;
+                Ok(())
+            } else {
+                Err(clio_core::error::ClioError::Conflict(format!(
+                    "private output already exists with different content: {}",
+                    path.display()
+                ))
+                .into())
+            }
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn restrict_private_permissions(path: &Path) -> Result<(), std::io::Error> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+    }
+    Ok(())
+}
+
+fn print_repair_summary(
+    json: bool,
+    summary: &serde_json::Value,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if json {
+        println!("{}", serde_json::to_string_pretty(summary)?);
+    } else if let Some(object) = summary.as_object() {
+        for (key, value) in object {
+            if let Some(text) = value.as_str() {
+                eprintln!("{key}: {text}");
+            } else {
+                eprintln!("{key}: {value}");
+            }
+        }
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -1580,16 +2006,44 @@ fn cmd_recent(
 fn cmd_archive(
     db_path: Option<&str>,
     json: bool,
-    id: &str,
+    args: ArchiveArgs,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let conn = open_db(db_path)?;
-    let memory = repository::archive(&conn, id)?;
-
-    if json {
-        println!("{}", serde_json::to_string_pretty(&memory)?);
-    } else {
-        eprintln!("Archived.");
-        print_memory_card(&memory);
+    match (args.id, args.source, args.source_ref) {
+        (Some(id), None, None) => {
+            let memory = repository::archive(&conn, &id)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&memory)?);
+            } else {
+                eprintln!("Archived.");
+                print_memory_card(&memory);
+            }
+        }
+        (None, Some(source), Some(source_ref)) => {
+            let memory = repository::archive_by_source_ref(&conn, &source, &source_ref)?;
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "archived": memory.is_some(),
+                        "memory": memory,
+                        "source": source,
+                        "source_ref": source_ref,
+                    }))?
+                );
+            } else if let Some(memory) = memory {
+                eprintln!("Archived.");
+                print_memory_card(&memory);
+            } else {
+                eprintln!("No matching active projection was stored; nothing to archive.");
+            }
+        }
+        _ => {
+            return Err(clio_core::error::ClioError::Validation(
+                "archive requires either a memory ID or both --source and --source-ref".to_string(),
+            )
+            .into());
+        }
     }
 
     Ok(())
@@ -4550,6 +5004,22 @@ fn setup_json_merge(p: &SetupMergeParams<'_>) -> Result<(), Box<dyn std::error::
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn private_output_publish_never_replaces_a_concurrent_destination() {
+        let directory = tempfile::tempdir().unwrap();
+        let temporary = directory.path().join(".journal.tmp");
+        let output = directory.path().join("journal.json");
+        std::fs::write(&temporary, b"replacement").unwrap();
+
+        // Simulate another process creating the destination after this writer
+        // allocated and populated its private temporary file.
+        std::fs::write(&output, b"winner").unwrap();
+
+        let error = publish_private_file(&temporary, &output, b"replacement").unwrap_err();
+        assert!(error.to_string().contains("already exists"));
+        assert_eq!(std::fs::read(&output).unwrap(), b"winner");
+    }
 
     #[test]
     fn capture_model_setting_routes_to_the_shared_backend() {

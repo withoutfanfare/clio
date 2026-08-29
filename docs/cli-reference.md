@@ -363,6 +363,53 @@ Criteria:
 With no criterion flag, all three are applied. The `global` namespace is never
 flagged. See `reference/settings.md` for `cleanup.*` configuration.
 
+### Repair (audited namespace and archive corrections)
+
+`repair` is the private operator path for a reviewed, evidence-backed audit. It
+is not a general editing command and is deliberately not exposed through MCP.
+Manifest creation takes an online backup and works on that snapshot, so it does
+not migrate or mutate the live database. Apply and rollback each take a fresh
+validated backup before opening their atomic transaction.
+
+```sh
+# 1. Build and privately review a state-bound manifest
+clio --json repair manifest \
+  --plan /private/repair-intents.json \
+  --output /private/repair-manifest.json \
+  --backup-dir /private/backups
+
+# 2. Apply only after reviewing the printed digest
+clio --json repair apply \
+  --manifest /private/repair-manifest.json \
+  --confirm <exact-manifest-digest> \
+  --rollback-output /private/repair-journal.json \
+  --backup-dir /private/backups
+
+# Re-export a committed journal if its file export failed
+clio repair export \
+  --transaction <repair-transaction-id> \
+  --output /private/repair-journal.json
+
+# Conditionally restore the recorded before-state
+clio --json repair rollback \
+  --transaction <repair-transaction-id> \
+  --confirm <same-repair-transaction-id> \
+  --rollback-output /private/rollback-journal.json \
+  --backup-dir /private/backups
+```
+
+Backups, manifests and journals have mode `0600` on Unix. JSON outputs are
+written atomically and are never overwritten with different content; backup
+names remain unique even when several operations run in one second. A manifest
+fails closed when repair-relevant memory state (`id`, namespace, semantic
+`updated_at` or archive state), any link, or a target attention row differs
+from the private snapshot. Once migration 015 exists, its generation also
+detects memory, link and attention writes. Tags, embeddings and occurrences are
+preserved but are not independently used as compare-and-swap tokens. Rollback
+uses the narrower recorded after-state and complete touching-link set, so
+unrelated later work does not prevent recovery. Permanent deletion is outside
+this workflow.
+
 ### Consolidate (project memory)
 
 `consolidate` rolls a namespace's atomic memories into a single AI-curated

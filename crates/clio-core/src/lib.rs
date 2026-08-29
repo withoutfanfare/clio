@@ -23,6 +23,7 @@ pub mod models;
 pub mod occurrences;
 #[cfg(feature = "capture")]
 mod openai;
+pub mod repair;
 pub mod repository;
 pub mod review;
 pub mod scoring;

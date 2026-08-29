@@ -3,6 +3,7 @@
 //! Provides timestamped SQLite backup with configurable retention and
 //! integrity-checked restore.
 
+use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -60,22 +61,47 @@ pub fn backup(db_path: &Path, dest_dir: Option<&Path>, max_backups: u32) -> Resu
         ))
     })?;
 
-    let backup_filename = format!("clio-backup-{ts_file}.db");
-    let backup_path = backup_dir.join(&backup_filename);
+    let (backup_path, private_file) = create_private_backup_file(&backup_dir, &ts_file)?;
+    drop(private_file);
 
-    // Produce a transactionally-consistent, standalone snapshot. VACUUM INTO writes
-    // a complete database with no -wal/-shm sidecars, avoiding torn-copy corruption
-    // that plain file copies risk under WAL mode.
-    let _ = std::fs::remove_file(&backup_path); // VACUUM INTO requires the target not exist
-    let src = rusqlite::Connection::open(db_path)
-        .map_err(|e| ClioError::Export(format!("could not open database for backup: {e}")))?;
-    src.busy_timeout(Duration::from_millis(5000))
-        .map_err(|e| ClioError::Export(format!("could not set busy timeout for backup: {e}")))?;
-    src.execute(
-        "VACUUM INTO ?1",
-        rusqlite::params![backup_path.to_string_lossy()],
-    )
-    .map_err(|e| ClioError::Export(format!("backup VACUUM INTO failed: {e}")))?;
+    // The destination exists at 0600 before SQLite writes its first byte. The
+    // online backup API produces a consistent standalone database from WAL
+    // mode without exposing a group/world-readable VACUUM INTO window.
+    let backup_result = (|| -> Result<()> {
+        let src = rusqlite::Connection::open(db_path)
+            .map_err(|e| ClioError::Export(format!("could not open database for backup: {e}")))?;
+        src.busy_timeout(Duration::from_millis(5000)).map_err(|e| {
+            ClioError::Export(format!("could not set busy timeout for backup: {e}"))
+        })?;
+        let mut destination = rusqlite::Connection::open(&backup_path).map_err(|e| {
+            ClioError::Export(format!("could not open private backup destination: {e}"))
+        })?;
+        destination
+            .execute_batch("PRAGMA journal_mode = OFF; PRAGMA synchronous = FULL;")
+            .map_err(|e| {
+                ClioError::Export(format!("could not prepare private backup destination: {e}"))
+            })?;
+        let backup = rusqlite::backup::Backup::new(&src, &mut destination)
+            .map_err(|e| ClioError::Export(format!("online backup initialisation failed: {e}")))?;
+        backup
+            .run_to_completion(128, Duration::from_millis(10), None)
+            .map_err(|e| ClioError::Export(format!("online backup failed: {e}")))?;
+        drop(backup);
+        destination
+            .execute_batch("PRAGMA synchronous = FULL;")
+            .map_err(|e| ClioError::Export(format!("could not sync private backup: {e}")))?;
+        restrict_backup_permissions(&backup_path).map_err(|e| {
+            ClioError::Export(format!(
+                "could not verify private backup permissions for {}: {e}",
+                backup_path.display()
+            ))
+        })?;
+        Ok(())
+    })();
+    if let Err(error) = backup_result {
+        let _ = std::fs::remove_file(&backup_path);
+        return Err(error);
+    }
 
     let size_bytes = std::fs::metadata(&backup_path)
         .map(|m| m.len())
@@ -89,6 +115,46 @@ pub fn backup(db_path: &Path, dest_dir: Option<&Path>, max_backups: u32) -> Resu
         size_bytes,
         timestamp,
     })
+}
+
+fn restrict_backup_permissions(path: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+    }
+    Ok(())
+}
+
+fn create_private_backup_file(backup_dir: &Path, timestamp: &str) -> Result<(PathBuf, File)> {
+    for suffix in 0..=u32::MAX {
+        let filename = if suffix == 0 {
+            format!("clio-backup-{timestamp}.db")
+        } else {
+            format!("clio-backup-{timestamp}-{suffix}.db")
+        };
+        let path = backup_dir.join(filename);
+        let mut options = OpenOptions::new();
+        options.read(true).write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        match options.open(&path) {
+            Ok(file) => return Ok((path, file)),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => {
+                return Err(ClioError::Export(format!(
+                    "could not create private backup {}: {error}",
+                    path.display()
+                )));
+            }
+        }
+    }
+    Err(ClioError::Export(
+        "could not allocate a unique private backup name".to_string(),
+    ))
 }
 
 /// List all available backups, sorted by creation time (newest first).
@@ -254,4 +320,27 @@ fn enforce_retention(backup_dir: &Path, max_backups: u32) -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn backup_destination_is_private_before_sqlite_opens_it() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let (path, file) = create_private_backup_file(directory.path(), "test").unwrap();
+        assert_eq!(file.metadata().unwrap().permissions().mode() & 0o777, 0o600);
+        assert_eq!(file.metadata().unwrap().len(), 0);
+        drop(file);
+        assert_eq!(
+            std::fs::metadata(path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
 }

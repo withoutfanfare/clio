@@ -5,6 +5,9 @@ use clio_core::cache::ClioCache;
 use clio_core::embeddings::{EmbeddingBackend, semantic_search, store_embedding, suggest_links};
 use clio_core::error::ClioError;
 use clio_core::models::{Memory, RecallQuery, RememberInput, UpdateInput};
+use clio_core::repair::{
+    RepairAction, RepairIntent, RepairPlan, apply_manifest, build_manifest_at,
+};
 use clio_core::review::{ReviewInput, approve_review, get_review, queue_for_review};
 use clio_core::{db, repository};
 use rusqlite::{Connection, TransactionBehavior};
@@ -240,6 +243,39 @@ fn cached_recall_excludes_a_memory_archived_by_another_connection() {
     let refreshed = second_cache.recall(&second, &query).unwrap();
     assert!(refreshed.items.is_empty());
     assert_eq!(refreshed.total, 0);
+}
+
+#[test]
+fn namespace_cache_observes_a_repair_committed_by_another_connection() {
+    let (_directory, first, second) = file_db();
+    let memory = remember_plain(&first, "namespace cache repair");
+    let first_cache = ClioCache::with_defaults();
+
+    assert_eq!(
+        first_cache.list_namespaces(&first).unwrap(),
+        vec!["project:multi-machine"]
+    );
+
+    let manifest = build_manifest_at(
+        &second,
+        &RepairPlan {
+            intents: vec![RepairIntent {
+                memory_id: memory.id,
+                action: RepairAction::Move {
+                    namespace: "project:canonical".to_string(),
+                },
+                evidence: "cross-process cache contract".to_string(),
+            }],
+        },
+        "2026-08-29T06:00:00Z",
+    )
+    .unwrap();
+    apply_manifest(&second, &manifest).unwrap();
+
+    assert_eq!(
+        first_cache.list_namespaces(&first).unwrap(),
+        vec!["project:canonical"]
+    );
 }
 
 #[test]

@@ -74,10 +74,16 @@ pub struct CacheStats {
 /// All caches are `Send + Sync` (moka guarantees this), so `ClioCache` can
 /// live behind `Arc` or inside a `Mutex<AppState>` without issue.
 pub struct ClioCache {
-    namespace_list: Cache<String, Vec<String>>,
+    namespace_list: Cache<String, CachedNamespaces>,
 }
 
 const NS_CACHE_KEY: &str = "__namespaces__";
+
+#[derive(Clone)]
+struct CachedNamespaces {
+    generation: i64,
+    namespaces: Vec<String>,
+}
 
 impl ClioCache {
     /// Build a cache with explicit configuration.
@@ -134,13 +140,29 @@ impl ClioCache {
 
     /// List distinct namespaces (cache-through).
     pub fn list_namespaces(&self, conn: &Connection) -> Result<Vec<String>> {
-        if let Some(cached) = self.namespace_list.get(NS_CACHE_KEY) {
-            return Ok(cached);
+        for _ in 0..2 {
+            let generation = crate::repair::current_store_generation(conn)?;
+            if let Some(cached) = self.namespace_list.get(NS_CACHE_KEY) {
+                if cached.generation == generation {
+                    return Ok(cached.namespaces);
+                }
+            }
+
+            let namespaces = repository::list_namespaces(conn)?;
+            if crate::repair::current_store_generation(conn)? == generation {
+                self.namespace_list.insert(
+                    NS_CACHE_KEY.to_string(),
+                    CachedNamespaces {
+                        generation,
+                        namespaces: namespaces.clone(),
+                    },
+                );
+                return Ok(namespaces);
+            }
         }
-        let namespaces = repository::list_namespaces(conn)?;
-        self.namespace_list
-            .insert(NS_CACHE_KEY.to_string(), namespaces.clone());
-        Ok(namespaces)
+
+        // A continuously mutating store is safer read directly than cached.
+        repository::list_namespaces(conn)
     }
 
     /// Get links originating from a memory (not cached — low volume, and
@@ -267,9 +289,13 @@ mod tests {
     #[test]
     fn clear_all_empties_caches() {
         let cache = ClioCache::with_defaults();
-        cache
-            .namespace_list
-            .insert(NS_CACHE_KEY.into(), vec!["global".into()]);
+        cache.namespace_list.insert(
+            NS_CACHE_KEY.into(),
+            CachedNamespaces {
+                generation: 0,
+                namespaces: vec!["global".into()],
+            },
+        );
 
         // Verify entries are accessible before clearing.
         assert!(cache.namespace_list.get(NS_CACHE_KEY).is_some());

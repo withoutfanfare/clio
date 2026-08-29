@@ -718,6 +718,59 @@ fn archive_is_idempotent() {
     assert_eq!(a1.archived_at, a2.archived_at);
 }
 
+#[test]
+fn archive_by_source_reference_is_exact_and_missing_is_a_noop() {
+    let conn = test_db();
+    let projected = repository::remember(
+        &conn,
+        &RememberInput {
+            source: Some("waypoint-worktree".into()),
+            source_ref: Some("worktree:wt_demo:current".into()),
+            upsert: true,
+            ..base_input("Current worktree projection")
+        },
+        &Settings::default(),
+    )
+    .unwrap();
+    let other = repository::remember(
+        &conn,
+        &RememberInput {
+            source: Some("waypoint-worktree".into()),
+            source_ref: Some("worktree:wt_other:current".into()),
+            upsert: true,
+            ..base_input("Other worktree projection")
+        },
+        &Settings::default(),
+    )
+    .unwrap();
+
+    let archived =
+        repository::archive_by_source_ref(&conn, "waypoint-worktree", "worktree:wt_demo:current")
+            .unwrap()
+            .unwrap();
+    assert_eq!(archived.id, projected.id);
+    assert!(archived.archived_at.is_some());
+    let replayed =
+        repository::archive_by_source_ref(&conn, "waypoint-worktree", "worktree:wt_demo:current")
+            .unwrap()
+            .unwrap();
+    assert_eq!(
+        replayed.updated_at, archived.updated_at,
+        "retirement replay must not create fresh semantic activity"
+    );
+    assert!(
+        repository::get(&conn, &other.id)
+            .unwrap()
+            .archived_at
+            .is_none()
+    );
+    assert!(
+        repository::archive_by_source_ref(&conn, "waypoint-worktree", "worktree:missing:current")
+            .unwrap()
+            .is_none()
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Unarchive
 // ---------------------------------------------------------------------------
@@ -1728,6 +1781,16 @@ fn backup_produces_standalone_snapshot_without_wal() {
         !backup_path.with_extension("db-wal").exists(),
         "VACUUM INTO snapshot must not carry a -wal sidecar"
     );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        assert_eq!(
+            std::fs::metadata(backup_path).unwrap().permissions().mode() & 0o777,
+            0o600,
+            "database backups contain private memory and must not be group/world-readable"
+        );
+    }
     let bconn = rusqlite::Connection::open(backup_path).unwrap();
     let n: i64 = bconn
         .query_row("SELECT COUNT(*) FROM memories", [], |r| r.get(0))

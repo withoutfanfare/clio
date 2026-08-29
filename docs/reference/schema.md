@@ -549,6 +549,68 @@ CREATE INDEX idx_delivery_outbox_status ON delivery_outbox(status, destination);
 - Credentials never enter this table, memory metadata, logs or payloads — adapters hold them in the user process.
 - Destination adapters (the actual Things/Linear API code) are gated on proving each product's create + read-back contract live.
 
+## Repair journal and store generation
+
+Migration `015_memory_repair_journal` adds the private, operator-only repair
+ledger. It exists for evidence-backed namespace corrections and archival, where
+ordinary update commands would incorrectly advance the memory's semantic
+`updated_at`.
+
+`repair_transactions` stores one immutable header and the exact reviewed
+manifest. `repair_journal_entries` stores ordered before/after state for every
+memory, attention row and automatic link changed by that transaction. Update
+and delete triggers reject changes to both tables. A rollback is a new linked
+transaction; it never rewrites the forward journal.
+
+```sql
+CREATE TABLE repair_transactions (
+    id TEXT PRIMARY KEY,
+    kind TEXT NOT NULL CHECK (kind IN ('repair', 'rollback')),
+    manifest_digest TEXT NOT NULL,
+    forward_transaction_id TEXT,
+    manifest_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    committed_at TEXT NOT NULL,
+    FOREIGN KEY (forward_transaction_id) REFERENCES repair_transactions(id)
+);
+
+CREATE TABLE repair_journal_entries (
+    transaction_id TEXT NOT NULL,
+    sequence INTEGER NOT NULL,
+    entity_type TEXT NOT NULL CHECK (entity_type IN ('memory', 'attention', 'link')),
+    entity_key TEXT NOT NULL,
+    operation TEXT NOT NULL CHECK (operation IN ('update', 'delete', 'insert')),
+    before_json TEXT,
+    after_json TEXT,
+    evidence_json TEXT NOT NULL DEFAULT '{}',
+    PRIMARY KEY (transaction_id, sequence),
+    UNIQUE (transaction_id, entity_type, entity_key),
+    FOREIGN KEY (transaction_id) REFERENCES repair_transactions(id)
+        ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED
+);
+```
+
+The singleton `memory_store_state` generation is advanced by triggers for
+memory, link and attention writes. Long-running adapters compare it before
+serving a cached namespace list, so a write from another process cannot leave
+that list stale until its time-to-live expires.
+
+### Repair rules
+
+- Manifest construction runs `PRAGMA quick_check` and captures exact target,
+  attention and complete touching-link state from an online backup.
+- Apply compares every captured entity before writing and uses one
+  `BEGIN IMMEDIATE` transaction for mutation plus journal insertion.
+- Namespace repair preserves content, tags, embeddings, occurrences,
+  `created_at` and semantic `updated_at`.
+- Only invalid `auto:relates_to` links may be removed; human-authored links are
+  retained.
+- Replay of the same manifest is a no-op; an identifier/content collision fails.
+- Journal rows are inserted before their deferred-FK transaction header; the
+  header closes the journal and a trigger rejects any later append.
+- Rollback proceeds only when every affected entity still matches the committed
+  after-state, and its inverse is itself journalled atomically.
+
 ## Indexes
 
 Required indexes:
@@ -856,6 +918,8 @@ The export format should be easy for:
 | `011_occurrences_and_namespace_state` | `memory_occurrences` sightings, `namespace_state` mutation generation and its triggers |
 | `012_delivery_outbox` | `delivery_outbox` verified external-handoff state machine |
 | `013_delivery_external_identity` | unique `(destination, external_id)` on delivered outbox rows |
+| `014_checkpoint_usage` | nullable model and token-usage columns on `session_checkpoints` |
+| `015_memory_repair_journal` | immutable repair transaction/journal tables, rollback linkage and database-wide generation triggers |
 
 ## Invariants For Implementers
 

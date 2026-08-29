@@ -381,6 +381,144 @@ const MIGRATIONS: &[Migration] = &[
             ALTER TABLE session_checkpoints ADD COLUMN reasoning_tokens INTEGER;
         "#,
     },
+    Migration {
+        version: "015_memory_repair_journal",
+        sql: r#"
+            CREATE TABLE repair_transactions (
+                id TEXT PRIMARY KEY,
+                kind TEXT NOT NULL CHECK (kind IN ('repair', 'rollback')),
+                manifest_digest TEXT NOT NULL,
+                forward_transaction_id TEXT,
+                manifest_json TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                committed_at TEXT NOT NULL,
+                FOREIGN KEY (forward_transaction_id) REFERENCES repair_transactions(id)
+            );
+
+            CREATE UNIQUE INDEX idx_repair_transactions_forward_rollback
+                ON repair_transactions(forward_transaction_id)
+                WHERE kind = 'rollback';
+
+            CREATE TABLE repair_journal_entries (
+                transaction_id TEXT NOT NULL,
+                sequence INTEGER NOT NULL,
+                entity_type TEXT NOT NULL
+                    CHECK (entity_type IN ('memory', 'attention', 'link')),
+                entity_key TEXT NOT NULL,
+                operation TEXT NOT NULL
+                    CHECK (operation IN ('update', 'delete', 'insert')),
+                before_json TEXT,
+                after_json TEXT,
+                evidence_json TEXT NOT NULL DEFAULT '{}',
+                PRIMARY KEY (transaction_id, sequence),
+                UNIQUE (transaction_id, entity_type, entity_key),
+                FOREIGN KEY (transaction_id) REFERENCES repair_transactions(id)
+                    ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED,
+                CHECK (before_json IS NOT NULL OR after_json IS NOT NULL)
+            );
+
+            CREATE TRIGGER repair_transactions_immutable_update
+            BEFORE UPDATE ON repair_transactions BEGIN
+                SELECT RAISE(ABORT, 'repair transactions are immutable');
+            END;
+
+            CREATE TRIGGER repair_transactions_immutable_delete
+            BEFORE DELETE ON repair_transactions BEGIN
+                SELECT RAISE(ABORT, 'repair transactions are immutable');
+            END;
+
+            CREATE TRIGGER repair_journal_entries_immutable_update
+            BEFORE UPDATE ON repair_journal_entries BEGIN
+                SELECT RAISE(ABORT, 'repair journal entries are immutable');
+            END;
+
+            CREATE TRIGGER repair_journal_entries_immutable_delete
+            BEFORE DELETE ON repair_journal_entries BEGIN
+                SELECT RAISE(ABORT, 'repair journal entries are immutable');
+            END;
+
+            CREATE TRIGGER repair_journal_entries_closed_insert
+            BEFORE INSERT ON repair_journal_entries
+            WHEN EXISTS (
+                SELECT 1 FROM repair_transactions
+                WHERE id = new.transaction_id
+            ) BEGIN
+                SELECT RAISE(ABORT, 'committed repair journals are closed');
+            END;
+
+            CREATE TABLE memory_store_state (
+                singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+                generation INTEGER NOT NULL DEFAULT 0,
+                updated_at TEXT NOT NULL
+            );
+
+            INSERT INTO memory_store_state(singleton, generation, updated_at)
+            VALUES (1, 0, strftime('%Y-%m-%dT%H:%M:%fZ','now'));
+
+            CREATE TRIGGER memory_store_memories_ai AFTER INSERT ON memories BEGIN
+                UPDATE memory_store_state SET
+                    generation = generation + 1,
+                    updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+                WHERE singleton = 1;
+            END;
+
+            CREATE TRIGGER memory_store_memories_au AFTER UPDATE ON memories BEGIN
+                UPDATE memory_store_state SET
+                    generation = generation + 1,
+                    updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+                WHERE singleton = 1;
+            END;
+
+            CREATE TRIGGER memory_store_memories_ad AFTER DELETE ON memories BEGIN
+                UPDATE memory_store_state SET
+                    generation = generation + 1,
+                    updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+                WHERE singleton = 1;
+            END;
+
+            CREATE TRIGGER memory_store_links_ai AFTER INSERT ON memory_links BEGIN
+                UPDATE memory_store_state SET
+                    generation = generation + 1,
+                    updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+                WHERE singleton = 1;
+            END;
+
+            CREATE TRIGGER memory_store_links_au AFTER UPDATE ON memory_links BEGIN
+                UPDATE memory_store_state SET
+                    generation = generation + 1,
+                    updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+                WHERE singleton = 1;
+            END;
+
+            CREATE TRIGGER memory_store_links_ad AFTER DELETE ON memory_links BEGIN
+                UPDATE memory_store_state SET
+                    generation = generation + 1,
+                    updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+                WHERE singleton = 1;
+            END;
+
+            CREATE TRIGGER memory_store_attention_ai AFTER INSERT ON attention_items BEGIN
+                UPDATE memory_store_state SET
+                    generation = generation + 1,
+                    updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+                WHERE singleton = 1;
+            END;
+
+            CREATE TRIGGER memory_store_attention_au AFTER UPDATE ON attention_items BEGIN
+                UPDATE memory_store_state SET
+                    generation = generation + 1,
+                    updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+                WHERE singleton = 1;
+            END;
+
+            CREATE TRIGGER memory_store_attention_ad AFTER DELETE ON attention_items BEGIN
+                UPDATE memory_store_state SET
+                    generation = generation + 1,
+                    updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+                WHERE singleton = 1;
+            END;
+        "#,
+    },
 ];
 
 /// Run all pending migrations inside a transaction.
@@ -394,41 +532,7 @@ pub fn run(conn: &Connection) -> Result<()> {
     // Acquire the write lock before reading migration state so simultaneous
     // MCP process starts cannot both decide that the same migration is pending.
     conn.execute_batch("BEGIN IMMEDIATE")?;
-    let result = (|| -> Result<()> {
-        conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS schema_migrations (
-                version TEXT PRIMARY KEY,
-                applied_at TEXT NOT NULL
-            );",
-        )?;
-
-        let applied: Vec<String> = {
-            let mut stmt =
-                conn.prepare("SELECT version FROM schema_migrations ORDER BY version")?;
-            let rows = stmt.query_map([], |row| row.get(0))?;
-            rows.collect::<std::result::Result<Vec<_>, _>>()?
-        };
-
-        for migration in MIGRATIONS {
-            if applied.iter().any(|version| version == migration.version) {
-                continue;
-            }
-
-            tracing::info!(version = migration.version, "applying migration");
-            conn.execute_batch(migration.sql).map_err(|e| {
-                ClioError::Migration(format!(
-                    "failed to apply migration {}: {e}",
-                    migration.version
-                ))
-            })?;
-
-            conn.execute(
-                "INSERT INTO schema_migrations (version, applied_at) VALUES (?1, ?2)",
-                rusqlite::params![migration.version, now_utc()],
-            )?;
-        }
-        Ok(())
-    })();
+    let result = run_pending_in_transaction(conn);
 
     match result {
         Ok(()) => {
@@ -440,6 +544,45 @@ pub fn run(conn: &Connection) -> Result<()> {
             Err(e)
         }
     }
+}
+
+/// Apply pending migrations inside a transaction already owned by the caller.
+///
+/// The repair path uses this so first installation of the repair schema and the
+/// reviewed data mutation either commit together or both roll back.
+pub(crate) fn run_pending_in_transaction(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS schema_migrations (
+            version TEXT PRIMARY KEY,
+            applied_at TEXT NOT NULL
+        );",
+    )?;
+
+    let applied: Vec<String> = {
+        let mut stmt = conn.prepare("SELECT version FROM schema_migrations ORDER BY version")?;
+        let rows = stmt.query_map([], |row| row.get(0))?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()?
+    };
+
+    for migration in MIGRATIONS {
+        if applied.iter().any(|version| version == migration.version) {
+            continue;
+        }
+
+        tracing::info!(version = migration.version, "applying migration");
+        conn.execute_batch(migration.sql).map_err(|e| {
+            ClioError::Migration(format!(
+                "failed to apply migration {}: {e}",
+                migration.version
+            ))
+        })?;
+
+        conn.execute(
+            "INSERT INTO schema_migrations (version, applied_at) VALUES (?1, ?2)",
+            rusqlite::params![migration.version, now_utc()],
+        )?;
+    }
+    Ok(())
 }
 
 fn migrations_current(conn: &Connection) -> Result<bool> {
