@@ -8,10 +8,10 @@ to approved canonical namespaces and removed 193 now-invalid automatic links.
 No memory was deleted, no human-authored link was removed and ambiguous queues
 remain unchanged.
 
-Clio release `4d07219d3552f9af2b26f8603404f42f1886c6ca` is active on Atlas. The
-Waypoint source correction is pushed on `develop`, but still needs activation
-in the installed Waypoint desktop/CLI build before recurrence prevention is
-operationally complete.
+Clio release `4d07219d3552f9af2b26f8603404f42f1886c6ca` is active on Atlas.
+Waypoint correction `007a9c71fc74f97b3bcf03f05893f7d78682091b` is pushed and installed
+in the desktop and CLI build. An isolated installed-binary canary confirmed the
+canonical namespace and archived-projection retirement behaviour.
 
 The corpus is live and may move slightly after the snapshot. Counts below are
 from the complete paginated snapshot taken at 03:51 UTC on 29 August 2026.
@@ -203,7 +203,7 @@ No live cleanup should be applied through a sequence of ordinary `clio move`
 or per-record archive calls. The approved design requires:
 
 1. fix and verify Waypoint's canonical namespace and retirement behaviour —
-   implemented, tested and pushed; installed-build activation remains;
+   implemented, tested, pushed and activated in the installed desktop/CLI;
 2. implement Clio's history-preserving audit, repair journal and conditional
    rollback path — complete and active on Atlas;
 3. verify linked recall excludes archived or expired memories — covered by the
@@ -305,3 +305,22 @@ maintenance gate was removed and both stable binaries resolve to `4d07219`.
 The ambiguous namespace, receipt, attention and privacy queues remain excluded
 and require separately reviewed slices. The conditional rollback is retained
 but was not run against live Atlas because every post-repair canary passed.
+
+## Waypoint activation evidence
+
+Waypoint commit `007a9c71fc74f97b3bcf03f05893f7d78682091b` was built from an isolated
+Git archive with Node 20.20.2, pnpm 10.32.1 and Rust 1.97.1, then installed as
+Waypoint `0.16.0`. The installed `arm64` CLI and desktop executable hashes match
+the build outputs exactly:
+
+- CLI: `572bf4433cfa8c50604d2051cef9f7a242a366dd421d63f63708d221831610bc`;
+- desktop: `41b8c07221f7424780e9274d02ecafc189f604847b3438dabc6cee7b2508b937`.
+
+The installed CLI was exercised in a disposable Git repository and ledger with
+Waypoint's documented Clio program override pointed at a recording stub. The
+active registration issued one `remember --upsert` into the explicit
+`project:canary` namespace and never used the repository-derived slug as a
+namespace. Archiving the same worktree issued one `archive` call using
+`source=waypoint-worktree` and its stable `worktree:<id>:current` source
+reference, with no second `remember` call. Atlas and the real Waypoint ledger
+were not contacted by this canary.

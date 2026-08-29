@@ -1,8 +1,8 @@
 # Memory Repair and Waypoint Namespace Implementation Plan
 
-> **Status:** Clio implementation, Atlas deployment and the approved first live
-> repair are complete. The Waypoint correction is tested and pushed; installed
-> desktop/CLI activation remains.
+> **Status:** Complete. Clio implementation, Atlas deployment and the approved
+> first live repair are complete. The Waypoint correction is tested, pushed and
+> activated in the installed desktop/CLI build.
 
 **Goal:** Add a fail-closed, atomic and reversible Clio repair path for the
 audited namespace/archive corrections, then stop Waypoint from recreating
