@@ -1,6 +1,6 @@
 # Clio app improvements — implementation record
 
-Status: all five approved slices of the [app review](2026-09-04-app-review.md) are implemented and independently reviewed. Core, UI, adapter and disposable CLI/MCP checks pass. The packaged native app passed the synthetic-data workflows recorded below. Native restart recovery and fault scenarios retain specific verification limits. Work is uncommitted on `develop`, based on `9a08735`. The installed app and Atlas have not been changed.
+Status: all five approved slices of the [app review](2026-09-04-app-review.md) are implemented and independently reviewed. The packaged native app passed the synthetic-data workflows recorded below, including creation-draft and brief recovery after restart. All three subsequent RedPen reports are handled and moved into `implemented`; their dispositions and passing final checks are recorded below. This work has not changed the installed app or Atlas.
 
 ## Behaviour
 
@@ -8,10 +8,12 @@ Status: all five approved slices of the [app review](2026-09-04-app-review.md) a
 
 - Closing an editor waits for pending saves. Errors and conflicting versions retain the draft with retry and explicit discard. An update entered during a save is retained and uses only the version returned by that successful write.
 - Unsaved editor and creation drafts have bounded, versioned local recovery. Failed recovery reserves the original draft until opened or explicitly discarded. Recovery storage failure is visible; keep the app open until the save succeeds or export the draft.
+- Missing recovery is distinct from unreadable, malformed, oversized or unsupported data. Failed reads and failed explicit removal preserve the original bytes and block replacement.
+- Reopening the same memory retains a save confirmed during an overlapping fetch. An external refresh still replaces unchanged drawer content.
 - Discard clears unfinished tag input before closing. It cannot requeue discarded content through a delayed blur handler.
 - Creation prefers the selected workspace, then the last-used workspace, then `global`. A destination override remains while the draft is open. One creator provides deliberate manual and automatic capture modes.
 - Native HTML dialogues provide modal semantics and browser focus containment. Importance and form controls are labelled. Global shortcuts do not act on background cards or override normal form/button activation.
-- The native window remains resident: Rust prevents destruction; the frontend awaits save guards and then hides. Native close persisted an edit and left the process running. The hidden duration and quit/restart recovery remain unverified.
+- The native window remains resident: Rust prevents destruction; the frontend awaits save guards and then hides. Native close persisted an edit and left the process running. The hidden duration remains unverified.
 - Failure to save last-used preferences does not turn a confirmed capture into a retryable save failure.
 
 ### Complete retrieval
@@ -20,13 +22,15 @@ Status: all five approved slices of the [app review](2026-09-04-app-review.md) a
 - Recall/recent accept archive-only filtering and pagination. Full IDs break equal sort ties; empty pages retain the filtered total. Linked recall obeys archive-only eligibility as well.
 - Browsing uses bounded 50-record pages, preserves loaded depth across refreshes and rejects stale responses. Pins resolve independently, respect all selected tags, workspace and archive/expiry visibility, and use bounded refresh. Shared kinds retain custom values. Cards and search include dates, scope and excerpts. Recent/Important and Active/Archive are explicit controls.
 - Arrow keys keep the command palette's selected result in view. The search input identifies its active result for assistive technology.
+- Palette navigation ignores input-method composition, including WebKit's key-code 229 fallback, so confirming composed text does not open a result.
 
 ### Attention and capture review
 
-- Attention projection supplies visible memory titles keyed by full ID without updating access counts. Archived, expired and missing evidence has no title projection.
+- Attention projection supplies visible memory titles keyed by full ID without updating access counts. Archived, expired, missing and differently scoped evidence has no title projection.
 - Evidence opens in the drawer over the attention route. Refresh, workspace changes and leaving the view invalidate earlier requests. Archive and expiry are rechecked before display; that check may fetch a record before withholding it.
 - Older backends without title projection show an explicit unavailable state. Attention actions wait for server confirmation and block duplicate submissions.
 - Capture diagnostics inspect directory entries and metadata only. Missing/unreadable buckets are unknown, not healthy zeroes. Responses identify the local Mac scope and time checked.
+- A future modification time has age zero; it does not make the bucket count unavailable.
 - Local diagnostics remain available independently of attention loading. Expandable details and copying expose queue metadata only. Recovery remains a separate operational workflow.
 - Thin desktop inbox adapters use the existing local core or remote MCP operations. Listing returns the oldest 100 unresolved captures across all workspaces.
 - Edited captures remain in the unresolved queue until approved or rejected. Attention's review count includes both pending and edited records.
@@ -42,12 +46,14 @@ Status: all five approved slices of the [app review](2026-09-04-app-review.md) a
 - The workspace selector uses a separate namespace-details request so scoped statistics do not remove other workspaces from navigation.
 - Workspace search, up to eight pinned workspaces and five recent workspaces retain exact namespace identities. Deletion remains behind a management menu with the existing confirmation and backup safeguards.
 - Pins for unavailable workspaces no longer consume the pin limit. Confirmed workspace deletion removes its shortcut entries.
+- The workspace delete handler rejects `global`, and the desktop command rejects it before creating a backup. Core already enforced this restriction.
 - Statistics identify the scope and explain active/archive and outgoing-link denominators.
 
 ### Durable briefs and reading comfort
 
 - One context brief survives a fresh session in local storage, with an explicit saved/restored/error state. Existing session drafts migrate on open. Clear removes the saved content; source IDs remain in the draft and Markdown export.
 - Context search identifies its workspace and discards stale responses after query/scope changes. Clearing an in-flight query clears its loading state. A failed migration still displays the original session brief and retains its storage.
+- Stored briefs validate every field used by rendering and export, including tag arrays, before restoring a block.
 - Secondary text is lighter in the existing dark palette, with visible keyboard focus outlines and reduced-motion support. Calculated token contrast against `#1E1E1E` improves tertiary text from 2.90:1 to 6.52:1; this is a palette calculation, not a rendered accessibility certification.
 
 ## Contracts and compatibility
@@ -61,10 +67,10 @@ Status: all five approved slices of the [app review](2026-09-04-app-review.md) a
 
 ## Verification evidence
 
-- All 303 core tests passed with `cargo test --locked --offline -p clio-core --no-default-features` (198 unit, 77 integration, 10 multiple-connection, 11 repair and 7 worktree projection tests).
+- Before the RedPen follow-up, 303 core tests passed with `cargo test --locked --offline -p clio-core --no-default-features` (198 unit, 77 integration, 10 multiple-connection, 11 repair and 7 worktree projection tests).
 - Focused regressions reproduced the original failures before their fixes: scoped statistics, attention-title visibility, archived-only pages, edited inbox visibility, unavailable spool buckets, close-before-save, failed/conflicting saves, in-flight edits, wrong creation scope, lost restart drafts, discarded-tag requeue, modal request races and successful-capture preference failures.
 - Independent reviews approved all five slices after corrections. Regressions cover tag discard, recovery reservation, creation races, preference failures, context migration, stale activity, workspace pin limits and palette scrolling.
-- Final checks on 5 September 2026: `npm --prefix ui test` reported **87 tests, 87 passed, 0 failed** and exited 0. These include **17 inbox tests**; the final focused attention, inbox and editor review passed **36 tests**.
+- Before the RedPen follow-up, `npm --prefix ui test` reported **87 tests, 87 passed, 0 failed** and exited 0. These include **17 inbox tests**; the focused attention, inbox and editor review passed **36 tests**.
 - Vue type checking with `node ui/node_modules/vue-tsc/bin/vue-tsc.js --noEmit -p ui/tsconfig.json` exited 0 with no output. From `ui/`, `node node_modules/vite/bin/vite.js build` transformed **118 modules**, built in **1.05 seconds** and exited 0. Both commands used Herd Node 22.23.2.
 - `git diff --check` exited 0 with no output.
 - UI compilation uses the existing Herd Node runtime. The bundled signed Node runtime cannot load the installed Rollup native addon due to macOS Team ID validation; no dependency change was needed.
@@ -94,14 +100,51 @@ CUA inspected the real packaged application through its native accessibility tre
 - Context search in workspace B returned only its 5 records. Adding a result and navigating away/back restored the brief. Quick creation defaulted to B and stored exactly one memory there.
 - The command palette displayed 6 results. Five Down keystrokes scrolled the final selected result into view; Return opened it. Editing and pressing Escape persisted the change to SQLite.
 - Editing then closing the native window persisted the change to SQLite and left the process resident. CUA immediately reobserves/reactivates the window, so this did not establish how long it remained hidden.
+- A subsequent isolated persistent-profile run used actual Cmd-Q and restart. It recovered both an unsaved creation draft and the context brief.
+- Clipboard paste and an actual Markdown download preserved the full memory ID, namespace and body. The synthetic export was moved to temporary storage.
+- A native remote connection through `RemoteState` and a real disposable MCP process loaded workspace B statistics as **6 total / 6 active / 0 archived**, plus 2 inbox entries.
 
-## Verification limits and next acceptance
+## RedPen review dispositions
+
+The three reports below contain 19 entries. Duplicate entries are mapped to the same disposition; eight distinct corrections were implemented.
+
+- **A**: `job-73c5917769894e260afe881a5948244d777628e85ffa88db213e134694c254c7.md`
+- **B**: `job-3e90084da8577ffcffbfffc4b64cb6de85ab8aa022f4348251ba0dc4b64e3484.md`
+- **C**: `job-895a4961c2d92fd2acd6c58585553d2a3dbe5798376f63a458ea69c46390ada2.md`
+
+Entry numbers follow each report's displayed finding order, including informational notes.
+
+| Entries | Disposition |
+|---|---|
+| A1, B2, C1 | **Implemented:** typed draft-read outcomes reserve failed recovery bytes and block replacement. Retry and explicit discard handle failed removal without losing the original record. |
+| A2 | **Implemented:** a same-ID fetch cannot replace a newer confirmed save. A control case preserves legitimate external refreshes when there is no local change. |
+| B3, C2 | **Implemented:** palette handlers ignore `isComposing` and WebKit key code 229. |
+| A3, B5, C6 | **Implemented:** attention titles obey the requested namespace as well as archive/expiry eligibility. |
+| B1, C4 | **Implemented:** `ctxDelete` rejects `global`; the Tauri command rejects it before backup. The High severity claim overstated the existing risk: core already rejected a global purge. |
+| B6 | **Implemented:** stored context blocks validate rendering/export fields, including text, content and tag-array types. |
+| B7 | **Implemented:** future spool modification times use age zero while retaining the bucket count. |
+| C7 | **Implemented:** the disposable fixture explicitly disables CORS and enables strict filesystem access. It remains outside the packaged application. |
+| B4, C3 | **Skipped:** expiry, clearing on hide and excluding changed content would discard the approved restart-recovery data. Slots are bounded and clear on confirmed save/discard. Drawer deletion flushes first; a context brief is an independent snapshot. Encryption needs a separate key-management and storage contract; no encryption-at-rest claim is made. |
+| A4 | **Skipped:** spool roots come from operator configuration (`CLIO_CAPTURE_SPOOL`) or the local home directory, not an IPC caller argument. The report identifies a hypothetical future boundary change, not a current caller-controlled path. |
+| C5 | **Skipped:** both scoped query branches apply the archive filter, and the UI also checks each row. The response marker is a compatibility contract, not a security attestation; changing its derivation adds no protection against a dishonest backend. |
+| A5 | **No change:** the report found no injection vector. Captured text uses Vue interpolation/`<pre>`; no `v-html` was introduced. |
+
+The final independent review approved the corrections with no remaining valid blocker; its 68 focused UI and 6 Rust regressions passed. Final combined verification passed:
+
+- From `ui/`, Herd Node 22 ran `node --experimental-strip-types --test --test-reporter=spec src/composables/*.test.mjs src/utils/*.test.mjs`: **110 passed, 0 failed**.
+- Full core suite: **305 passed** (200 unit, 77 integration, 10 connection, 11 repair and 7 worktree).
+- `cargo test --locked --offline -p clio-tauri`: **9 passed, 0 failed**.
+- Vue type checking: exit 0. Vite: **118 modules**, built in **997 ms**, exit 0. `git diff --check`: no errors.
+
+All three reports were moved to `RedPenReviewQueue/reviews/implemented/` after source-hash and absent-destination checks. Verification reported **PASS all 3 handled review files are in implemented, unchanged; originals are absent**. SHA-256 values were unchanged. A fresh process check confirmed all task-started native app, bridge, MCP and Orca processes stopped. The requested review follow-up is complete.
+
+## Verification limits and scope
 
 Earlier verification was blocked by missing locked crates and DNS/network restrictions. A dependency request was cancelled, and a later retry could not resolve `static.crates.io`. These download and adapter-test blocks are now resolved: the authorised network continuation fetched the dependencies and passed the adapter checks above. The lockfile was not changed.
 
 A disposable browser fixture was prepared, intercepting every Tauri command and using only synthetic memories/captures. The sandbox blocked a localhost listener; its approval-waiting attempt was cancelled before startup. Browser URL policy subsequently blocked opening a standalone local preview. The standalone preview builder/output was removed. That browser preview was not exercised.
 
-The earlier Orca inspection could not expose the native window; CUA subsequently inspected and exercised it successfully. There is no outstanding Orca permission requirement. A temporary persistent data-store override failed during Tauri code generation, so verification used incognito storage. No repository application configuration or lockfile was changed for this isolation. Incognito verification cannot establish durable recovery across native application restarts.
+CUA inspected and exercised the native window without changing Orca permissions. The first native run used incognito storage. A later persistent-profile run used two temporary patches to the exact dependency versions for UUID-based webview storage. Those verification-only patches did not change repository application configuration or the lockfile. The later run established creation-draft and brief recovery across native restart.
 
 Launch the verification bundle only with a disposable database, isolated settings/spool and disabled providers. A default launch or double-click can load the usual production settings; the generated bundle is not a standalone demo launcher.
 
@@ -109,17 +152,9 @@ Cleanup confirmed that the verification app, Orca and both task-started computer
 
 The reusable fixture is prepared for `node test/fixture-server.mjs` from `ui/`, using a compatible Node runtime in an environment authorised to listen on localhost. Startup and rendered behaviour remain unverified. Stop it with Ctrl-C after checks. It serves the normal application with synthetic command responses instead of the real memory backend.
 
-UI regression tests exercise compiled component setup state with mocked IPC. Native testing above adds real rendering and SQLite persistence evidence. Errors, conflicts, unavailable storage and draft recovery across restarts remain covered by mocked tests rather than native fault injection.
+UI regression tests exercise compiled component setup state with mocked IPC. Native testing adds rendering, SQLite persistence, selected restart recovery, export and remote-connection evidence. Native fault injection, editor/inbox restart recovery, exhaustive accessibility checks and the window's hidden duration were not exercised. These limits do not create additional work within the user's instruction to handle the three reviews and then stop.
 
-Before release, use disposable records to check:
-
-1. Use an isolated persistent profile to test quit/reopen with editor, creation, inbox and context drafts, including unavailable recovery. The incognito run cannot prove this.
-2. Exercise native offline errors, conflicting writes and storage failures, including close with unfinished tags and switching records. These have mocked regression coverage.
-3. Check focus containment/restoration, narrow layout, zoom, reduced motion, clipboard/Markdown export and the native window's hidden state without inspection reactivating it.
-4. Complete the remaining native edge cases: refresh after pagination, older pins, multiple tags/custom kinds, explicit creation destination and automatic capture. These were not all exercised in the walkthrough.
-5. Verify the packaged desktop against a disposable remote MCP backend. Local native workflows and CLI/MCP process contracts passed; installed-app and deployed Atlas acceptance remain separate release work.
-
-The contract-check MCP process stopped and its disposable data was removed. All native verification/control processes also stopped. Synthetic native fixture database/settings/logs remain in the system temporary directory. No capture replay/purge, hook installation, operational setting changes, Atlas deployment or live memory mutations were performed. Existing capture-recovery work remains in the operational roadmap.
+The contract-check MCP process stopped and its disposable data was removed. The native app, remote bridge, MCP and verification/control processes also stopped. Synthetic native fixture database/settings/logs and the export remain in temporary storage. Installation, deployment, capture replay/purge, hook changes and live memory mutations were outside this work. Existing capture-recovery work remains in the operational roadmap.
 
 ## New files
 
