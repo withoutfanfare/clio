@@ -1912,6 +1912,7 @@ fn cmd_recall(
             offset: args.offset,
             scoring,
             skip_access_tracking: false,
+            match_any_term: false,
         };
         repository::recall(&conn, &query)?
     } else if args.namespace.is_some() {
@@ -1932,6 +1933,7 @@ fn cmd_recall(
             offset: args.offset,
             scoring,
             skip_access_tracking: false,
+            match_any_term: false,
         };
         repository::recall(&conn, &query)?
     } else {
@@ -1952,6 +1954,7 @@ fn cmd_recall(
             offset: args.offset,
             scoring,
             skip_access_tracking: false,
+            match_any_term: false,
         };
         repository::recall_scoped(&conn, &query, &detected_ns)?
     };
@@ -2951,6 +2954,7 @@ fn cmd_action(
                 scope,
                 now: clio_core::models::now_utc(),
                 dormant_days: s.attention.dormant_days,
+                max_age_days: s.attention.max_age_days,
             };
             let items = attention::eligible(&conn, &context)?;
             if json {
@@ -3580,6 +3584,7 @@ fn cmd_resume(
         char_budget: args.char_budget,
         scoring: Some(stgs.scoring),
         dormant_days: stgs.attention.dormant_days,
+        max_age_days: stgs.attention.max_age_days,
         now: None,
     };
 

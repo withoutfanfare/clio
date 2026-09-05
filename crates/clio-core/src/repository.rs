@@ -829,8 +829,60 @@ fn sanitise_fts_query(raw: &str) -> String {
     terms.join(" ")
 }
 
+/// Words too common to carry meaning in a natural-language prompt. Dropping
+/// them from an any-term query stops every memory matching on "the" or "how".
+const FTS_STOPWORDS: &[&str] = &[
+    "a", "about", "after", "again", "all", "also", "am", "an", "and", "any", "are", "as", "at",
+    "be", "because", "been", "before", "being", "both", "but", "by", "can", "could", "did", "do",
+    "does", "doing", "done", "down", "each", "else", "few", "for", "from", "get", "got", "had",
+    "has", "have", "having", "he", "her", "here", "hers", "him", "his", "how", "i", "if", "in",
+    "into", "is", "it", "its", "just", "let", "like", "make", "many", "may", "me", "might", "more",
+    "most", "much", "must", "my", "need", "no", "not", "now", "of", "off", "on", "once", "one",
+    "only", "or", "other", "our", "out", "over", "own", "per", "please", "same", "shall", "she",
+    "should", "so", "some", "still", "such", "than", "that", "the", "their", "them", "then",
+    "there", "these", "they", "thing", "things", "this", "those", "through", "to", "too", "try",
+    "under", "until", "up", "us", "use", "used", "using", "very", "via", "want", "was", "way",
+    "we", "were", "what", "when", "where", "which", "while", "who", "whom", "why", "will", "with",
+    "would", "yes", "you", "your",
+];
+
+/// Sanitise a natural-language query for any-term matching. Each surviving
+/// term is quoted as in [`sanitise_fts_query`] but the terms are joined with
+/// `OR`, so a prompt such as "why does the sidebar resize feel laggy" matches
+/// memories about the sidebar *or* resizing, ranked by BM25. Stopwords, tokens
+/// shorter than three characters and duplicates are dropped, and the term count
+/// is capped to keep the query cheap. Falls back to the all-terms form when
+/// nothing survives filtering, so short technical queries keep working.
+fn sanitise_fts_query_any(raw: &str) -> String {
+    const MAX_TERMS: usize = 12;
+
+    let mut seen = std::collections::HashSet::new();
+    let terms: Vec<String> = raw
+        .split_whitespace()
+        .map(|t| {
+            t.trim_matches(|c: char| !c.is_alphanumeric())
+                .replace('"', " ")
+                .trim()
+                .to_lowercase()
+        })
+        .filter(|t| t.chars().count() >= 3 && !FTS_STOPWORDS.contains(&t.as_str()))
+        .filter(|t| seen.insert(t.clone()))
+        .take(MAX_TERMS)
+        .map(|t| format!("\"{t}\""))
+        .collect();
+
+    if terms.is_empty() {
+        return sanitise_fts_query(raw);
+    }
+    terms.join(" OR ")
+}
+
 fn recall_fts(conn: &Connection, fts_query: &str, q: &RecallQuery) -> Result<RecallResult> {
-    let safe_query = sanitise_fts_query(fts_query);
+    let safe_query = if q.match_any_term {
+        sanitise_fts_query_any(fts_query)
+    } else {
+        sanitise_fts_query(fts_query)
+    };
 
     let mut sql = String::from(
         "SELECT m.id, m.namespace, m.kind, m.title, m.summary, m.content, m.tags_text,
@@ -1729,4 +1781,33 @@ pub fn schema_info(conn: &Connection) -> Result<String> {
     info.push_str(&format!("Migrations applied: {}\n", versions.join(", ")));
 
     Ok(info)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn any_term_query_drops_stopwords_and_joins_with_or() {
+        let q = sanitise_fts_query_any("why does the sidebar resize drag feel laggy");
+        assert_eq!(
+            q,
+            "\"sidebar\" OR \"resize\" OR \"drag\" OR \"feel\" OR \"laggy\""
+        );
+    }
+
+    #[test]
+    fn any_term_query_dedupes_and_strips_punctuation() {
+        let q = sanitise_fts_query_any("Spool, spool! (durability)");
+        assert_eq!(q, "\"spool\" OR \"durability\"");
+    }
+
+    #[test]
+    fn any_term_query_falls_back_to_all_terms_when_nothing_survives() {
+        assert_eq!(
+            sanitise_fts_query_any("the it"),
+            sanitise_fts_query("the it"),
+            "short or stopword-only queries keep the all-terms form"
+        );
+    }
 }

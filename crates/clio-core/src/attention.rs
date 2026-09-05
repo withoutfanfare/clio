@@ -103,6 +103,10 @@ pub struct EligibilityContext {
     pub scope: Option<String>,
     pub now: String,
     pub dormant_days: u32,
+    /// Open items untouched for longer than this many days no longer surface
+    /// as `project_session` or `dormant`; only a due date or reminder brings
+    /// them back. `0` disables the cap.
+    pub max_age_days: u32,
 }
 
 fn row_to_item(row: &rusqlite::Row<'_>) -> rusqlite::Result<AttentionItem> {
@@ -498,6 +502,7 @@ pub fn overview(
     namespace: Option<&str>,
     scope: Option<&str>,
     dormant_days: u32,
+    max_age_days: u32,
 ) -> Result<AttentionOverview> {
     let now = now_utc();
     let eligible_items = eligible(
@@ -507,6 +512,7 @@ pub fn overview(
             scope: scope.map(String::from),
             now: now.clone(),
             dormant_days,
+            max_age_days,
         },
     )?;
     let mut open = list_attention(conn, namespace, Some(STATUS_OPEN), 100)?;
@@ -612,9 +618,15 @@ pub fn eligible(conn: &Connection, ctx: &EligibilityContext) -> Result<Vec<Eligi
     }
 
     let candidates = list_attention(conn, ctx.namespace.as_deref(), None, 500)?;
+    let stale_before = stale_before(&ctx.now, ctx.max_age_days);
     let mut eligible_items = Vec::new();
 
     for item in candidates {
+        // Past the age cap, only an explicit date (due or reminder) may
+        // surface an item; the implicit triggers below go quiet.
+        let stale = stale_before
+            .as_deref()
+            .is_some_and(|cutoff| item.updated_at.as_str() < cutoff);
         let reason = match item.status.as_str() {
             STATUS_SNOOZED => match &item.remind_at {
                 Some(remind) if remind.as_str() <= ctx.now.as_str() => {
@@ -635,6 +647,8 @@ pub fn eligible(conn: &Connection, ctx: &EligibilityContext) -> Result<Vec<Eligi
                     .is_some_and(|remind| remind <= ctx.now.as_str())
                 {
                     Some(EligibilityReason::ReminderDue)
+                } else if stale {
+                    None
                 } else if item.trigger.as_deref() == Some(TRIGGER_PROJECT_SESSION)
                     && ctx.namespace.as_deref() == Some(item.namespace.as_str())
                 {
@@ -663,6 +677,12 @@ pub fn eligible(conn: &Connection, ctx: &EligibilityContext) -> Result<Vec<Eligi
     }
 
     Ok(eligible_items)
+}
+
+/// Cut-off before which an untouched open item counts as stale, or `None`
+/// when `max_age_days` is `0` (no cap).
+pub fn stale_before(now: &str, max_age_days: u32) -> Option<String> {
+    (max_age_days > 0).then(|| dormant_before(now, max_age_days))
 }
 
 /// ISO-8601 timestamp `days` before `now`. Falls back to `now` on a
@@ -732,6 +752,7 @@ mod tests {
             scope: scope.map(String::from),
             now: NOW.into(),
             dormant_days: 0,
+            max_age_days: 0,
         }
     }
 
@@ -904,6 +925,51 @@ mod tests {
     }
 
     #[test]
+    fn stale_items_past_max_age_only_surface_with_a_due_date() {
+        let conn = test_conn();
+        let nudge = remember(&conn, "Pick this up next session");
+        create_attention(
+            &conn,
+            &AttentionInput {
+                memory_id: nudge.id.clone(),
+                trigger: Some(TRIGGER_PROJECT_SESSION.into()),
+                ..AttentionInput::default()
+            },
+        )
+        .unwrap();
+        let dated = remember(&conn, "Renew the certificate");
+        create_attention(
+            &conn,
+            &AttentionInput {
+                memory_id: dated.id.clone(),
+                due_at: Some("2026-07-01T00:00:00Z".into()),
+                ..AttentionInput::default()
+            },
+        )
+        .unwrap();
+
+        let mut context = ctx(Some("project:attention-test"), None);
+        context.max_age_days = 14;
+        // Fresh: both surface.
+        assert_eq!(eligible(&conn, &context).unwrap().len(), 2);
+
+        // Age both rows past the cap: only the dated one still surfaces.
+        conn.execute(
+            "UPDATE attention_items SET updated_at = '2026-06-01T00:00:00Z'",
+            [],
+        )
+        .unwrap();
+        let items = eligible(&conn, &context).unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].item.memory_id, dated.id);
+        assert_eq!(items[0].reason, EligibilityReason::Overdue);
+
+        // Cap disabled: the stale nudge is back.
+        context.max_age_days = 0;
+        assert_eq!(eligible(&conn, &context).unwrap().len(), 2);
+    }
+
+    #[test]
     fn complete_records_resolution_and_keeps_history() {
         let conn = test_conn();
         let memory = remember(&conn, "Ship the fix");
@@ -982,7 +1048,7 @@ mod tests {
         let item = open_attention(&conn, &snoozed.id);
         snooze(&conn, &item.id, "2999-01-01T00:00:00Z", None).unwrap();
 
-        let overview = overview(&conn, Some("project:attention-test"), None, 0).unwrap();
+        let overview = overview(&conn, Some("project:attention-test"), None, 0, 0).unwrap();
         assert_eq!(overview.eligible.len(), 1);
         assert_eq!(overview.eligible[0].reason, EligibilityReason::Overdue);
         assert_eq!(overview.open.len(), 2, "open + snoozed items are visible");
@@ -1013,9 +1079,10 @@ mod tests {
                 row.get(0)
             })
             .unwrap();
-        let value =
-            serde_json::to_value(overview(&conn, Some("project:attention-test"), None, 0).unwrap())
-                .unwrap();
+        let value = serde_json::to_value(
+            overview(&conn, Some("project:attention-test"), None, 0, 0).unwrap(),
+        )
+        .unwrap();
         assert_eq!(value["memory_titles"][&visible.id], "Visible evidence");
         assert!(value["memory_titles"].get(&archived.id).is_none());
         assert!(value["memory_titles"].get(&expired.id).is_none());
@@ -1036,7 +1103,7 @@ mod tests {
         open_attention(&conn, &moved.id);
         crate::repository::move_namespace(&conn, &moved.id, "project:other").unwrap();
 
-        let scoped = overview(&conn, Some("project:attention-test"), None, 0).unwrap();
+        let scoped = overview(&conn, Some("project:attention-test"), None, 0, 0).unwrap();
         assert!(scoped.open.iter().any(|item| item.memory_id == moved.id));
         assert_eq!(
             scoped.memory_titles.get(&visible.id).unwrap(),
@@ -1044,7 +1111,7 @@ mod tests {
         );
         assert!(!scoped.memory_titles.contains_key(&moved.id));
 
-        let unscoped = overview(&conn, None, None, 0).unwrap();
+        let unscoped = overview(&conn, None, None, 0, 0).unwrap();
         assert_eq!(unscoped.memory_titles.len(), 2);
         assert_eq!(
             unscoped.memory_titles.get(&moved.id).unwrap(),
@@ -1105,6 +1172,7 @@ mod tests {
                 scope: None,
                 now: "2026-07-29T12:30:00Z".into(),
                 dormant_days: 0,
+                max_age_days: 0,
             },
         )
         .unwrap();

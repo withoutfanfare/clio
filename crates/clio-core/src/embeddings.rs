@@ -636,7 +636,7 @@ pub fn semantic_recall(
 ) -> Result<Vec<RecallItem>> {
     // Over-fetch semantically so the keyword boost can re-rank within a wider pool.
     let fetch_limit = limit.saturating_mul(2).max(20);
-    let results = semantic_search(
+    let mut results = semantic_search(
         conn,
         query_embedding,
         model_name,
@@ -645,6 +645,12 @@ pub fn semantic_recall(
         exclude_expired,
         fetch_limit,
     )?;
+
+    // Similarity floor: an unrelated query should return nothing, not its
+    // nearest neighbours. Applied to the raw cosine before any boost.
+    if let Some(floor) = scoring.map(|s| s.min_similarity).filter(|f| *f > 0.0) {
+        results.retain(|r| r.similarity >= floor);
+    }
 
     semantic_recall_from_results(conn, query_text, results, scoring, limit)
 }

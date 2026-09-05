@@ -1730,6 +1730,7 @@ fn bulk_link_expansion_returns_linked_memories() {
             limit: 50,
             scoring: None,
             skip_access_tracking: false,
+            match_any_term: false,
         },
     )
     .unwrap();
@@ -2293,6 +2294,54 @@ fn semantic_search_returns_best_match_first() {
 }
 
 #[test]
+fn semantic_recall_min_similarity_floor_drops_weak_matches() {
+    use clio_core::embeddings::{semantic_recall, store_embedding};
+    use clio_core::settings::ScoringConfig;
+
+    let conn = test_db();
+    let close = remember_simple(&conn, "close semantic match");
+    let far = remember_simple(&conn, "far semantic match");
+    store_embedding(&conn, &close.id, "test", 2, &[1.0, 0.0]).unwrap();
+    store_embedding(&conn, &far.id, "test", 2, &[0.0, 1.0]).unwrap();
+
+    let query = [1.0_f32, 0.0];
+    let scoring = ScoringConfig {
+        decay_lambda: 0.0,
+        access_boost_weight: 0.0,
+        min_similarity: 0.5,
+    };
+    let results = semantic_recall(
+        &conn,
+        "zzqq",
+        &query,
+        "test",
+        None,
+        false,
+        false,
+        Some(&scoring),
+        10,
+    )
+    .unwrap();
+    assert_eq!(results.len(), 1, "orthogonal match falls below the floor");
+    assert_eq!(results[0].memory.id, close.id);
+
+    // Nothing above the floor: an empty result, not the least-bad guess.
+    let none = semantic_recall(
+        &conn,
+        "zzqq",
+        &[0.0_f32, -1.0],
+        "test",
+        None,
+        false,
+        false,
+        Some(&scoring),
+        10,
+    )
+    .unwrap();
+    assert!(none.is_empty());
+}
+
+#[test]
 fn semantic_recall_importance_lifts_weaker_match_when_scoring_enabled() {
     use clio_core::embeddings::{semantic_recall, store_embedding};
     use clio_core::settings::ScoringConfig;
@@ -2326,6 +2375,7 @@ fn semantic_recall_importance_lifts_weaker_match_when_scoring_enabled() {
     let scoring = ScoringConfig {
         decay_lambda: 0.01,
         access_boost_weight: 0.1,
+        min_similarity: 0.0,
     };
     let scored = semantic_recall(
         &conn,
@@ -2658,6 +2708,7 @@ fn attention_lifecycle_preserves_content_and_history() {
             scope: None,
             now: "2026-07-29T12:00:00Z".into(),
             dormant_days: 0,
+            max_age_days: 0,
         },
     )
     .unwrap();
@@ -3521,7 +3572,7 @@ fn edited_inbox_items_remain_visible_until_reviewed() {
     review::edit_review(&conn, &item.id, &edits).unwrap();
     assert_eq!(review::list_pending(&conn, 10).unwrap().len(), 1);
     assert_eq!(
-        clio_core::attention::overview(&conn, None, None, 14)
+        clio_core::attention::overview(&conn, None, None, 14, 14)
             .unwrap()
             .review_pending,
         1
@@ -3537,10 +3588,15 @@ fn edit_review_rejects_out_of_range_importance() {
     let input = serde_json::from_value(serde_json::json!({"content": "Review evidence"})).unwrap();
     let item = review::queue_for_review(&conn, &input).unwrap();
     for importance in [0, 6] {
-        let edits =
-            serde_json::from_value(serde_json::json!({"importance": importance})).unwrap();
+        let edits = serde_json::from_value(serde_json::json!({"importance": importance})).unwrap();
         let err = review::edit_review(&conn, &item.id, &edits).unwrap_err();
-        assert!(matches!(err, clio_core::error::ClioError::Validation(_)), "{err}");
+        assert!(
+            matches!(err, clio_core::error::ClioError::Validation(_)),
+            "{err}"
+        );
     }
-    assert_eq!(review::get_review(&conn, &item.id).unwrap().status, "pending");
+    assert_eq!(
+        review::get_review(&conn, &item.id).unwrap().status,
+        "pending"
+    );
 }

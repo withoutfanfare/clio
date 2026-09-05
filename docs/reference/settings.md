@@ -132,6 +132,7 @@ unless the app also implements their full validation and recovery workflows.
 |-----|------|---------|-------------|
 | `decay_lambda` | float | `0.01` | Exponential decay rate (0.0 = disabled, 0.01 = 75% at 30 days) |
 | `access_boost_weight` | float | `0.1` | Weight for access frequency boost (0.0 = disabled) |
+| `min_similarity` | float | `0.35` | Lowest cosine similarity a semantic search result may have. Weaker matches are dropped, so an unrelated query returns nothing rather than the least-bad guess. `0.0` disables the floor |
 
 ## daemon
 
@@ -214,6 +215,7 @@ database. `clio --local` bypasses the route. The daemon remains local-only.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `dormant_days` | int | `14` | Days an open attention item may sit untouched before eligibility reports it as `dormant`. `0` disables dormancy surfacing |
+| `max_age_days` | int | `14` | Days an open attention item may sit untouched before session briefs and `action eligible` stop surfacing it. Items with a due date or reminder are exempt. `0` disables the cap. With the defaults, `dormant_days` never fires because the cap hides the item first: raise `max_age_days` above `dormant_days` to see `dormant` items |
 
 ## Example
 
@@ -229,7 +231,7 @@ database. `clio --local` bypasses the route. The daemon remains local-only.
     "review_threshold": 0.7
   },
   "context": { "auto_detect": true },
-  "scoring": { "decay_lambda": 0.01, "access_boost_weight": 0.1 },
+  "scoring": { "decay_lambda": 0.01, "access_boost_weight": 0.1, "min_similarity": 0.35 },
   "daemon": {
     "enabled": true,
     "inbox_paths": ["~/clio-inbox"],

@@ -10,7 +10,7 @@ use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{ClioError, Result};
-use crate::models::{Memory, RecallQuery, now_utc};
+use crate::models::{Memory, RecallQuery, SortOrder, now_utc};
 use crate::repository;
 use crate::settings::ScoringConfig;
 
@@ -556,6 +556,12 @@ pub struct ResumeRequest {
     #[serde(default)]
     pub dormant_days: u32,
 
+    /// Age cap from `AttentionConfig`: open items untouched for longer than
+    /// this many days stop surfacing automatically unless they carry a due
+    /// date or reminder. `0` disables the cap.
+    #[serde(default)]
+    pub max_age_days: u32,
+
     /// Fixed evaluation time for tests; `None` means now.
     #[serde(default)]
     pub now: Option<String>,
@@ -571,6 +577,7 @@ impl Default for ResumeRequest {
             char_budget: None,
             scoring: None,
             dormant_days: 0,
+            max_age_days: 0,
             now: None,
         }
     }
@@ -692,6 +699,7 @@ pub fn build_resume_brief(conn: &Connection, request: &ResumeRequest) -> Result<
             scope: request.session_id.clone(),
             now: now.clone(),
             dormant_days: request.dormant_days,
+            max_age_days: request.max_age_days,
         },
     )?;
 
@@ -707,12 +715,21 @@ pub fn build_resume_brief(conn: &Connection, request: &ResumeRequest) -> Result<
     }
 
     // 2. Blocked / waiting items (open, waiting_on set, not already included).
+    // The same age cap applies as for eligibility: a wait nobody has touched
+    // in weeks is stale, not blocking.
+    let stale_before = attention::stale_before(&now, request.max_age_days);
     let mut waiting = Vec::new();
     for item in attention::list_attention(conn, Some(&namespace), Some(attention::STATUS_OPEN), 50)?
     {
         let Some(waiting_on) = item.waiting_on.clone() else {
             continue;
         };
+        if stale_before
+            .as_deref()
+            .is_some_and(|cutoff| item.updated_at.as_str() < cutoff)
+        {
+            continue;
+        }
         if let Some(scope) = &request.session_id {
             if crate::events::event_exists(conn, &attention::surfaced_key(&item, scope, "waiting"))?
             {
@@ -733,11 +750,13 @@ pub fn build_resume_brief(conn: &Connection, request: &ResumeRequest) -> Result<
     // 3. Constraints: project first, plus a modest global prior.
     let mut constraints = resume_recall(
         conn,
-        Some(&namespace),
-        Some("constraint"),
-        None,
-        6,
-        &request.scoring,
+        resume_query(
+            Some(&namespace),
+            Some("constraint"),
+            None,
+            6,
+            &request.scoring,
+        ),
         "active constraint in this project",
     )?;
     if request
@@ -747,23 +766,31 @@ pub fn build_resume_brief(conn: &Connection, request: &ResumeRequest) -> Result<
     {
         constraints.extend(resume_recall(
             conn,
-            Some("global"),
-            Some("constraint"),
-            None,
-            2,
-            &request.scoring,
+            resume_query(
+                Some("global"),
+                Some("constraint"),
+                None,
+                2,
+                &request.scoring,
+            ),
             "global constraint",
         )?);
     }
 
-    // 4. Recent decisions.
+    // 4. Recent decisions — "recent" means newest by creation date, so a
+    // heavily accessed old decision cannot outrank last week's.
     let decisions = resume_recall(
         conn,
-        Some(&namespace),
-        Some("decision"),
-        None,
-        5,
-        &request.scoring,
+        RecallQuery {
+            sort_by: Some(SortOrder::CreatedDesc),
+            ..resume_query(
+                Some(&namespace),
+                Some("decision"),
+                None,
+                5,
+                &request.scoring,
+            )
+        },
         "recent decision in this project",
     )?;
 
@@ -775,13 +802,14 @@ pub fn build_resume_brief(conn: &Connection, request: &ResumeRequest) -> Result<
         .filter(|q| !q.is_empty())
     {
         Some(query) => {
+            // The query is usually a whole prompt, so match on any of its
+            // meaningful terms; requiring every word would match nothing.
             let mut items = resume_recall(
                 conn,
-                Some(&namespace),
-                None,
-                Some(query),
-                10,
-                &request.scoring,
+                RecallQuery {
+                    match_any_term: true,
+                    ..resume_query(Some(&namespace), None, Some(query), 10, &request.scoring)
+                },
                 &format!("matches the current task ({query})"),
             )?;
             items.retain(|i| i.kind != "receipt");
@@ -807,11 +835,7 @@ pub fn build_resume_brief(conn: &Connection, request: &ResumeRequest) -> Result<
     // 6. Recent substantive activity (receipts).
     let activity = resume_recall(
         conn,
-        Some(&namespace),
-        Some("receipt"),
-        None,
-        3,
-        &request.scoring,
+        resume_query(Some(&namespace), Some("receipt"), None, 3, &request.scoring),
         "recent session receipt",
     )?
     .into_iter()
@@ -874,17 +898,15 @@ fn eligible_memory(conn: &Connection, memory_id: &str, now: &str) -> Result<Opti
     Ok(Some(memory))
 }
 
-/// Untracked recall wrapped into resume items with a shared reason.
-fn resume_recall(
-    conn: &Connection,
+/// The untracked, expiry-aware query every resume section starts from.
+fn resume_query(
     namespace: Option<&str>,
     kind: Option<&str>,
     query: Option<&str>,
     limit: u32,
     scoring: &Option<ScoringConfig>,
-    reason: &str,
-) -> Result<Vec<ResumeItem>> {
-    let recall_query = RecallQuery {
+) -> RecallQuery {
+    RecallQuery {
         query: query.map(String::from),
         namespace: namespace.map(String::from),
         kind: kind.map(String::from),
@@ -893,7 +915,15 @@ fn resume_recall(
         scoring: scoring.clone(),
         skip_access_tracking: true,
         ..Default::default()
-    };
+    }
+}
+
+/// Untracked recall wrapped into resume items with a shared reason.
+fn resume_recall(
+    conn: &Connection,
+    recall_query: RecallQuery,
+    reason: &str,
+) -> Result<Vec<ResumeItem>> {
     let result = repository::recall(conn, &recall_query)?;
     Ok(result
         .items
@@ -1577,6 +1607,70 @@ mod tests {
                 .any(|i| i.content.contains("bananas")),
             "irrelevant memory is omitted"
         );
+    }
+
+    #[test]
+    fn resume_knowledge_matches_any_term_of_a_natural_language_query() {
+        let conn = test_db();
+        let ns = "project:resume";
+        make_memory(
+            &conn,
+            ns,
+            "fact",
+            "The spool uses atomic renames for durability",
+        );
+        make_memory(
+            &conn,
+            ns,
+            "fact",
+            "Completely unrelated trivia about bananas",
+        );
+
+        let mut request = resume_request(ns);
+        // "need" and "crash" appear in no memory: requiring every term would
+        // match nothing, so this only passes under any-term matching.
+        request.query = Some("why does the spool need atomic renames after a crash".into());
+        let brief = build_resume_brief(&conn, &request).unwrap();
+        let knowledge = section(&brief, "Relevant knowledge").unwrap();
+        assert!(knowledge.items.iter().any(|i| i.content.contains("spool")));
+        assert!(
+            !knowledge
+                .items
+                .iter()
+                .any(|i| i.content.contains("bananas")),
+            "memories sharing no term are still omitted"
+        );
+    }
+
+    #[test]
+    fn resume_decisions_are_ordered_newest_first_regardless_of_score() {
+        let conn = test_db();
+        let ns = "project:resume";
+        let older = make_memory(&conn, ns, "decision", "Use SQLite for storage");
+        let newer = make_memory(&conn, ns, "decision", "Route the Mac through Atlas");
+        // Make the older decision look far more "relevant" to composite
+        // scoring: heavily accessed and important, but created long ago.
+        conn.execute(
+            "UPDATE memories SET created_at = '2025-01-01T00:00:00Z', access_count = 50, \
+             importance = 5 WHERE id = ?1",
+            [&older.id],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE memories SET created_at = '2026-07-28T00:00:00Z', importance = 1 \
+             WHERE id = ?1",
+            [&newer.id],
+        )
+        .unwrap();
+
+        let brief = build_resume_brief(&conn, &resume_request(ns)).unwrap();
+        let decisions = section(&brief, "Recent decisions").unwrap();
+        let ids: Vec<&str> = decisions
+            .items
+            .iter()
+            .map(|i| i.memory_id.as_str())
+            .collect();
+        assert_eq!(ids, vec![newer.id.as_str(), older.id.as_str()]);
     }
 
     #[test]
