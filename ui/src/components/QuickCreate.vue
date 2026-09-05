@@ -30,7 +30,9 @@ const importance = ref(3);
 const mode = ref<"manual" | "automatic">("manual");
 const submitting = ref(false);
 const recoveryError = ref<string | null>(null);
-const recoveredDraft = readDraft(storageKey, isCreateDraft);
+const recoveryBlocked = ref(false);
+const recoveredDraft = ref(false);
+let restoringDraft = false;
 const submitError = ref<string | null>(null);
 const confirmingDiscard = ref(false);
 const contentRef = ref<HTMLTextAreaElement | null>(null);
@@ -38,24 +40,41 @@ const open = computed(() => store.composeOpen);
 const hasDraft = computed(() => !!(content.value.trim() || title.value.trim() || tags.value.length || tagInput.value.trim()));
 const namespaces = computed(() => [...new Set(["global", namespace.value, ...store.allNamespaces])]);
 const kinds = computed(() => memoryKinds(store.availableKinds, [kind.value]));
-if (recoveredDraft) {
-  content.value = recoveredDraft.content;
-  title.value = recoveredDraft.title;
-  namespace.value = recoveredDraft.namespace;
-  kind.value = recoveredDraft.kind;
-  tags.value = recoveredDraft.tags;
-  tagInput.value = recoveredDraft.tagInput;
-  importance.value = recoveredDraft.importance;
-  mode.value = recoveredDraft.mode;
+function retryRecovery(): boolean {
+  if (submitting.value || (!recoveryBlocked.value && hasDraft.value)) return false;
+  const result = readDraft(storageKey, isCreateDraft);
+  if (result.status === "error") {
+    recoveryBlocked.value = true;
+    recoveryError.value = "The saved creation draft could not be recovered. It has been kept. Retry recovery or explicitly discard it before creating another memory.";
+    return false;
+  }
+  restoringDraft = true;
+  if (result.status === "ready") {
+    content.value = result.draft.content;
+    title.value = result.draft.title;
+    namespace.value = result.draft.namespace;
+    kind.value = result.draft.kind;
+    tags.value = result.draft.tags;
+    tagInput.value = result.draft.tagInput;
+    importance.value = result.draft.importance;
+    mode.value = result.draft.mode;
+    recoveredDraft.value = true;
+  }
+  restoringDraft = false;
+  recoveryBlocked.value = false;
+  recoveryError.value = null;
+  return true;
 }
+retryRecovery();
 onMounted(() => {
-  if (recoveredDraft) store.composeOpen = true;
+  if (recoveredDraft.value || recoveryBlocked.value) store.composeOpen = true;
 });
 
 watch(() => ({
   content: content.value, title: title.value, namespace: namespace.value, kind: kind.value,
   tags: tags.value, tagInput: tagInput.value, importance: importance.value, mode: mode.value,
 }), (draft) => {
+  if (recoveryBlocked.value || restoringDraft) return;
   try {
     if (hasDraft.value) writeDraft(storageKey, draft);
     else removeDraft(storageKey);
@@ -69,7 +88,7 @@ watch(
   () => store.composeOpen,
   (value) => {
     if (value) {
-      if (!hasDraft.value) {
+      if (!hasDraft.value && !recoveryBlocked.value) {
         namespace.value = store.selectedNamespace || store.quickCreateLastNamespace || "global";
         kind.value = store.quickCreateLastKind || "note";
       }
@@ -91,7 +110,7 @@ function reset() {
 
 function canClose() {
   if (submitting.value) return false;
-  if (hasDraft.value) {
+  if (hasDraft.value || recoveryBlocked.value) {
     confirmingDiscard.value = true;
     return false;
   }
@@ -112,7 +131,7 @@ function removeTag(tag: string) {
 }
 
 async function submit() {
-  if (!content.value.trim() || submitting.value) return;
+  if (recoveryBlocked.value || !content.value.trim() || submitting.value) return;
   addTag();
   submitting.value = true;
   submitError.value = null;
@@ -151,6 +170,14 @@ async function close() {
 
 async function discardAndClose() {
   if (submitting.value) return;
+  try { removeDraft(storageKey); }
+  catch {
+    recoveryError.value = "Could not discard the saved creation draft. It remains protected; retry when storage is available.";
+    return;
+  }
+  recoveryBlocked.value = false;
+  recoveryError.value = null;
+  recoveredDraft.value = false;
   reset();
   await close();
 }
@@ -168,7 +195,7 @@ async function discardAndClose() {
           </button>
         </div>
 
-        <div class="qc-body" :inert="submitting">
+        <div class="qc-body" :inert="submitting || recoveryBlocked">
           <fieldset class="qc-mode">
             <legend class="qc-label">Entry method</legend>
             <label><input v-model="mode" type="radio" value="manual" /> Manual entry</label>
@@ -251,9 +278,13 @@ async function discardAndClose() {
         </div>
 
         <div class="qc-feedback">
-          <p class="qc-hint" role="status">{{ mode === 'automatic' ? 'Capture destination' : 'Saving to' }}: <strong>{{ namespace || "global" }}</strong></p>
+          <p v-if="!recoveryBlocked" class="qc-hint" role="status">{{ mode === 'automatic' ? 'Capture destination' : 'Saving to' }}: <strong>{{ namespace || "global" }}</strong></p>
           <p v-if="recoveredDraft && hasDraft" class="qc-hint">Recovered an unfinished draft. Review it before saving.</p>
           <p v-if="recoveryError" class="qc-error" role="alert">{{ recoveryError }}</p>
+          <div v-if="recoveryBlocked">
+            <button class="qc-btn-ghost" @click="retryRecovery">Retry recovery</button>
+            <button class="qc-btn-ghost" @click="confirmingDiscard = true">Discard saved draft…</button>
+          </div>
           <p v-if="submitError" class="qc-error" role="alert">{{ submitError }}</p>
           <div v-if="confirmingDiscard" role="alert">
             <p>Discard this unsaved draft?</p>
@@ -266,7 +297,7 @@ async function discardAndClose() {
           <button
             class="qc-btn-primary"
             @click="submit"
-            :disabled="!content.trim() || submitting"
+            :disabled="recoveryBlocked || !content.trim() || submitting"
           >
             {{ submitting ? "Saving\u2026" : mode === "automatic" ? "Capture" : "Save" }}
             <kbd class="qc-kbd">&#8984;&#9166;</kbd>

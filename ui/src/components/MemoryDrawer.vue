@@ -17,7 +17,7 @@ const availableTags = computed(() => {
   if (!stats?.top_tags?.length) return [];
   return stats.top_tags.map(([tag]: [string, number]) => tag);
 });
-const { saving, dirty, saved, error: saveError, scheduleAutoSave, flush, discard, restoreDraft, recoveryMemoryId, unresolvedRecoveryId, recoveryError } = useAutoSave();
+const { saving, dirty, saved, error: saveError, scheduleAutoSave, flush, discard, restoreDraft, recoveryMemoryId, recoveryBlocked, unresolvedRecoveryId, recoveryError, retryRecovery: readRecovery } = useAutoSave();
 
 const editContent = ref("");
 const editTitle = ref("");
@@ -32,6 +32,7 @@ const confirmingDiscard = ref(false);
 const closing = ref(false);
 const tagsRef = ref<InstanceType<typeof TagInput> | null>(null);
 async function saveBeforeClose(nextMemoryId?: string) {
+  if (recoveryBlocked.value) return false;
   if (unresolvedRecoveryId.value) return nextMemoryId === unresolvedRecoveryId.value;
   if (deleting.value) return false;
   tagsRef.value?.commit();
@@ -40,7 +41,7 @@ async function saveBeforeClose(nextMemoryId?: string) {
 const confirmingRecoveryDiscard = ref(false);
 const recovering = ref(false);
 async function retryRecovery() {
-  if (!unresolvedRecoveryId.value || recovering.value) return;
+  if (recovering.value || !readRecovery() || !unresolvedRecoveryId.value) return;
   recovering.value = true;
   try { await store.openDrawer(unresolvedRecoveryId.value); }
   finally { recovering.value = false; }
@@ -269,12 +270,13 @@ function formatDate(iso: string): string {
 </script>
 
 <template>
-  <NativeDialog :open="!!unresolvedRecoveryId && !store.drawerOpen && !store.composeOpen" label="Recover unsaved changes" @close="confirmingRecoveryDiscard = true">
+  <NativeDialog :open="(recoveryBlocked || !!unresolvedRecoveryId) && (!store.drawerOpen || recoveryBlocked) && !store.composeOpen" label="Recover unsaved changes" @close="confirmingRecoveryDiscard = true">
     <section class="recovery-dialog" role="alert">
       <h2>Unsaved changes are waiting</h2>
       <p>Your saved draft is protected. Open its memory to recover it, or explicitly discard the draft before editing another memory.</p>
+      <p v-if="recoveryError">{{ recoveryError }}</p>
       <p v-if="store.error">{{ store.error }}</p>
-      <SButton :disabled="recovering" @click="retryRecovery">{{ recovering ? "Opening…" : "Open recovered memory" }}</SButton>
+      <SButton :disabled="recovering" @click="retryRecovery">{{ recovering ? "Opening…" : recoveryBlocked ? "Retry recovery" : "Open recovered memory" }}</SButton>
       <SButton variant="ghost" :disabled="recovering" @click="confirmingRecoveryDiscard = true">Discard saved draft…</SButton>
       <div v-if="confirmingRecoveryDiscard">
         <p>Permanently discard these unsaved changes?</p>
@@ -283,7 +285,7 @@ function formatDate(iso: string): string {
       </div>
     </section>
   </NativeDialog>
-  <NativeDialog :open="store.drawerOpen" label="Edit memory" @close="close">
+  <NativeDialog :open="store.drawerOpen && !recoveryBlocked" label="Edit memory" @close="close">
       <div v-if="store.drawerMemory" class="drawer" :aria-busy="closing || deleting">
         <div class="drawer-header">
           <div class="drawer-status" role="status" aria-live="polite">
