@@ -3529,3 +3529,18 @@ fn edited_inbox_items_remain_visible_until_reviewed() {
     review::approve_review(&conn, &item.id, &Settings::default()).unwrap();
     assert!(review::list_pending(&conn, 10).unwrap().is_empty());
 }
+
+#[test]
+fn edit_review_rejects_out_of_range_importance() {
+    use clio_core::review;
+    let conn = test_db();
+    let input = serde_json::from_value(serde_json::json!({"content": "Review evidence"})).unwrap();
+    let item = review::queue_for_review(&conn, &input).unwrap();
+    for importance in [0, 6] {
+        let edits =
+            serde_json::from_value(serde_json::json!({"importance": importance})).unwrap();
+        let err = review::edit_review(&conn, &item.id, &edits).unwrap_err();
+        assert!(matches!(err, clio_core::error::ClioError::Validation(_)), "{err}");
+    }
+    assert_eq!(review::get_review(&conn, &item.id).unwrap().status, "pending");
+}

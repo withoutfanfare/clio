@@ -27,6 +27,8 @@ const store = useMemoryStore();
 
 const MAX_BLOCKS = 50;
 const saveMessage = ref("No saved draft");
+// A brief that could not be restored is kept on disk until explicitly discarded.
+const recoveryBlocked = ref(false);
 const blocks = ref<BriefBlock[]>(loadState());
 const searchQuery = ref("");
 const searchResults = ref<RecallItem[]>([]);
@@ -70,12 +72,33 @@ function loadState(): BriefBlock[] {
     saveMessage.value = "Draft restored from this Mac";
     return restored;
   } catch {
-    saveMessage.value = "Couldn't restore the saved brief. The stored draft has been left untouched.";
+    recoveryBlocked.value = true;
+    saveMessage.value = "Couldn't restore the saved brief. The stored draft has been left untouched; retry recovery or discard it before starting a new brief.";
     return [];
   }
 }
 
+function retryRecovery() {
+  if (!recoveryBlocked.value) return;
+  recoveryBlocked.value = false;
+  const restored = loadState();
+  if (!recoveryBlocked.value) blocks.value = restored;
+}
+
+function discardStoredBrief() {
+  try {
+    localStorage.removeItem("clio-context-builder");
+    sessionStorage.removeItem("clio-context-builder");
+  } catch {
+    saveMessage.value = "Couldn't discard the saved brief. It remains untouched; retry when storage is available.";
+    return;
+  }
+  recoveryBlocked.value = false;
+  saveMessage.value = "No saved draft";
+}
+
 function saveState() {
+  if (recoveryBlocked.value) return;
   try {
     localStorage.setItem("clio-context-builder", JSON.stringify({ version: 1, blocks: blocks.value }));
     sessionStorage.removeItem("clio-context-builder");
@@ -337,9 +360,13 @@ onUnmounted(closeSearch);
     </div>
 
     <p class="draft-status" role="status">{{ saveMessage }}</p>
+    <div v-if="recoveryBlocked" class="builder-toolbar" role="alert">
+      <button class="tool-btn" @click="retryRecovery">Retry recovery</button>
+      <button class="tool-btn" @click="discardStoredBrief">Discard saved brief</button>
+    </div>
 
     <!-- Toolbar -->
-    <div class="builder-toolbar">
+    <div class="builder-toolbar" :inert="recoveryBlocked">
       <div class="toolbar-left">
         <button class="tool-btn" @click="openSearch">
           <svg width="14" height="14" viewBox="0 0 16 16" fill="none">

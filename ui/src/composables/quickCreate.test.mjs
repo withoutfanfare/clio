@@ -140,3 +140,27 @@ test('failed creator discard keeps recovery reserved and visible', async t => {
   assert.equal(localStorage.getItem('clio-create-draft'), '{broken');
   assert.match(draft.recoveryError.value, /discard|clear/i);
 });
+
+test('a confirmed creation whose recovery copy cannot be cleared stays open and blocked', async t => {
+  const { store, draft } = setup(t);
+  let creates = 0;
+  store.quickCreate = async () => { creates++; };
+  store.composeOpen = true;
+  await nextTick();
+  draft.content.value = 'Create exactly once';
+  const removeItem = localStorage.removeItem;
+  localStorage.removeItem = () => { throw Error('denied'); };
+  t.after(() => { localStorage.removeItem = removeItem; });
+  await draft.submit();
+  assert.equal(creates, 1);
+  assert.equal(store.composeOpen, true);
+  assert.equal(draft.recoveryBlocked.value, true);
+  assert.match(draft.recoveryError.value, /saved.*could not be cleared/i);
+  await draft.submit();
+  assert.equal(creates, 1);
+  assert.equal(draft.canClose(), false);
+  localStorage.removeItem = removeItem;
+  await draft.discardAndClose();
+  assert.equal(localStorage.getItem('clio-create-draft'), null);
+  assert.equal(store.composeOpen, false);
+});

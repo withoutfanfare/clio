@@ -123,8 +123,9 @@ def run(cli_binary, mcp_binary):
     with tempfile.TemporaryDirectory(prefix="clio-app-contracts-") as directory:
         directory = Path(directory)
         db = directory / "memory.db"
+        # Allow-list: the spawned binaries must not inherit shell credentials.
         env = {key: value for key, value in os.environ.items()
-               if not key.startswith("CLIO_") and key not in ("OPENAI_API_KEY", "OPENAI_API_KEY_CLIO")}
+               if key in ("PATH", "HOME", "LANG", "LC_ALL", "TMPDIR")}
         env["CLIO_DB_PATH"] = str(db)
         settings = {
             "auto_embed": False, "embeddings": {"provider": "disabled"},

@@ -656,7 +656,7 @@ export const useMemoryStore = defineStore("memories", () => {
     composeCloseGuard = guard;
   }
 
-  async function openDrawer(memoryId: string, options: { eligibleOnly?: boolean; isCurrent?: () => boolean } = {}) {
+  async function openDrawer(memoryId: string, options: { eligibleOnly?: boolean; namespace?: string; isCurrent?: () => boolean } = {}) {
     const request = ++drawerRequest;
     const isCurrent = () => request === drawerRequest && (options.isCurrent?.() ?? true);
     if (!isCurrent()) return false;
@@ -671,6 +671,11 @@ export const useMemoryStore = defineStore("memories", () => {
       if (!isCurrent()) return false;
       if (options.eligibleOnly && (memory.archived_at || (memory.valid_until && !(new Date(memory.valid_until).getTime() > Date.now())))) {
         error.value = "Supporting memory is archived, expired or unavailable.";
+        return false;
+      }
+      // A memory moved since the overview loaded must not open under the previous workspace.
+      if (options.namespace !== undefined && memory.namespace !== options.namespace) {
+        error.value = "Supporting memory has moved to another workspace.";
         return false;
       }
       if (composeOpen.value && !(await closeCompose())) return false;

@@ -135,6 +135,14 @@ test('attention evidence is rechecked for archive and expiry before the drawer o
   }
 });
 
+test('attention evidence that moved to another workspace does not open under the old one', async t => {
+  const {store}=setup(t,()=>{});
+  mockIPC(()=>memory({namespace:'project:moved'}));
+  assert.equal(await store.openDrawer('one',{eligibleOnly:true,namespace:'project:original'}),false);
+  assert.equal(store.drawerOpen,false);
+  assert.equal(await store.openDrawer('one',{eligibleOnly:true,namespace:'project:moved'}),true);
+});
+
 test('corrupt editor recovery blocks opening another memory until explicit discard', async t => {
   localStorage.setItem('clio-editor-draft', '{broken');
   const { store, editor } = setup(t, () => memory());

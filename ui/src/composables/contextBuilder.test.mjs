@@ -81,3 +81,32 @@ test('malformed stored brief fields are rejected without losing the original rec
   }
   localStorage.removeItem('clio-context-builder');
 });
+
+test('a brief that failed to restore is never overwritten until explicitly discarded', async t => {
+  localStorage.setItem('clio-context-builder', '{broken');
+  const state = mount(t).state;
+  assert.equal(state.recoveryBlocked.value, true);
+  state.addNarrative(); await nextTick();
+  assert.equal(localStorage.getItem('clio-context-builder'), '{broken');
+  state.discardStoredBrief();
+  assert.equal(state.recoveryBlocked.value, false);
+  assert.equal(localStorage.getItem('clio-context-builder'), null);
+  state.addHeading(); await nextTick();
+  assert.match(localStorage.getItem('clio-context-builder'), /heading/);
+  localStorage.removeItem('clio-context-builder');
+});
+
+test('retrying a failed brief restore recovers it once the stored record is readable', t => {
+  const good = JSON.stringify({version:1,blocks:[{id:'kept',type:'narrative',text:'Kept brief'}]});
+  localStorage.setItem('clio-context-builder', good);
+  const getItem = localStorage.getItem;
+  let denied = true;
+  localStorage.getItem = key => { if (key === 'clio-context-builder' && denied) throw Error('denied'); return getItem(key); };
+  t.after(() => { localStorage.getItem = getItem; localStorage.removeItem('clio-context-builder'); });
+  const state = mount(t).state;
+  assert.equal(state.recoveryBlocked.value, true);
+  denied = false;
+  state.retryRecovery();
+  assert.equal(state.recoveryBlocked.value, false);
+  assert.equal(state.blocks.value[0]?.text, 'Kept brief');
+});

@@ -23,6 +23,8 @@ export function useAutoSave(delay = 2000) {
   const dirty = ref(false);
   const saved = ref(false);
   const error = ref<string | null>(null);
+  // Why the draft is unsaved; decided here, never from error text.
+  const failure = ref<"recovered" | "conflict" | "failed" | null>(null);
   const recoveryError = ref<string | null>(null);
   const initialRecovery = readDraft(storageKey, isStoredDraft);
   const recoveryMemoryId = initialRecovery.status === "ready" ? initialRecovery.draft.memoryId : undefined;
@@ -84,6 +86,7 @@ export function useAutoSave(delay = 2000) {
     unresolvedRecoveryId.value = null;
     pending = { memory, updates: draft.updates, expectedUpdatedAt: draft.expectedUpdatedAt };
     dirty.value = true;
+    failure.value = "recovered";
     error.value = "Recovered unsaved changes. Review your draft before retrying the save.";
     return draft.updates;
   }
@@ -105,6 +108,7 @@ export function useAutoSave(delay = 2000) {
           if (pending) (pending as Draft).expectedUpdatedAt = updated.updated_at;
           active = null;
           persistDraft();
+          failure.value = null;
           error.value = null;
         } catch (e) {
           pending = {
@@ -113,6 +117,7 @@ export function useAutoSave(delay = 2000) {
           };
           dirty.value = true;
           persistDraft();
+          failure.value = /\bConflict:/.test(String(e)) ? "conflict" : "failed";
           error.value = String(e);
           return false;
         }
@@ -174,6 +179,7 @@ export function useAutoSave(delay = 2000) {
     recoveryError.value = null;
     dirty.value = false;
     saved.value = false;
+    failure.value = null;
     error.value = null;
     return true;
   }
@@ -183,5 +189,5 @@ export function useAutoSave(delay = 2000) {
     clearTimeout(savedTimeout);
   });
 
-  return { saving, dirty, saved, error, recoveryError, recoveryMemoryId, recoveryBlocked, unresolvedRecoveryId, retryRecovery, restoreDraft, scheduleAutoSave, flush, discard };
+  return { saving, dirty, saved, error, failure, recoveryError, recoveryMemoryId, recoveryBlocked, unresolvedRecoveryId, retryRecovery, restoreDraft, scheduleAutoSave, flush, discard };
 }
