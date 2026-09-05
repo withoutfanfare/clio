@@ -354,6 +354,14 @@ pub fn reject_review(conn: &Connection, id: &str) -> Result<ReviewItem> {
 /// Edit the suggested fields of a review item. Only provided fields are
 /// updated; the status is set to 'edited'.
 pub fn edit_review(conn: &Connection, id: &str, edits: &ReviewEdits) -> Result<ReviewItem> {
+    if let Some(importance) = edits.importance {
+        if !(1..=5).contains(&importance) {
+            return Err(ClioError::Validation(format!(
+                "importance must be between 1 and 5, got {importance}"
+            )));
+        }
+    }
+
     // Build dynamic UPDATE query from provided edits.
     let mut set_clauses = Vec::new();
     let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();

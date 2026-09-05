@@ -152,3 +152,17 @@ test('failed removal cannot release the editor recovery reservation', t => {
   assert.equal(save.scheduleAutoSave(memory(), { content: 'Replacement' }), false);
   assert.equal(localStorage.getItem('clio-editor-draft'), '{broken');
 });
+
+test('save failure kind is decided by the composable, not by matching error text', async t => {
+  const original = memory();
+  let message = 'recovered: remote backend said so';
+  const save = setup(t, () => { throw new Error(message); });
+  save.scheduleAutoSave(original, { content: 'Draft' });
+  assert.equal(await save.flush(), false);
+  assert.equal(save.failure.value, 'failed');
+  message = 'Conflict: memory changed elsewhere';
+  assert.equal(await save.flush(), false);
+  assert.equal(save.failure.value, 'conflict');
+  assert.equal(save.discard(), true);
+  assert.equal(save.failure.value, null);
+});

@@ -17,7 +17,7 @@ const availableTags = computed(() => {
   if (!stats?.top_tags?.length) return [];
   return stats.top_tags.map(([tag]: [string, number]) => tag);
 });
-const { saving, dirty, saved, error: saveError, scheduleAutoSave, flush, discard, restoreDraft, recoveryMemoryId, recoveryBlocked, unresolvedRecoveryId, recoveryError, retryRecovery: readRecovery } = useAutoSave();
+const { saving, dirty, saved, error: saveError, failure: saveFailure, scheduleAutoSave, flush, discard, restoreDraft, recoveryMemoryId, recoveryBlocked, unresolvedRecoveryId, recoveryError, retryRecovery: readRecovery } = useAutoSave();
 
 const editContent = ref("");
 const editTitle = ref("");
@@ -189,10 +189,16 @@ async function confirmDelete() {
     deleting.value = false;
     return;
   }
-  const ok = await store.deleteMemory(store.drawerMemory.id);
+  const memoryId = store.drawerMemory.id;
+  const ok = await store.deleteMemory(memoryId);
   deleting.value = false;
   confirmingDelete.value = false;
-  if (ok) await store.closeDrawer();
+  if (ok) {
+    // Deleted content must not survive in local revision history.
+    try { localStorage.removeItem(`clio-revisions-${memoryId}`); } catch { /* best effort */ }
+    revisions.value = [];
+    await store.closeDrawer();
+  }
 }
 
 const menuItems = computed<SDropdownMenuItem[]>(() => {
@@ -290,7 +296,7 @@ function formatDate(iso: string): string {
         <div class="drawer-header">
           <div class="drawer-status" role="status" aria-live="polite">
             <Transition name="status-fade" mode="out-in">
-              <SBadge v-if="saveError" key="error" variant="error">{{ /recovered/i.test(saveError) ? "Recovered draft" : "Save failed" }}</SBadge>
+              <SBadge v-if="saveError" key="error" variant="error">{{ saveFailure === "recovered" ? "Recovered draft" : "Save failed" }}</SBadge>
               <SBadge v-else-if="saving" key="saving" variant="default">Saving&hellip;</SBadge>
               <SBadge v-else-if="saved" key="saved" variant="success">Saved</SBadge>
               <SBadge v-else-if="dirty" key="dirty" variant="warning">Unsaved changes</SBadge>
@@ -321,8 +327,8 @@ function formatDate(iso: string): string {
         </div>
 
         <div v-if="saveError" class="save-error" role="alert">
-          <p v-if="/recovered/i.test(saveError)">{{ saveError }}</p>
-          <p v-else>{{ /conflict|modified|changed/i.test(saveError) ? "This memory changed elsewhere. Your draft is still here; retry will keep checking the original version." : "Your changes could not be saved. Your draft is still here." }}</p>
+          <p v-if="saveFailure === 'recovered'">{{ saveError }}</p>
+          <p v-else>{{ saveFailure === 'conflict' ? "This memory changed elsewhere. Your draft is still here; retry will keep checking the original version." : "Your changes could not be saved. Your draft is still here." }}</p>
           <div class="delete-confirm-actions">
             <SButton variant="ghost" size="sm" :disabled="saving" @click="flush">Retry save</SButton>
             <SButton variant="danger" size="sm" :disabled="saving" @click="confirmingDiscard = true">Discard changes…</SButton>

@@ -196,7 +196,7 @@ async function viewEvidence(item: AttentionItem) {
   const current = request;
   const namespace = store.selectedNamespace;
   const isCurrent = () => current === request && namespace === store.selectedNamespace;
-  const opened = await store.openDrawer(item.memory_id, { eligibleOnly: true, isCurrent });
+  const opened = await store.openDrawer(item.memory_id, { eligibleOnly: true, namespace: namespace ?? undefined, isCurrent });
   if (!opened && isCurrent()) actionError.value = "Evidence could not be opened. Refresh attention to check whether it is still available.";
 }
 
