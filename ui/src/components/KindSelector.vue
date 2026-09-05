@@ -1,4 +1,7 @@
 <script setup lang="ts">
+import { computed } from "vue";
+import { useMemoryStore } from "@/stores/memories";
+import { memoryKinds } from "@/utils/memoryKinds";
 const props = defineProps<{
   modelValue: string;
 }>();
@@ -7,7 +10,8 @@ const emit = defineEmits<{
   "update:modelValue": [kind: string];
 }>();
 
-const kinds = ["note", "fact", "decision", "summary", "task", "observation", "snippet", "knowledgebase"];
+const store = useMemoryStore();
+const kinds = computed(() => memoryKinds(store.availableKinds, [props.modelValue]));
 </script>
 
 <template>
@@ -17,6 +21,7 @@ const kinds = ["note", "fact", "decision", "summary", "task", "observation", "sn
       :key="kind"
       class="kind-pill"
       :class="{ active: modelValue === kind }"
+      :aria-pressed="modelValue === kind"
       @click="emit('update:modelValue', kind)"
     >
       {{ kind }}

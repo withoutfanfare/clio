@@ -5,6 +5,7 @@ import type { SDropdownMenuItem } from "@stuntrocket/ui";
 import { useMemoryStore } from "@/stores/memories";
 import { useNamespaceColours } from "@/composables/useNamespaceColours";
 import { copyToClipboard, downloadMarkdown } from "@/utils/memoryExport";
+import { memoryDate, memoryTimestamp } from "@/utils/memoryPresentation";
 import type { RecallItem } from "@/api/types";
 
 const props = defineProps<{
@@ -112,7 +113,7 @@ const menuItems = computed<SDropdownMenuItem[]>(() => [
     value: "download",
   },
   {
-    label: props.memory.archived_at ? "Unarchive" : "Archive",
+    label: props.memory.archived_at ? "Restore" : "Archive",
     value: "archive",
   },
   {
@@ -143,9 +144,9 @@ function handleMenuSelect(value: string) {
 }
 
 function formatTime(iso: string): string {
-  const d = new Date(iso);
-  return d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
+  return memoryDate(iso);
 }
+
 </script>
 
 <template>
@@ -158,7 +159,7 @@ function formatTime(iso: string): string {
     :style="{ '--ns-colour': nsColour }"
     @click="open"
     tabindex="0"
-    @keydown.enter="open($event as unknown as MouseEvent)"
+    @keydown.enter.self.stop.prevent="open($event as unknown as MouseEvent)"
   >
     <div class="page-header">
       <div class="page-header-row">
@@ -204,10 +205,14 @@ function formatTime(iso: string): string {
           {{ memory.namespace }}
         </span>
         <span v-if="memory.source" class="meta-source">{{ memory.source }}</span>
-        <span class="meta-time">{{ formatTime(memory.updated_at) }}</span>
+        <time class="meta-time" :datetime="memory.updated_at" :title="memoryTimestamp(memory.updated_at)">{{ formatTime(memory.updated_at) }}</time>
       </div>
     </div>
 
+    <div v-if="memory.archived_at" class="archive-actions" @click.stop>
+      <SBadge variant="default">Archived</SBadge>
+      <SButton variant="ghost" size="sm" @click="onArchive">Restore</SButton>
+    </div>
     <p class="page-content">{{ memory.content }}</p>
 
     <div class="page-tags" v-if="memory.tags.length">
@@ -217,6 +222,8 @@ function formatTime(iso: string): string {
 </template>
 
 <style scoped>
+.archive-actions { display: flex; align-items: center; gap: var(--space-2); margin-bottom: var(--space-2); }
+
 .memory-page {
   cursor: pointer;
   border-left: 3px solid var(--ns-colour, transparent);

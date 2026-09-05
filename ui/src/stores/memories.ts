@@ -1,6 +1,7 @@
 import { defineStore } from "pinia";
 import { ref, computed } from "vue";
 import * as api from "@/api/memory";
+import { memoryKinds } from "@/utils/memoryKinds";
 import { groupMemories, type GroupBy } from "@/composables/useGroupedMemories";
 import type {
   Memory,
@@ -9,12 +10,22 @@ import type {
   MemoryStats,
   RecentEntry,
   ConnectionStatus,
+  NamespaceInfo,
 } from "@/api/types";
 
 export const useMemoryStore = defineStore("memories", () => {
   // Memory list
   const items = ref<RecallItem[]>([]);
   const total = ref(0);
+  const pageSize = 50;
+  const collection = ref<"active" | "archive">("active");
+  const loadingMore = ref(false);
+  let requestedDepth = pageSize;
+  let pageEnd = 0;
+  let listRequest = 0;
+  let listScope = "";
+  let listInFlight = false;
+  const canLoadMore = computed(() => items.value.length < total.value);
   const loading = ref(false);
   const error = ref<string | null>(null);
   const connectionStatus = ref<ConnectionStatus | null>(null);
@@ -26,10 +37,18 @@ export const useMemoryStore = defineStore("memories", () => {
   // Namespaces
   const selectedNamespace = ref<string | null>(null);
   const allNamespaces = ref<string[]>([]);
+  const namespaceDetails = ref<NamespaceInfo[]>([]);
+  const namespaceDetailsError = ref<string | null>(null);
 
   // Stats
   const currentStats = ref<MemoryStats | null>(null);
+  const statsError = ref<string | null>(null);
   const recentActivity = ref<RecentEntry[]>([]);
+  const availableKinds = computed(() => memoryKinds(
+    currentStats.value?.by_kind.map(([kind]) => kind) ?? [],
+    items.value.map(item => item.kind),
+    filterKind.value ? [filterKind.value] : [],
+  ));
 
   // Drawer state
   const drawerMemory = ref<Memory | null>(null);
@@ -73,7 +92,8 @@ export const useMemoryStore = defineStore("memories", () => {
     filterKind.value = kind;
     if (kind) localStorage.setItem("clio-filter-kind", kind);
     else localStorage.removeItem("clio-filter-kind");
-    loadRecent(true);
+    resetBrowsing();
+    void loadRecent(true);
   }
 
   function setFilterImportance(min: number | null, max: number | null) {
@@ -83,20 +103,23 @@ export const useMemoryStore = defineStore("memories", () => {
     else localStorage.removeItem("clio-filter-imp-min");
     if (max !== null) localStorage.setItem("clio-filter-imp-max", String(max));
     else localStorage.removeItem("clio-filter-imp-max");
-    loadRecent(true);
+    resetBrowsing();
+    void loadRecent(true);
   }
 
   function setFilterTags(tags: string[]) {
     filterTags.value = tags;
     if (tags.length) localStorage.setItem("clio-filter-tags", JSON.stringify(tags));
     else localStorage.removeItem("clio-filter-tags");
-    loadRecent(true);
+    resetBrowsing();
+    void loadRecent(true);
   }
 
   function setSortBy(sort: string) {
     sortBy.value = sort;
     localStorage.setItem("clio-sort-by", sort);
-    loadRecent(true);
+    resetBrowsing();
+    void loadRecent(true);
   }
 
   function setGroupBy(group: string) {
@@ -109,15 +132,12 @@ export const useMemoryStore = defineStore("memories", () => {
     filterImportanceMin.value = null;
     filterImportanceMax.value = null;
     filterTags.value = [];
-    sortBy.value = "importance_desc";
-    groupBy.value = "importance";
     localStorage.removeItem("clio-filter-kind");
     localStorage.removeItem("clio-filter-imp-min");
     localStorage.removeItem("clio-filter-imp-max");
     localStorage.removeItem("clio-filter-tags");
-    localStorage.setItem("clio-sort-by", "importance_desc");
-    localStorage.setItem("clio-group-by", "importance");
-    loadRecent(true);
+    resetBrowsing();
+    void loadRecent(true);
   }
 
   // View mode (persisted to localStorage)
@@ -132,21 +152,70 @@ export const useMemoryStore = defineStore("memories", () => {
 
   // Pinned memories (persisted to localStorage, max 25)
   const MAX_PINS = 25;
-  const pinnedIds = ref<string[]>(
-    localStorage.getItem("clio-pinned-ids")
-      ? JSON.parse(localStorage.getItem("clio-pinned-ids")!)
-      : [],
-  );
+  function readPinnedIds(): string[] {
+    try {
+      const stored: unknown = JSON.parse(localStorage.getItem("clio-pinned-ids") || "[]");
+      return Array.isArray(stored)
+        ? [...new Set(stored.filter((id): id is string => typeof id === "string" && !!id))].slice(0, MAX_PINS)
+        : [];
+    } catch {
+      return [];
+    }
+  }
+  const pinnedIds = ref<string[]>(readPinnedIds());
 
-  const pinnedItems = computed(() =>
-    pinnedIds.value
-      .map((id) => items.value.find((m) => m.id === id))
-      .filter((m): m is RecallItem => m !== undefined),
-  );
+  const pinnedRecords = ref(new Map<string, RecallItem>());
+  const pinError = ref<string | null>(null);
+  const pinNow = ref(Date.now());
+  let pinsRefreshedAt = 0;
+  let pinsInFlight: Promise<void> | null = null;
 
-  const unpinnedItems = computed(() =>
-    items.value.filter((m) => !pinnedIds.value.includes(m.id)),
-  );
+  function matchesCollection(memory: RecallItem) {
+    return (!selectedNamespace.value || memory.namespace === selectedNamespace.value)
+      && (!!memory.archived_at === (collection.value === "archive"))
+      && (!memory.valid_until || new Date(memory.valid_until).getTime() > pinNow.value)
+      && (!filterKind.value || memory.kind === filterKind.value)
+      && (filterImportanceMin.value === null || memory.importance >= filterImportanceMin.value)
+      && (filterImportanceMax.value === null || memory.importance <= filterImportanceMax.value)
+      && (!filterTags.value.length || filterTags.value.every(tag => memory.tags.includes(tag)));
+  }
+
+  const pinnedItems = computed(() => pinnedIds.value
+    .map(id => items.value.find(item => item.id === id) ?? pinnedRecords.value.get(id))
+    .filter((item): item is RecallItem => !!item && matchesCollection(item)));
+
+  const unpinnedItems = computed(() => {
+    const visiblePins = new Set(pinnedItems.value.map(item => item.id));
+    return items.value.filter(item => !visiblePins.has(item.id));
+  });
+  const loadedCount = computed(() => new Set([...items.value, ...pinnedItems.value].map(item => item.id)).size);
+
+  async function refreshPins(force = false) {
+    if (pinsInFlight) return pinsInFlight;
+    if (!force && Date.now() - pinsRefreshedAt < 60_000) return;
+    const ids = pinnedIds.value.slice(0, MAX_PINS);
+    if (!ids.length) return;
+    pinsRefreshedAt = Date.now();
+    pinsInFlight = (async () => {
+      const results = await Promise.allSettled(ids.map(id => api.getMemory(id)));
+      const records = new Map(pinnedRecords.value);
+      let failed = 0;
+      results.forEach((result, index) => {
+        const id = ids[index];
+        if (!pinnedIds.value.includes(id)) return;
+        if (result.status === "fulfilled" && result.value) {
+          records.set(id, { ...result.value, rank: null, linked_from: null });
+        } else {
+          records.delete(id);
+          failed++;
+        }
+      });
+      pinnedRecords.value = records;
+      pinNow.value = Date.now();
+      pinError.value = failed ? `${failed} pinned ${failed === 1 ? "memory could" : "memories could"} not be loaded. Pin preferences are kept.` : null;
+    })().finally(() => { pinsInFlight = null; });
+    return pinsInFlight;
+  }
 
   const pinnedCount = computed(() => pinnedIds.value.length);
 
@@ -177,6 +246,12 @@ export const useMemoryStore = defineStore("memories", () => {
       pinnedIds.value = [...pinnedIds.value, memoryId];
     }
     localStorage.setItem("clio-pinned-ids", JSON.stringify(pinnedIds.value));
+    const memory = items.value.find(item => item.id === memoryId) ?? (drawerMemory.value?.id === memoryId ? drawerMemory.value : null);
+    if (memory && isPinned(memoryId)) {
+      pinnedRecords.value = new Map(pinnedRecords.value).set(memoryId, { ...memory, rank: null, linked_from: null });
+    } else if (isPinned(memoryId)) {
+      void refreshPins(true);
+    }
   }
 
   // Focused memory index for keyboard navigation
@@ -340,6 +415,7 @@ export const useMemoryStore = defineStore("memories", () => {
   function invalidateSearchCache() {
     searchCache.value = new Map<string, CacheEntry>();
     cacheVersion++;
+    pinsRefreshedAt = 0;
   }
 
   // Quick-create last-used defaults (persisted to localStorage)
@@ -353,8 +429,12 @@ export const useMemoryStore = defineStore("memories", () => {
   function setQuickCreateDefaults(namespace: string, kind: string) {
     quickCreateLastNamespace.value = namespace;
     quickCreateLastKind.value = kind;
-    localStorage.setItem("clio-qc-namespace", namespace);
-    localStorage.setItem("clio-qc-kind", kind);
+    try {
+      localStorage.setItem("clio-qc-namespace", namespace);
+      localStorage.setItem("clio-qc-kind", kind);
+    } catch {
+      pushToast("Saved successfully; last-used defaults could not be stored on this Mac", "info");
+    }
   }
 
   // Side panel (always visible by default)
@@ -419,104 +499,223 @@ export const useMemoryStore = defineStore("memories", () => {
     }
   }
 
-  function fingerprint(list: RecallItem[]): string {
-    return list.map((i) => `${i.id}:${i.updated_at}`).join("|");
+  function browsingScope() {
+    return JSON.stringify([selectedNamespace.value, collection.value, filterKind.value,
+      filterTags.value, filterImportanceMin.value, filterImportanceMax.value, sortBy.value]);
+  }
+
+  function resetBrowsing() {
+    listRequest++;
+    listInFlight = false;
+    requestedDepth = pageSize;
+    pageEnd = 0;
+    items.value = [];
+    total.value = 0;
+    error.value = null;
+    loadingMore.value = false;
+    focusedIndex.value = -1;
+    listScope = browsingScope();
+  }
+
+  async function setCollection(value: "active" | "archive") {
+    if (collection.value === value) return;
+    collection.value = value;
+    resetBrowsing();
+    return loadRecent();
+  }
+
+  async function loadMore() {
+    if (loadingMore.value || !canLoadMore.value) return;
+    requestedDepth = Math.max(pageEnd, items.value.length) + pageSize;
+    loadingMore.value = true;
+    // A deliberate request supersedes an older background refresh.
+    await loadRecent();
   }
 
   async function loadRecent(silent = false) {
-    if (!silent) {
-      loading.value = true;
-    }
-    error.value = null;
+    const scope = browsingScope();
+    if (scope !== listScope) resetBrowsing();
+    if (silent && listInFlight) return;
+    const request = ++listRequest;
+    listInFlight = true;
+    if (!silent && !items.value.length) loading.value = true;
+    const params = {
+      namespace: selectedNamespace.value ?? undefined,
+      kind: filterKind.value ?? undefined,
+      tags: filterTags.value.length ? [...filterTags.value] : undefined,
+      importance_min: filterImportanceMin.value ?? undefined,
+      importance_max: filterImportanceMax.value ?? undefined,
+      sort_by: sortBy.value || "importance_desc",
+      archived_only: collection.value === "archive",
+      limit: pageSize,
+    };
+    const depth = requestedDepth;
+    const current = () => request === listRequest && scope === browsingScope();
     try {
-      const result = await api.recent({
-        namespace: selectedNamespace.value ?? undefined,
-        kind: filterKind.value ?? undefined,
-        tags: filterTags.value.length ? filterTags.value : undefined,
-        importance_min: filterImportanceMin.value ?? undefined,
-        importance_max: filterImportanceMax.value ?? undefined,
-        sort_by: sortBy.value || undefined,
-        limit: 50,
-      });
-      // Only update if data actually changed to avoid unnecessary re-renders.
-      if (fingerprint(result.items) !== fingerprint(items.value)) {
-        // Check for new memories (notifications)
-        checkForNewMemories(result.items);
-        items.value = result.items;
-        // Keep keyboard focus within bounds after the list shrinks
-        // (e.g. archive/delete) so the highlight doesn't point past the end.
-        if (focusedIndex.value >= navigableItems.value.length) {
-          focusedIndex.value = navigableItems.value.length - 1;
+      const loaded = new Map<string, RecallItem>();
+      let offset = 0;
+      let resultTotal = 0;
+      do {
+        const result = await api.recent({ ...params, offset });
+        if (!current()) return;
+        if (params.archived_only && result.archived_only !== true) {
+          throw new Error("This backend has not confirmed Archive support. Archive browsing is unavailable.");
         }
-        // Initialise notification tracking on first load
-        if (!notificationsInitialised) {
-          initNotificationTracking();
+        if (params.archived_only && result.items.some(item => !item.archived_at)) {
+          throw new Error("This backend does not support the Archive collection: it returned active memories.");
         }
-      }
-      total.value = result.total;
+        resultTotal = result.total;
+        const previousSize = loaded.size;
+        result.items.forEach(item => loaded.set(item.id, item));
+        if ((!result.items.length || loaded.size === previousSize) && offset < resultTotal) {
+          throw new Error("The backend could not provide the next page. Loaded memories have been kept.");
+        }
+        offset += result.items.length;
+      } while (offset < depth && offset < resultTotal);
+      if (!current()) return;
+      const nextItems = [...loaded.values()];
+      if (collection.value === "active") checkForNewMemories(nextItems.slice(0, pageSize));
+      items.value = nextItems;
+      total.value = resultTotal;
+      pageEnd = offset;
+      pinNow.value = Date.now();
+      error.value = null;
+      if (focusedIndex.value >= navigableItems.value.length) focusedIndex.value = navigableItems.value.length - 1;
+      if (!notificationsInitialised) initNotificationTracking();
+      void refreshPins();
     } catch (e) {
-      if (!silent) {
-        error.value = String(e);
-      }
+      if (current()) error.value = String(e);
     } finally {
-      if (!silent) {
+      if (current()) {
         loading.value = false;
+        loadingMore.value = false;
+        listInFlight = false;
       }
     }
   }
 
+  let statsRequest = 0;
   async function loadStats() {
+    const request = ++statsRequest;
+    const namespace = selectedNamespace.value;
+    statsError.value = null;
+    currentStats.value = null;
     try {
-      currentStats.value = await api.stats(
-        selectedNamespace.value ?? undefined,
-      );
+      const stats = await api.stats(namespace ?? undefined);
+      if (namespace && stats.namespace !== namespace) throw new Error("The Clio backend needs updating before it can confirm project statistics.");
+      if (request === statsRequest && namespace === selectedNamespace.value) currentStats.value = stats;
     } catch (e) {
-      error.value = String(e);
+      if (request === statsRequest && namespace === selectedNamespace.value) statsError.value = String(e);
     }
   }
 
-  async function loadActivity() {
+  async function loadNamespaceDetails() {
     try {
-      recentActivity.value = await api.activity({
-        namespace: selectedNamespace.value ?? undefined,
+      namespaceDetails.value = await api.namespaceDetails();
+      namespaceDetailsError.value = null;
+    } catch (e) {
+      namespaceDetailsError.value = String(e);
+    }
+  }
+
+  let activityRequest = 0;
+  async function loadActivity() {
+    const request = ++activityRequest;
+    const namespace = selectedNamespace.value;
+    recentActivity.value = [];
+    try {
+      const activity = await api.activity({
+        namespace: namespace ?? undefined,
         limit: 20,
       });
+      if (request === activityRequest && namespace === selectedNamespace.value) recentActivity.value = activity;
     } catch (e) {
-      error.value = String(e);
+      if (request === activityRequest && namespace === selectedNamespace.value) statsError.value = String(e);
     }
   }
 
   function setNamespace(ns: string | null) {
     selectedNamespace.value = ns;
+    resetBrowsing();
+    currentStats.value = null;
     // Reset notification tracking so the new namespace's items aren't treated as "new"
     notificationsInitialised = false;
     lastKnownIds.clear();
   }
 
-  // Drawer
-  async function openDrawer(memoryId: string) {
+  // All editor exits share the component's save-or-retain guard.
+  let drawerCloseGuard: ((nextMemoryId?: string) => Promise<boolean>) | null = null;
+  let composeCloseGuard: (() => boolean | Promise<boolean>) | null = null;
+  let drawerRequest = 0;
+
+  function setDrawerCloseGuard(guard: typeof drawerCloseGuard) {
+    drawerCloseGuard = guard;
+  }
+
+  function setComposeCloseGuard(guard: typeof composeCloseGuard) {
+    composeCloseGuard = guard;
+  }
+
+  async function openDrawer(memoryId: string, options: { eligibleOnly?: boolean; isCurrent?: () => boolean } = {}) {
+    const request = ++drawerRequest;
+    const isCurrent = () => request === drawerRequest && (options.isCurrent?.() ?? true);
+    if (!isCurrent()) return false;
+    if (composeOpen.value && !(await closeCompose())) return false;
+    if (!isCurrent()) return false;
+    if (drawerCloseGuard && !(await drawerCloseGuard(memoryId))) return false;
+    if (!isCurrent()) return false;
     try {
-      drawerMemory.value = await api.getMemory(memoryId);
+      const currentMemory = drawerMemory.value?.id === memoryId ? drawerMemory.value : null;
+      const versionBeforeFetch = currentMemory?.updated_at;
+      let memory = await api.getMemory(memoryId);
+      if (!isCurrent()) return false;
+      if (options.eligibleOnly && (memory.archived_at || (memory.valid_until && !(new Date(memory.valid_until).getTime() > Date.now())))) {
+        error.value = "Supporting memory is archived, expired or unavailable.";
+        return false;
+      }
+      if (composeOpen.value && !(await closeCompose())) return false;
+      if (!isCurrent()) return false;
+      // Include any edits entered while the next memory was loading.
+      if (drawerOpen.value && drawerCloseGuard && !(await drawerCloseGuard())) return false;
+      if (!isCurrent()) return false;
+      // A confirmed save during this fetch is newer than its captured response.
+      if (currentMemory && drawerMemory.value === currentMemory && currentMemory.updated_at !== versionBeforeFetch) memory = currentMemory;
+      drawerMemory.value = memory;
       drawerOpen.value = true;
+      return true;
     } catch (e) {
-      error.value = String(e);
+      if (isCurrent()) error.value = String(e);
+      return false;
     }
   }
 
-  function closeDrawer() {
+  async function closeDrawer() {
+    const request = ++drawerRequest;
+    if (drawerOpen.value && drawerCloseGuard && !(await drawerCloseGuard())) return false;
+    if (request !== drawerRequest) return false;
     drawerOpen.value = false;
     drawerMemory.value = null;
+    return true;
   }
 
-  // Compose
-  function toggleCompose() {
-    composeOpen.value = !composeOpen.value;
+  async function closeCompose() {
+    if (composeOpen.value && composeCloseGuard && !(await composeCloseGuard())) return false;
+    composeOpen.value = false;
+    return true;
+  }
+
+  async function toggleCompose() {
+    if (composeOpen.value) return closeCompose();
+    ++drawerRequest;
+    if (drawerOpen.value && !(await closeDrawer())) return false;
+    composeOpen.value = true;
+    return true;
   }
 
   async function captureMemory(text: string, namespace?: string) {
     try {
       const result = await api.capture({ text, namespace });
-      composeOpen.value = false;
+      if (namespace) setQuickCreateDefaults(namespace, quickCreateLastKind.value);
       if (result.outcome === "Queued") {
         pushToast("Capture queued for review", "info");
         return result;
@@ -596,44 +795,44 @@ export const useMemoryStore = defineStore("memories", () => {
     }
   }
 
-  // Palette search
+  // Palette search stays active-only even when browsing the Archive collection.
+  let paletteRequest = 0;
+  let semanticRequest = 0;
+  const paletteError = ref<string | null>(null);
   async function paletteSearch(query: string) {
+    const request = ++paletteRequest;
+    const namespace = selectedNamespace.value;
     paletteQuery.value = query;
+    paletteError.value = null;
     if (!query.trim()) {
       paletteResults.value = [];
       paletteSemanticResults.value = [];
+      paletteLoading.value = false;
       return;
     }
-
     paletteLoading.value = true;
     try {
-      const ftsResult = await api.recall({
-        query,
-        namespace: selectedNamespace.value ?? undefined,
-        limit: 10,
-      });
-      paletteResults.value = ftsResult.items;
+      const result = await api.recall({ query, namespace: namespace ?? undefined, include_archived: false, limit: 10 });
+      if (request === paletteRequest && namespace === selectedNamespace.value) paletteResults.value = result.items;
     } catch (e) {
-      error.value = String(e);
+      if (request === paletteRequest && namespace === selectedNamespace.value) paletteError.value = String(e);
     } finally {
-      paletteLoading.value = false;
+      if (request === paletteRequest && namespace === selectedNamespace.value) paletteLoading.value = false;
     }
   }
 
   async function paletteSemanticSearch(query: string) {
+    const request = ++semanticRequest;
+    const namespace = selectedNamespace.value;
     if (!query.trim()) {
       paletteSemanticResults.value = [];
       return;
     }
     try {
-      const result = await api.search({
-        query,
-        namespace: selectedNamespace.value ?? undefined,
-        limit: 5,
-      });
-      paletteSemanticResults.value = result.items;
+      const result = await api.search({ query, namespace: namespace ?? undefined, include_archived: false, limit: 5 });
+      if (request === semanticRequest && namespace === selectedNamespace.value && query === paletteQuery.value) paletteSemanticResults.value = result.items;
     } catch {
-      // Semantic search may not be available
+      if (request === semanticRequest) paletteSemanticResults.value = [];
     }
   }
 
@@ -665,6 +864,9 @@ export const useMemoryStore = defineStore("memories", () => {
   }
 
   function closePalette() {
+    paletteRequest++;
+    semanticRequest++;
+    paletteLoading.value = false;
     paletteOpen.value = false;
     paletteQuery.value = "";
     paletteResults.value = [];
@@ -674,6 +876,12 @@ export const useMemoryStore = defineStore("memories", () => {
   return {
     items,
     total,
+    loadedCount,
+    canLoadMore,
+    loadingMore,
+    collection,
+    setCollection,
+    loadMore,
     loading,
     error,
     connectionStatus,
@@ -681,7 +889,12 @@ export const useMemoryStore = defineStore("memories", () => {
     isRemote,
     selectedNamespace,
     allNamespaces,
+    namespaceDetails,
+    namespaceDetailsError,
+    loadNamespaceDetails,
+    availableKinds,
     currentStats,
+    statsError,
     recentActivity,
     drawerMemory,
     drawerOpen,
@@ -707,6 +920,7 @@ export const useMemoryStore = defineStore("memories", () => {
     paletteResults,
     paletteSemanticResults,
     paletteLoading,
+    paletteError,
     activeNamespace,
     loadConnectionStatus,
     fetchNamespaces,
@@ -717,6 +931,9 @@ export const useMemoryStore = defineStore("memories", () => {
     setNamespace,
     openDrawer,
     closeDrawer,
+    closeCompose,
+    setDrawerCloseGuard,
+    setComposeCloseGuard,
     toggleCompose,
     captureMemory,
     paletteSearch,
@@ -728,6 +945,8 @@ export const useMemoryStore = defineStore("memories", () => {
     resumePolling,
     pinnedIds,
     pinnedItems,
+    pinError,
+    refreshPins,
     unpinnedItems,
     navigableItems,
     pinnedCount,

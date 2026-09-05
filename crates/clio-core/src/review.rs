@@ -132,15 +132,15 @@ pub fn queue_for_review(conn: &Connection, input: &ReviewInput) -> Result<Review
     get_review(conn, &id)
 }
 
-/// List pending review items, ordered by creation time (oldest first).
+/// List captures awaiting approval, including edited items (oldest first).
 pub fn list_pending(conn: &Connection, limit: u32) -> Result<Vec<ReviewItem>> {
     let mut stmt = conn.prepare(
         "SELECT id, content, suggested_namespace, suggested_kind, suggested_title,
                 suggested_summary, suggested_tags, suggested_importance, suggested_confidence,
                 source_route, source_ref, metadata_json, status, created_at, reviewed_at
          FROM review_queue
-         WHERE status = 'pending'
-         ORDER BY created_at ASC
+         WHERE status IN ('pending', 'edited')
+         ORDER BY created_at ASC, id ASC
          LIMIT ?1",
     )?;
 

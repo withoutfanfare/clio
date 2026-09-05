@@ -207,6 +207,10 @@ struct RecallParams {
     #[serde(default)]
     include_archived: bool,
 
+    /// Return only archived memories.
+    #[serde(default)]
+    archived_only: bool,
+
     /// Max results.
     #[serde(default = "default_limit")]
     limit: u32,
@@ -263,6 +267,14 @@ struct RecentParams {
     /// Include archived.
     #[serde(default)]
     include_archived: bool,
+
+    /// Return only archived memories.
+    #[serde(default)]
+    archived_only: bool,
+
+    /// Pagination offset.
+    #[serde(default)]
+    offset: u32,
 
     /// Max results.
     #[serde(default = "default_limit")]
@@ -525,6 +537,10 @@ struct InboxParams {
     /// Format: markdown|json (list only).
     #[serde(default = "default_response_format")]
     response_format: String,
+
+    /// Include confirmation that JSON list results cover pending and edited items.
+    #[serde(default)]
+    include_status_scope: bool,
 
     /// Edit override: suggested namespace.
     #[serde(default)]
@@ -1735,6 +1751,7 @@ impl ClioServer {
                 tags: params.tags,
                 match_all_tags: params.match_all_tags,
                 include_archived: params.include_archived,
+                archived_only: params.archived_only,
                 include_links: false,
                 exclude_expired: false,
                 importance_min: params.importance_min,
@@ -1819,6 +1836,8 @@ impl ClioServer {
                 importance_max: params.importance_max,
                 sort_by,
                 include_archived: params.include_archived,
+                archived_only: params.archived_only,
+                offset: params.offset,
                 limit,
                 scoring: Some(settings.scoring.clone()),
                 ..Default::default()
@@ -2298,6 +2317,7 @@ impl ClioServer {
 
             let len = items.len() as u32;
             let result = RecallResult {
+                archived_only: false,
                 items,
                 total: len,
                 limit,
@@ -2511,7 +2531,12 @@ impl ClioServer {
                     let items = clio_core::review::list_pending(&conn, limit)
                         .map_err(|e| format_clio_error(&e))?;
                     if params.response_format == "json" {
-                        serde_json::to_string_pretty(&items)
+                        let result = if params.include_status_scope {
+                            serde_json::json!({ "items": items, "includes_edited": true })
+                        } else {
+                            serde_json::json!(items)
+                        };
+                        serde_json::to_string_pretty(&result)
                             .map_err(|e| format!("Serialisation error: {e}"))
                     } else {
                         Ok(review_list_md(&items))

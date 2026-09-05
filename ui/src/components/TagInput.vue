@@ -1,15 +1,17 @@
 <script setup lang="ts">
-import { ref, computed } from "vue";
+import { ref, computed, onUnmounted } from "vue";
 
 const props = withDefaults(
   defineProps<{
     modelValue: string[];
     suggestions?: string[];
     placeholder?: string;
+    label?: string;
   }>(),
   {
     suggestions: () => [],
     placeholder: "Add tag...",
+    label: "Tags",
   },
 );
 
@@ -19,6 +21,15 @@ const emit = defineEmits<{
 
 const input = ref("");
 const dropdownOpen = ref(false);
+let blurTimeout: ReturnType<typeof setTimeout> | undefined;
+onUnmounted(() => clearTimeout(blurTimeout));
+defineExpose({ commit: addTag, discardInput });
+
+function discardInput() {
+  clearTimeout(blurTimeout);
+  input.value = "";
+  dropdownOpen.value = false;
+}
 
 const filteredSuggestions = computed(() => {
   const active = new Set(props.modelValue);
@@ -29,6 +40,7 @@ const filteredSuggestions = computed(() => {
 });
 
 function addTag() {
+  clearTimeout(blurTimeout);
   const tag = input.value.trim().toLowerCase().replace(/\s+/g, "-");
   if (tag && !props.modelValue.includes(tag)) {
     emit("update:modelValue", [...props.modelValue, tag]);
@@ -73,7 +85,7 @@ function onFocus() {
 
 function onBlur() {
   // Delay to allow click on dropdown items.
-  setTimeout(() => {
+  blurTimeout = setTimeout(() => {
     dropdownOpen.value = false;
     if (input.value.trim()) addTag();
   }, 150);
@@ -99,6 +111,7 @@ function onBlur() {
         v-model="input"
         class="chip-input"
         :placeholder="placeholder"
+        :aria-label="label"
         @keydown="handleKeydown"
         @focus="onFocus"
         @blur="onBlur"

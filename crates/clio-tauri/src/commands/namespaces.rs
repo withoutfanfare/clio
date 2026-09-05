@@ -131,6 +131,7 @@ pub async fn cmd_purge_namespace(
     state: State<'_, AppState>,
     namespace: String,
 ) -> Result<u32, CommandError> {
+    validate_workspace_purge(&namespace)?;
     if let Some(remote) = state.remote() {
         let report: CleanupReport = remote
             .call_json(
@@ -152,7 +153,17 @@ fn purge_workspace(
     db_path: &Path,
     namespace: &str,
 ) -> clio_core::error::Result<CleanupReport> {
+    validate_workspace_purge(namespace)?;
     cleanup::execute_cleanup(conn, db_path, &[namespace.to_string()], 10)
+}
+
+fn validate_workspace_purge(namespace: &str) -> clio_core::error::Result<()> {
+    if namespace == "global" {
+        return Err(clio_core::error::ClioError::Validation(
+            "cannot delete the global namespace".into(),
+        ));
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -268,6 +279,30 @@ mod tests {
             &Settings::default(),
         )
         .unwrap();
+    }
+
+    #[test]
+    fn purge_workspace_rejects_global_before_backup_or_mutation() {
+        let directory = tempfile::tempdir().unwrap();
+        let db_path = directory.path().join("clio.db");
+        let conn = clio_core::db::open(&db_path).unwrap();
+        remember(&conn, "global", "Keep this shared memory");
+
+        let result = purge_workspace(&conn, &db_path, "global");
+
+        assert!(matches!(
+            result,
+            Err(clio_core::error::ClioError::Validation(_))
+        ));
+        assert_eq!(
+            clio_core::repository::list_namespaces(&conn).unwrap(),
+            vec!["global"]
+        );
+        assert!(
+            clio_core::backup::list_backups(&db_path, None)
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]

@@ -322,6 +322,7 @@ This is the primary retrieval tool for AI clients. It must handle both semantic-
   "importance_max": 5,
   "sort_by": "importance_desc",
   "include_archived": false,
+  "archived_only": false,
   "limit": 10,
   "offset": 0,
   "response_format": "json"
@@ -339,6 +340,7 @@ This is the primary retrieval tool for AI clients. It must handle both semantic-
 - `importance_max`: null (no upper bound)
 - `sort_by`: null (default: `updated_at DESC`; only applied when no FTS query and no scoring config)
 - `include_archived`: `false`
+- `archived_only`: `false`
 - `limit`: `10`
 - `offset`: `0`
 - `response_format`: `markdown`
@@ -360,7 +362,9 @@ This is the primary retrieval tool for AI clients. It must handle both semantic-
 - if `query` is absent, return recent records subject to filters
 - by default, archived records are excluded
 - support namespace, kind, and tags filters
-- support pagination
+- `archived_only: true` returns archived records only and takes precedence over `include_archived`
+- support pagination with a full-ID tie-breaker; an empty page retains the filtered total
+- the response envelope includes `archived_only`, confirming whether the backend applied that filter; older servers omit it, so clients must require `true` before labelling results Archive
 - when `namespace` is explicitly provided, filter to that namespace only
 - when `cwd` is provided and `namespace` is omitted, use scoped recall: search detected namespace first, then fill remaining slots from `global`; project-scoped results appear before global results
 - when detection falls back to `global`, search only `global` unless `global: true` requests all namespaces
@@ -463,6 +467,8 @@ Return recent memories with optional filtering and sorting.
   "importance_max": 5,
   "sort_by": "importance_desc",
   "include_archived": false,
+  "archived_only": false,
+  "offset": 0,
   "limit": 10,
   "response_format": "json"
 }
@@ -485,6 +491,8 @@ Return recent memories with optional filtering and sorting.
 - `importance_max`: null (no upper bound)
 - `sort_by`: null (default: `updated_at DESC`)
 - `include_archived`: `false`
+- `archived_only`: `false` (takes precedence over `include_archived`)
+- `offset`: `0`
 - `limit`: `10`
 - `response_format`: `markdown`
 
@@ -1050,6 +1058,8 @@ One merged tool with an `action` discriminator, mirroring `memory_inbox`:
 - `attach_external` records a verified external reference and keeps the item open; it does not mark anything delivered.
 - `history` returns the append-only event trail for the item's memory.
 
+The `overview` response includes `memory_titles`, keyed by full memory ID, for evidence that is neither archived nor expired. Missing evidence has no entry. Titles fall back to the first non-empty content line, then “Untitled memory”. This projection does not update access tracking. `review_pending` counts both pending and edited captures across all workspaces.
+
 ### Failure cases
 
 - missing required fields per action → validation error naming the field
@@ -1082,10 +1092,12 @@ Surfaces thinking patterns over time: counts by namespace and kind, weekly creat
 ### Behaviour
 
 - when `namespace` is provided, all counts are scoped to that namespace only
+- the response echoes `namespace` (null for all workspaces), confirming the applied scope; older backends omit it
 - `by_week` covers up to 52 ISO weeks, ordered newest first
 - `top_tags` returns the 20 most frequent tags by count
 - `embedding_coverage` is a percentage (0–100) of memories that have a stored embedding
-- `link_density` is the average number of outgoing links per memory (float)
+- `total_links` counts links whose source memory belongs to the selected namespace; links to another namespace count once under their source
+- `link_density` is scoped outgoing links divided by scoped total memories (including archived records)
 - always reads active and archived memories for counts (not filtered by `archived_at`)
 
 ### Structured response (JSON format)
@@ -1494,6 +1506,10 @@ ignored for `list`.
 ```
 
 ```json
+{ "action": "list", "limit": 100, "response_format": "json", "include_status_scope": true }
+```
+
+```json
 { "action": "approve", "review_id": "01954d70-cf20-7d42-bb3b-ff2f0f0de123" }
 ```
 
@@ -1518,10 +1534,12 @@ ignored for `list`.
 - `action`: required (`list` | `approve` | `reject` | `edit`)
 - `limit`: `20` (list only)
 - `response_format`: `markdown` (list only)
+- `include_status_scope`: `false` (JSON list only)
 
 ### Behaviour
 
-- `list`: returns items with `status = 'pending'`, ordered by `created_at ASC`
+- `list`: returns items with `status IN ('pending', 'edited')`, ordered by `created_at ASC, id ASC`; edited captures remain visible until approved or rejected
+- JSON lists normally return an array. With `include_status_scope: true`, the response is `{ "items": [...], "includes_edited": true }`. Existing callers retain their response format. The desktop adapter requires this confirmation before accepting remote inbox results, including an empty list; older backends require an update. The desktop UI still receives an array.
 - `approve`: creates a memory from the suggested fields via
   `repository::remember()`, preserving `source_route` as `source`, plus
   `source_ref` and metadata; it sets status to `approved` and `reviewed_at` to

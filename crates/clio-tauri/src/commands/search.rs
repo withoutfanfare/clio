@@ -69,6 +69,7 @@ pub async fn cmd_search(
 
         let count = items.len() as u32;
         Ok(RecallResult {
+            archived_only: false,
             total: count,
             count,
             offset: 0,

@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+**Clearer desktop scope and retrieval (2026-09-05)**
+- Browsing loads further pages, preserves depth on refresh and resolves pinned
+  memories independently. Workspace search, shortcuts, dates and search excerpts
+  make collection context clearer. Context briefs persist across sessions.
+- Statistics consistently use the selected namespace and echo that scope.
+  Attention projects eligible evidence titles without recording access.
+
 **Distillation output hard-capped at 6 memories (2026-08-07)**
 - One distillation call now stores at most 6 memories: 5 knowledge atoms plus
   the single session receipt. The prompt states the limit and a stricter
@@ -47,6 +54,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+**Desktop Archive and capture review (2026-09-05)**
+- Explicit Archive/Restore browsing with `archived_only` recall/recent filtering
+  and recent offsets across core, CLI, MCP and desktop adapters.
+- A capture inbox for reviewing, editing, approving and rejecting unresolved
+  captures, with recoverable suggestions and metadata-only local queue diagnostics.
+- MCP inbox JSON lists optionally return `items` and `includes_edited` when
+  `include_status_scope` is true. Existing callers retain array responses; the
+  desktop requires this confirmation before accepting a remote inbox.
+- [Implementation evidence and remaining release checks](docs/reviews/2026-09-04-app-improvements.md)
+  record passing core/UI/adapter checks, native workflows with synthetic data and remaining restart/fault acceptance limits.
+
 **Per-checkpoint token accounting and `clio usage` (2026-08-07)**
 - Migration `014_checkpoint_usage` adds model and token columns to
   `session_checkpoints`; the checkpoint path (core and MCP) stamps them
@@ -76,6 +94,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   value for one run.
 
 ### Fixed
+
+**Desktop draft protection and queue visibility (2026-09-05)**
+- Editor close waits for saves; failed or conflicting writes retain recoverable
+  drafts. Creation uses the selected workspace and preserves explicit destinations.
+- Edited captures remain in the unresolved inbox until confirmed approval or
+  rejection. Stale requests cannot replace newer workspace results or reopen old evidence.
+- Modal keyboard handling, palette result scrolling, labels, text contrast and
+  reduced-motion support improve desktop accessibility.
 
 **Dead-letter recovery and SSH session isolation (2026-08-07)**
 - Long-lived `clio remote-mcp` bridges now use dedicated SSH connections instead

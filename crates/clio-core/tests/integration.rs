@@ -55,6 +55,50 @@ fn has_issue(report: &clio_core::integrity::IntegrityReport, kind: &str, id: &st
         .any(|issue| issue.kind == kind && issue.affected_ids.iter().any(|affected| affected == id))
 }
 
+#[test]
+fn archived_only_recall_pages_exclude_active_and_preserve_total_past_last_page() {
+    let conn = test_db();
+    remember_in(&conn, "project:a", "active evidence");
+    let mut archived = Vec::new();
+    for _ in 0..3 {
+        let memory = remember_in(&conn, "project:a", "archived evidence");
+        repository::archive(&conn, &memory.id).unwrap();
+        archived.push(memory.id);
+    }
+    archived.sort();
+    let elsewhere = remember_in(&conn, "project:b", "archived elsewhere");
+    repository::archive(&conn, &elsewhere.id).unwrap();
+    conn.execute(
+        "UPDATE memories SET updated_at = '2026-01-01T00:00:00Z'",
+        [],
+    )
+    .unwrap();
+    for query in [None, Some("evidence")] {
+        let mut seen = Vec::new();
+        for offset in 0..=3 {
+            let q: RecallQuery = serde_json::from_value(serde_json::json!({
+                "namespace": "project:a", "query": query, "archived_only": true,
+                "limit": 1, "offset": offset, "sort_by": "updated_desc"
+            }))
+            .unwrap();
+            let result = repository::recall(&conn, &q).unwrap();
+            assert_eq!(result.total, 3);
+            assert_eq!(
+                serde_json::to_value(&result).unwrap()["archived_only"],
+                true
+            );
+            assert!(
+                result
+                    .items
+                    .iter()
+                    .all(|item| item.memory.archived_at.is_some())
+            );
+            seen.extend(result.items.into_iter().map(|item| item.memory.id));
+        }
+        assert_eq!(seen, archived);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Migration bootstrap
 // ---------------------------------------------------------------------------
@@ -1676,6 +1720,7 @@ fn bulk_link_expansion_returns_linked_memories() {
             tags: vec![],
             match_all_tags: true,
             include_archived: false,
+            archived_only: false,
             include_links: true,
             exclude_expired: false,
             importance_min: None,
@@ -3464,4 +3509,23 @@ fn effectiveness_report_is_untracked_and_dedupes_surfaced_events() {
         .unwrap();
     assert_eq!(after_access, before_access);
     assert_eq!(after_events, before_events);
+}
+
+#[test]
+fn edited_inbox_items_remain_visible_until_reviewed() {
+    use clio_core::review;
+    let conn = test_db();
+    let input = serde_json::from_value(serde_json::json!({"content": "Review evidence"})).unwrap();
+    let item = review::queue_for_review(&conn, &input).unwrap();
+    let edits = serde_json::from_value(serde_json::json!({"title": "Revised title"})).unwrap();
+    review::edit_review(&conn, &item.id, &edits).unwrap();
+    assert_eq!(review::list_pending(&conn, 10).unwrap().len(), 1);
+    assert_eq!(
+        clio_core::attention::overview(&conn, None, None, 14)
+            .unwrap()
+            .review_pending,
+        1
+    );
+    review::approve_review(&conn, &item.id, &Settings::default()).unwrap();
+    assert!(review::list_pending(&conn, 10).unwrap().is_empty());
 }

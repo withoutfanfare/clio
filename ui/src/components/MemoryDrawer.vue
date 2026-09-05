@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { ref, computed, watch, nextTick } from "vue";
+import { ref, computed, watch, nextTick, onUnmounted, onMounted } from "vue";
 import { SButton, SFormField, SInput, SBadge, SDropdownMenu } from "@stuntrocket/ui";
 import type { SDropdownMenuItem } from "@stuntrocket/ui";
 import { useMemoryStore } from "@/stores/memories";
 import { useAutoSave } from "@/composables/useAutoSave";
 import TagInput from "./TagInput.vue";
+import NativeDialog from "./NativeDialog.vue";
 import KindSelector from "./KindSelector.vue";
 import LinkList from "./LinkList.vue";
 import { copyToClipboard, downloadMarkdown } from "@/utils/memoryExport";
@@ -16,7 +17,7 @@ const availableTags = computed(() => {
   if (!stats?.top_tags?.length) return [];
   return stats.top_tags.map(([tag]: [string, number]) => tag);
 });
-const { saving, dirty, saved, error: saveError, scheduleAutoSave, cancel } = useAutoSave();
+const { saving, dirty, saved, error: saveError, scheduleAutoSave, flush, discard, restoreDraft, recoveryMemoryId, unresolvedRecoveryId, recoveryError } = useAutoSave();
 
 const editContent = ref("");
 const editTitle = ref("");
@@ -27,6 +28,28 @@ const editImportance = ref(3);
 const metaOpen = ref(false);
 const copied = ref(false);
 const confirmingDelete = ref(false);
+const confirmingDiscard = ref(false);
+const closing = ref(false);
+const tagsRef = ref<InstanceType<typeof TagInput> | null>(null);
+async function saveBeforeClose(nextMemoryId?: string) {
+  if (unresolvedRecoveryId.value) return nextMemoryId === unresolvedRecoveryId.value;
+  if (deleting.value) return false;
+  tagsRef.value?.commit();
+  return flush();
+}
+const confirmingRecoveryDiscard = ref(false);
+const recovering = ref(false);
+async function retryRecovery() {
+  if (!unresolvedRecoveryId.value || recovering.value) return;
+  recovering.value = true;
+  try { await store.openDrawer(unresolvedRecoveryId.value); }
+  finally { recovering.value = false; }
+}
+store.setDrawerCloseGuard(saveBeforeClose);
+onMounted(() => {
+  if (recoveryMemoryId) void retryRecovery();
+});
+onUnmounted(() => store.setDrawerCloseGuard(null));
 const contentRef = ref<HTMLTextAreaElement | null>(null);
 const revisionsOpen = ref(false);
 
@@ -54,7 +77,11 @@ function saveRevision(memoryId: string, oldContent: string) {
     { content: oldContent, timestamp: new Date().toISOString() },
   ].slice(-20); // Keep last 20 revisions
   revisions.value = newRevisions;
-  localStorage.setItem(`clio-revisions-${memoryId}`, JSON.stringify(newRevisions));
+  try {
+    localStorage.setItem(`clio-revisions-${memoryId}`, JSON.stringify(newRevisions));
+  } catch {
+    // Optional revision history must never prevent the current edit being saved.
+  }
 }
 
 let previousContent = "";
@@ -63,18 +90,20 @@ watch(
   () => store.drawerMemory,
   (memory) => {
     if (memory) {
+      const recovered = restoreDraft(memory);
+      const draft = { ...memory, ...recovered };
       previousContent = memory.content;
-      editContent.value = memory.content;
-      editTitle.value = memory.title ?? "";
-      editKind.value = memory.kind;
-      editNamespace.value = memory.namespace;
-      editTags.value = [...memory.tags];
-      editImportance.value = memory.importance;
+      editContent.value = draft.content;
+      editTitle.value = draft.title ?? "";
+      editKind.value = draft.kind;
+      editNamespace.value = draft.namespace;
+      editTags.value = [...draft.tags];
+      editImportance.value = draft.importance;
       metaOpen.value = false;
       revisionsOpen.value = false;
       confirmingDelete.value = false;
       loadRevisions(memory.id);
-      cancel();
+      confirmingDiscard.value = false;
       nextTick(() => contentRef.value?.focus());
     }
   },
@@ -133,7 +162,7 @@ async function archiveMemory() {
   if (!store.drawerMemory) return;
   const id = store.drawerMemory.id;
   const wasArchived = !!store.drawerMemory.archived_at;
-  store.closeDrawer();
+  if (!(await store.closeDrawer())) return;
   if (wasArchived) {
     await store.unarchiveMemory(id);
   } else {
@@ -154,10 +183,15 @@ function cancelDelete() {
 async function confirmDelete() {
   if (!store.drawerMemory || deleting.value) return;
   deleting.value = true;
+  tagsRef.value?.commit();
+  if (!(await flush())) {
+    deleting.value = false;
+    return;
+  }
   const ok = await store.deleteMemory(store.drawerMemory.id);
   deleting.value = false;
   confirmingDelete.value = false;
-  if (ok) store.closeDrawer();
+  if (ok) await store.closeDrawer();
 }
 
 const menuItems = computed<SDropdownMenuItem[]>(() => {
@@ -207,10 +241,20 @@ function handleMenuSelect(value: string) {
   }
 }
 
-function close() {
-  cancel();
-  confirmingDelete.value = false;
-  store.closeDrawer();
+async function close() {
+  if (closing.value) return;
+  closing.value = true;
+  try {
+    if (await store.closeDrawer()) confirmingDelete.value = false;
+  } finally {
+    closing.value = false;
+  }
+}
+
+async function discardAndClose() {
+  if (!discard()) return;
+  tagsRef.value?.discardInput();
+  await close();
 }
 
 function formatDate(iso: string): string {
@@ -225,20 +269,26 @@ function formatDate(iso: string): string {
 </script>
 
 <template>
-  <Teleport to="body">
-    <Transition name="fade">
-      <div
-        v-if="store.drawerOpen"
-        class="drawer-backdrop"
-        @click="close"
-      />
-    </Transition>
-    <Transition name="slide-right">
-      <div v-if="store.drawerOpen && store.drawerMemory" class="drawer">
+  <NativeDialog :open="!!unresolvedRecoveryId && !store.drawerOpen && !store.composeOpen" label="Recover unsaved changes" @close="confirmingRecoveryDiscard = true">
+    <section class="recovery-dialog" role="alert">
+      <h2>Unsaved changes are waiting</h2>
+      <p>Your saved draft is protected. Open its memory to recover it, or explicitly discard the draft before editing another memory.</p>
+      <p v-if="store.error">{{ store.error }}</p>
+      <SButton :disabled="recovering" @click="retryRecovery">{{ recovering ? "Opening…" : "Open recovered memory" }}</SButton>
+      <SButton variant="ghost" :disabled="recovering" @click="confirmingRecoveryDiscard = true">Discard saved draft…</SButton>
+      <div v-if="confirmingRecoveryDiscard">
+        <p>Permanently discard these unsaved changes?</p>
+        <SButton variant="ghost" @click="confirmingRecoveryDiscard = false">Keep draft</SButton>
+        <SButton variant="danger" @click="discard">Discard draft</SButton>
+      </div>
+    </section>
+  </NativeDialog>
+  <NativeDialog :open="store.drawerOpen" label="Edit memory" @close="close">
+      <div v-if="store.drawerMemory" class="drawer" :aria-busy="closing || deleting">
         <div class="drawer-header">
-          <div class="drawer-status">
+          <div class="drawer-status" role="status" aria-live="polite">
             <Transition name="status-fade" mode="out-in">
-              <SBadge v-if="saveError" key="error" variant="error">Save failed</SBadge>
+              <SBadge v-if="saveError" key="error" variant="error">{{ /recovered/i.test(saveError) ? "Recovered draft" : "Save failed" }}</SBadge>
               <SBadge v-else-if="saving" key="saving" variant="default">Saving&hellip;</SBadge>
               <SBadge v-else-if="saved" key="saved" variant="success">Saved</SBadge>
               <SBadge v-else-if="dirty" key="dirty" variant="warning">Unsaved changes</SBadge>
@@ -268,10 +318,27 @@ function formatDate(iso: string): string {
           </div>
         </div>
 
-        <div class="drawer-body">
+        <div v-if="saveError" class="save-error" role="alert">
+          <p v-if="/recovered/i.test(saveError)">{{ saveError }}</p>
+          <p v-else>{{ /conflict|modified|changed/i.test(saveError) ? "This memory changed elsewhere. Your draft is still here; retry will keep checking the original version." : "Your changes could not be saved. Your draft is still here." }}</p>
+          <div class="delete-confirm-actions">
+            <SButton variant="ghost" size="sm" :disabled="saving" @click="flush">Retry save</SButton>
+            <SButton variant="danger" size="sm" :disabled="saving" @click="confirmingDiscard = true">Discard changes…</SButton>
+          </div>
+          <div v-if="confirmingDiscard">
+            <p>Discard these unsaved changes and close?</p>
+            <SButton variant="ghost" size="sm" @click="confirmingDiscard = false">Keep editing</SButton>
+            <SButton variant="danger" size="sm" :disabled="saving" @click="discardAndClose">Discard and close</SButton>
+          </div>
+        </div>
+
+        <p v-if="recoveryError" class="save-error" role="alert">{{ recoveryError }}</p>
+        <div class="drawer-body" :inert="deleting">
+
           <input
             v-model="editTitle"
             class="drawer-title"
+            aria-label="Memory title"
             placeholder="Untitled"
             @input="onTitleChange"
           />
@@ -280,6 +347,8 @@ function formatDate(iso: string): string {
             ref="contentRef"
             v-model="editContent"
             class="drawer-content"
+            aria-label="Memory content"
+            autofocus
             placeholder="Write something..."
             @input="onContentChange"
           />
@@ -301,7 +370,7 @@ function formatDate(iso: string): string {
 
             <Transition name="fade">
               <div v-if="metaOpen" class="meta-fields">
-                <SFormField label="Kind">
+                <SFormField label="Kind" role="group" aria-label="Kind">
                   <KindSelector
                     v-model="editKind"
                     @update:model-value="onMetaChange"
@@ -311,12 +380,15 @@ function formatDate(iso: string): string {
                 <SFormField label="Namespace">
                   <SInput
                     v-model="editNamespace"
+                    aria-label="Namespace"
                     @update:model-value="onMetaChange"
                   />
                 </SFormField>
 
                 <SFormField label="Tags">
                   <TagInput
+                    ref="tagsRef"
+                    label="Tags"
                     v-model="editTags"
                     :suggestions="availableTags"
                     @update:model-value="onMetaChange"
@@ -324,14 +396,15 @@ function formatDate(iso: string): string {
                 </SFormField>
 
                 <SFormField label="Importance">
-                  <div class="importance-dots">
+                  <div class="importance-dots" role="group" aria-label="Importance">
                     <button
                       v-for="n in 5"
                       :key="n"
                       class="importance-dot"
                       :class="{ active: n <= editImportance }"
                       @click="editImportance = n; onMetaChange()"
-                      :aria-label="`Importance ${n}`"
+                      :aria-label="`Importance ${n} of 5`"
+                      :aria-pressed="editImportance === n"
                     />
                   </div>
                 </SFormField>
@@ -393,18 +466,19 @@ function formatDate(iso: string): string {
           </div>
         </Transition>
       </div>
-    </Transition>
-  </Teleport>
+  </NativeDialog>
 </template>
 
 <style scoped>
-.drawer-backdrop {
-  position: fixed;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.6);
-  backdrop-filter: blur(2px);
-  z-index: 300;
+.recovery-dialog { max-width: 540px; margin: 12vh auto; padding: 24px; border-radius: 14px; background: var(--color-surface); color: var(--color-text-primary); }
+.recovery-dialog p { margin: 16px 0; line-height: 1.6; }
+.save-error {
+  padding: var(--space-3) var(--space-5);
+  color: var(--color-danger);
+  font-size: 13px;
+  border-bottom: 1px solid var(--color-border-subtle);
 }
+
 
 .drawer {
   position: fixed;

@@ -53,17 +53,21 @@ pub fn memory_stats(conn: &Connection, namespace: Option<&str>) -> Result<Memory
     // Counts by namespace.
     let by_namespace = {
         let mut stmt = conn.prepare(
-            "SELECT namespace, COUNT(*) FROM memories GROUP BY namespace ORDER BY COUNT(*) DESC",
+            "SELECT namespace, COUNT(*) FROM memories
+             WHERE (?1 IS NULL OR namespace = ?1)
+             GROUP BY namespace ORDER BY COUNT(*) DESC, namespace ASC",
         )?;
-        let rows = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
+        let rows = stmt.query_map(params![namespace], |row| Ok((row.get(0)?, row.get(1)?)))?;
         rows.collect::<std::result::Result<Vec<(String, u32)>, _>>()?
     };
 
     // Counts by kind.
     let by_kind = {
-        let mut stmt = conn
-            .prepare("SELECT kind, COUNT(*) FROM memories GROUP BY kind ORDER BY COUNT(*) DESC")?;
-        let rows = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
+        let mut stmt = conn.prepare(
+            "SELECT kind, COUNT(*) FROM memories WHERE (?1 IS NULL OR namespace = ?1)
+             GROUP BY kind ORDER BY COUNT(*) DESC, kind ASC",
+        )?;
+        let rows = stmt.query_map(params![namespace], |row| Ok((row.get(0)?, row.get(1)?)))?;
         rows.collect::<std::result::Result<Vec<(String, u32)>, _>>()?
     };
 
@@ -72,20 +76,26 @@ pub fn memory_stats(conn: &Connection, namespace: Option<&str>) -> Result<Memory
         let mut stmt = conn.prepare(
             "SELECT strftime('%Y-W%W', created_at) AS week, COUNT(*)
              FROM memories
+             WHERE (?1 IS NULL OR namespace = ?1)
              GROUP BY week
              ORDER BY week DESC
              LIMIT 52",
         )?;
-        let rows = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
+        let rows = stmt.query_map(params![namespace], |row| Ok((row.get(0)?, row.get(1)?)))?;
         rows.collect::<std::result::Result<Vec<(String, u32)>, _>>()?
     };
 
     // Top tags.
-    let top_tags = tag_frequency(conn, 20)?;
+    let top_tags = tag_frequency_scoped(conn, 20, namespace)?;
 
-    // Link totals.
-    let total_links: u32 =
-        conn.query_row("SELECT COUNT(*) FROM memory_links", [], |row| row.get(0))?;
+    // An outgoing edge belongs to its source memory's collection, even when
+    // its target is in another namespace. Count each edge once globally.
+    let total_links: u32 = conn.query_row(
+        "SELECT COUNT(*) FROM memory_links l JOIN memories m ON m.id = l.from_memory_id
+         WHERE (?1 IS NULL OR m.namespace = ?1)",
+        params![namespace],
+        |row| row.get(0),
+    )?;
 
     let link_density = if total_memories > 0 {
         total_links as f64 / total_memories as f64
@@ -94,6 +104,7 @@ pub fn memory_stats(conn: &Connection, namespace: Option<&str>) -> Result<Memory
     };
 
     Ok(MemoryStats {
+        namespace: namespace.map(str::to_owned),
         total_memories,
         active_memories,
         archived_memories,
@@ -114,14 +125,25 @@ pub fn memory_stats(conn: &Connection, namespace: Option<&str>) -> Result<Memory
 
 /// Return the most common tags with their counts.
 pub fn tag_frequency(conn: &Connection, limit: u32) -> Result<Vec<(String, u32)>> {
+    tag_frequency_scoped(conn, limit, None)
+}
+
+fn tag_frequency_scoped(
+    conn: &Connection,
+    limit: u32,
+    namespace: Option<&str>,
+) -> Result<Vec<(String, u32)>> {
     let mut stmt = conn.prepare(
-        "SELECT tag, COUNT(*) AS cnt
-         FROM memory_tags
-         GROUP BY tag
-         ORDER BY cnt DESC
+        "SELECT t.tag, COUNT(*) AS cnt
+         FROM memory_tags t JOIN memories m ON m.id = t.memory_id
+         WHERE (?2 IS NULL OR m.namespace = ?2)
+         GROUP BY t.tag
+         ORDER BY cnt DESC, t.tag ASC
          LIMIT ?1",
     )?;
-    let rows = stmt.query_map(params![limit], |row| Ok((row.get(0)?, row.get(1)?)))?;
+    let rows = stmt.query_map(params![limit, namespace], |row| {
+        Ok((row.get(0)?, row.get(1)?))
+    })?;
     Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
 }
 
@@ -327,7 +349,56 @@ mod tests {
 
         let stats = memory_stats(&conn, Some("project:ai")).unwrap();
         assert_eq!(stats.total_memories, 2);
+        assert_eq!(serde_json::to_value(&stats).unwrap()["namespace"], "project:ai");
         assert_eq!(stats.active_memories, 2);
+    }
+
+    #[test]
+    fn scoped_breakdowns_and_link_density_use_the_same_collection() {
+        let conn = test_db();
+        let first = make_memory(&conn, "project:a", "fact", &["a"]);
+        let archived = make_memory(&conn, "project:a", "decision", &["a"]);
+        let other = make_memory(&conn, "project:b", "task", &["b"]);
+        repository::archive(&conn, &archived.id).unwrap();
+        for (from, to) in [
+            (&first.id, &archived.id),
+            (&first.id, &other.id),
+            (&other.id, &first.id),
+        ] {
+            repository::link(
+                &conn,
+                &crate::models::LinkInput {
+                    from_memory_id: from.clone(),
+                    to_memory_id: to.clone(),
+                    relationship: "relates_to".into(),
+                    metadata: serde_json::json!({}),
+                },
+            )
+            .unwrap();
+        }
+        let stats = memory_stats(&conn, Some("project:a")).unwrap();
+        assert_eq!(
+            (
+                stats.total_memories,
+                stats.active_memories,
+                stats.archived_memories
+            ),
+            (2, 1, 1)
+        );
+        assert_eq!(stats.by_namespace, vec![("project:a".into(), 2)]);
+        assert_eq!(stats.by_kind.iter().map(|(_, count)| count).sum::<u32>(), 2);
+        assert!(!stats.by_kind.iter().any(|(kind, _)| kind == "task"));
+        assert_eq!(stats.by_week.iter().map(|(_, count)| count).sum::<u32>(), 2);
+        assert_eq!(stats.top_tags, vec![("a".into(), 2)]);
+        assert_eq!(
+            stats.total_links, 2,
+            "count outgoing links from this collection, including cross-project links"
+        );
+        assert_eq!(stats.link_density, 1.0);
+        assert_eq!(memory_stats(&conn, None).unwrap().total_links, 3);
+        let empty = memory_stats(&conn, Some("missing")).unwrap();
+        assert!(empty.by_kind.is_empty() && empty.top_tags.is_empty());
+        assert_eq!((empty.total_links, empty.link_density), (0, 0.0));
     }
 
     #[test]

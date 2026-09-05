@@ -298,6 +298,10 @@ struct RecallArgs {
     #[arg(long)]
     include_archived: bool,
 
+    /// Return only archived memories.
+    #[arg(long)]
+    archived_only: bool,
+
     /// Maximum number of results.
     #[arg(long, default_value_t = 10)]
     limit: u32,
@@ -345,9 +349,17 @@ struct RecentArgs {
     #[arg(long)]
     include_archived: bool,
 
+    /// Return only archived memories.
+    #[arg(long)]
+    archived_only: bool,
+
     /// Maximum number of results.
     #[arg(long, default_value_t = 10)]
     limit: u32,
+
+    /// Offset for pagination.
+    #[arg(long, default_value_t = 0)]
+    offset: u32,
 }
 
 #[derive(Parser)]
@@ -1890,6 +1902,7 @@ fn cmd_recall(
             tags,
             match_all_tags: !args.match_any,
             include_archived: args.include_archived,
+            archived_only: args.archived_only,
             include_links: false,
             exclude_expired: false,
             importance_min: args.importance_min,
@@ -1909,6 +1922,7 @@ fn cmd_recall(
             tags,
             match_all_tags: !args.match_any,
             include_archived: args.include_archived,
+            archived_only: args.archived_only,
             include_links: false,
             exclude_expired: false,
             importance_min: args.importance_min,
@@ -1928,6 +1942,7 @@ fn cmd_recall(
             tags,
             match_all_tags: !args.match_any,
             include_archived: args.include_archived,
+            archived_only: args.archived_only,
             include_links: false,
             exclude_expired: false,
             importance_min: args.importance_min,
@@ -1988,7 +2003,9 @@ fn cmd_recent(
         importance_max: args.importance_max,
         sort_by,
         include_archived: args.include_archived,
+        archived_only: args.archived_only,
         limit: args.limit,
+        offset: args.offset,
         scoring: Some(s.scoring.clone()),
         ..Default::default()
     };
@@ -2472,6 +2489,7 @@ fn cmd_search(
     };
 
     let result = RecallResult {
+        archived_only: false,
         items: items.clone(),
         total: items.len() as u32,
         limit: args.limit,

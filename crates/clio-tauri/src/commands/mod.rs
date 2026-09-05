@@ -1,6 +1,7 @@
 pub mod attention;
 pub mod clipboard;
 pub mod deduplication;
+pub mod inbox;
 pub mod memory;
 pub mod namespaces;
 pub mod search;

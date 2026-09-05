@@ -133,42 +133,5 @@ pub async fn cmd_capture_queue_health() -> Result<serde_json::Value, CommandErro
             std::path::PathBuf::from(home).join("Library/Application Support/clio/capture-spool")
         }
     };
-    if !root.exists() {
-        return Ok(serde_json::Value::Null);
-    }
-
-    let count = |bucket: &str| -> (u64, Option<f64>) {
-        let mut n = 0u64;
-        let mut oldest: Option<f64> = None;
-        if let Ok(entries) = std::fs::read_dir(root.join(bucket)) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.extension().and_then(|e| e.to_str()) == Some("json") {
-                    n += 1;
-                    if let Ok(meta) = entry.metadata() {
-                        if let Ok(modified) = meta.modified() {
-                            if let Ok(age) = modified.elapsed() {
-                                let secs = age.as_secs_f64();
-                                if oldest.is_none_or(|o| secs > o) {
-                                    oldest = Some(secs);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        (n, oldest)
-    };
-
-    let (pending, oldest_pending) = count("pending");
-    let (processing, _) = count("processing");
-    let (dead, _) = count("dead");
-
-    Ok(serde_json::json!({
-        "pending": pending,
-        "processing": processing,
-        "dead": dead,
-        "oldest_pending_age_secs": oldest_pending,
-    }))
+    Ok(clio_core::capture_queue::health(&root))
 }

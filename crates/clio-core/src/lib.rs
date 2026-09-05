@@ -3,6 +3,7 @@ pub mod attention;
 pub mod backup;
 pub mod cache;
 pub mod capture;
+pub mod capture_queue;
 pub mod checkpoint;
 pub mod cleanup;
 pub mod config;

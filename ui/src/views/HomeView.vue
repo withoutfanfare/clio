@@ -2,7 +2,6 @@
 import { computed, onMounted, onUnmounted, ref, toRef, watch, type Ref } from "vue";
 import { useRoute } from "vue-router";
 import { SButton, SSelect, SFormField, SEmptyState, SSpinner, SBadge, SKbd } from "@stuntrocket/ui";
-import ComposeArea from "@/components/ComposeArea.vue";
 import DateGroup from "@/components/DateGroup.vue";
 import MemoryPage from "@/components/MemoryPage.vue";
 import { useMemoryStore } from "@/stores/memories";
@@ -35,7 +34,7 @@ const filteredTagSuggestions = computed(() => {
   return tags.filter((t) => t.includes(query)).slice(0, 20);
 });
 
-const kinds = ["note", "observation", "decision", "preference", "snippet", "knowledgebase"];
+const kinds = computed(() => store.availableKinds);
 const sortOptions = [
   { value: "importance_desc", label: "Most important" },
   { value: "importance_asc", label: "Least important" },
@@ -101,16 +100,13 @@ function handleKindChange(value: string) {
   store.setFilterKind(value || null);
 }
 
-/** Namespace counts derived from stats. */
-const namespaceCounts = computed(() => {
-  const map = new Map<string, number>();
-  if (store.currentStats?.by_namespace) {
-    for (const [ns, count] of store.currentStats.by_namespace) {
-      map.set(ns, count);
-    }
-  }
-  return map;
-});
+// Workspace selector counts are global; content statistics follow the selected scope.
+const namespaceCounts = computed(() => new Map(store.namespaceDetails.map(detail => [detail.name, detail.memory_count])));
+
+function selectBrowseOrder(order: "recent" | "important") {
+  store.setGroupBy(order === "recent" ? "date" : "importance");
+  store.setSortBy(order === "recent" ? "updated_desc" : "importance_desc");
+}
 
 function handleNamespaceSwitch(value: string) {
   store.setNamespace(value || null);
@@ -120,6 +116,8 @@ function handleNamespaceSwitch(value: string) {
 onMounted(() => {
   store.loadRecent();
   store.loadStats();
+  store.loadNamespaceDetails();
+  store.refreshPins();
   store.startPolling(3000);
   document.addEventListener("visibilitychange", onVisibilityChange);
 });
@@ -127,6 +125,10 @@ onMounted(() => {
 onUnmounted(() => {
   store.stopPolling();
   document.removeEventListener("visibilitychange", onVisibilityChange);
+});
+
+watch(() => store.selectedNamespace, () => {
+  void store.loadStats();
 });
 
 watch(
@@ -142,16 +144,27 @@ watch(
 
 <template>
   <div class="home-view">
-    <ComposeArea />
 
-    <div class="river-header" v-if="!store.loading">
+    <div class="collection-controls">
+      <div class="view-toggle" role="group" aria-label="Memory collection">
+        <SButton variant="ghost" size="sm" :class="{ active: store.collection === 'active' }" :aria-pressed="store.collection === 'active'" @click="store.setCollection('active')">Active</SButton>
+        <SButton variant="ghost" size="sm" :class="{ active: store.collection === 'archive' }" :aria-pressed="store.collection === 'archive'" @click="store.setCollection('archive')">Archive</SButton>
+      </div>
+      <div class="view-toggle" role="group" aria-label="Browse order">
+        <SButton variant="ghost" size="sm" :class="{ active: store.sortBy === 'updated_desc' }" :aria-pressed="store.sortBy === 'updated_desc'" @click="selectBrowseOrder('recent')">Recent</SButton>
+        <SButton variant="ghost" size="sm" :class="{ active: store.sortBy === 'importance_desc' }" :aria-pressed="store.sortBy === 'importance_desc'" @click="selectBrowseOrder('important')">Important</SButton>
+      </div>
+    </div>
+    <p class="collection-scope">{{ store.collection === "archive" ? "Archived memories" : "Active memories" }} · {{ store.selectedNamespace || "All namespaces" }}</p>
+    <div class="river-header">
       <div class="river-info">
         <span class="river-count">
-          {{ store.total }} {{ store.total === 1 ? "memory" : "memories" }}
+          {{ store.loadedCount }} of {{ store.total }} {{ store.total === 1 ? "memory" : "memories" }} loaded
         </span>
         <div class="ns-switcher">
           <select
             class="ns-select"
+            aria-label="Workspace"
             :value="store.selectedNamespace ?? ''"
             @change="handleNamespaceSwitch(($event.target as HTMLSelectElement).value)"
           >
@@ -161,7 +174,7 @@ watch(
               :key="ns"
               :value="ns"
             >
-              {{ ns }} ({{ namespaceCounts.get(ns) ?? 0 }})
+              {{ ns }}{{ namespaceCounts.has(ns) ? ` (${namespaceCounts.get(ns)})` : "" }}
             </option>
           </select>
         </div>
@@ -212,6 +225,8 @@ watch(
       </div>
     </div>
 
+    <p v-if="store.namespaceDetailsError" class="collection-notice" role="status">Workspace counts are unavailable. <button @click="store.loadNamespaceDetails()">Retry counts</button></p>
+    <p v-if="store.pinError" class="collection-notice" role="status">{{ store.pinError }} <button @click="store.refreshPins(true)">Retry pins</button></p>
     <!-- Filter bar -->
     <Transition name="slide-down">
       <div v-if="filtersOpen" class="filter-bar">
@@ -378,7 +393,7 @@ watch(
       </div>
     </template>
 
-    <div v-if="!store.loading && !store.items.length" class="river-empty">
+    <div v-if="!store.loading && !store.items.length && !store.pinnedItems.length" class="river-empty">
       <template v-if="store.hasActiveFilters">
         <SEmptyState
           title="No memories match filters"
@@ -391,20 +406,30 @@ watch(
       </template>
       <template v-else>
         <SEmptyState
-          title="No memories yet"
+          :title="store.collection === 'archive' ? 'No archived memories' : 'No memories yet'"
         >
           <template #action>
-            <span class="empty-hint">Press <SKbd>&#8984;N</SKbd> to create your first one</span>
+            <span v-if="store.collection === 'active'" class="empty-hint">Press <SKbd>&#8984;N</SKbd> to create your first one</span>
           </template>
         </SEmptyState>
       </template>
     </div>
 
-    <div v-if="store.error" class="river-error">{{ store.error }}</div>
+    <div v-if="store.error" class="river-error" role="alert">{{ store.error }} <button @click="store.loadRecent(true)">Retry</button></div>
+    <div v-if="store.canLoadMore" class="load-more">
+      <SButton variant="ghost" :disabled="store.loadingMore || store.loading" @click="store.loadMore()">{{ store.loadingMore ? "Loading…" : "Load more" }}</SButton>
+      <span>{{ store.loadedCount }} of {{ store.total }} loaded</span>
+    </div>
   </div>
 </template>
 
 <style scoped>
+.collection-controls { display: flex; flex-wrap: wrap; justify-content: space-between; gap: var(--space-3); margin-bottom: var(--space-3); }
+.collection-scope { color: var(--color-text-secondary); font-size: 12px; margin-bottom: var(--space-3); }
+.collection-notice { color: var(--color-text-secondary); font-size: 12px; margin-bottom: var(--space-3); }
+.collection-notice button, .river-error button { text-decoration: underline; cursor: pointer; }
+.load-more { display: flex; flex-direction: column; align-items: center; gap: var(--space-2); margin-top: var(--space-5); color: var(--color-text-secondary); font-size: 12px; }
+
 .home-view {
   display: flex;
   flex-direction: column;
