@@ -148,6 +148,14 @@ async function submit() {
         importance: importance.value,
       });
     }
+    // Clear the recovery copy explicitly: a copy that survives would replay this confirmed save on restart.
+    restoringDraft = true;
+    try { removeDraft(storageKey); }
+    catch {
+      recoveryBlocked.value = true;
+      recoveryError.value = "Saved, but the recovery copy of this draft could not be cleared. Discard it before closing so it is not created again.";
+      return;
+    } finally { restoringDraft = false; }
     reset();
     store.composeOpen = false;
   } catch {

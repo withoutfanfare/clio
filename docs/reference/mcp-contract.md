@@ -1058,7 +1058,7 @@ One merged tool with an `action` discriminator, mirroring `memory_inbox`:
 - `attach_external` records a verified external reference and keeps the item open; it does not mark anything delivered.
 - `history` returns the append-only event trail for the item's memory.
 
-The `overview` response includes `memory_titles`, keyed by full memory ID, for evidence that is neither archived nor expired. When `namespace` is supplied, projected evidence must also belong to that namespace. Missing or differently scoped evidence has no entry. Titles fall back to the first non-empty content line, then “Untitled memory”. This projection does not update access tracking. `review_pending` counts both pending and edited captures across all workspaces.
+The `overview` response includes `memory_titles`, keyed by full memory ID, for evidence that is neither archived nor expired. When `namespace` is supplied, projected evidence must also belong to that namespace. Without `namespace`, the overview and its titles deliberately span all workspaces, the same as unscoped recall. Missing or differently scoped evidence has no entry. Titles fall back to the first non-empty content line, then “Untitled memory”. This projection does not update access tracking. `review_pending` counts both pending and edited captures across all workspaces.
 
 ### Failure cases
 
