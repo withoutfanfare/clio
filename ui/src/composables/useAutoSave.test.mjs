@@ -109,6 +109,7 @@ test('an unresolved recovered draft cannot be overwritten by a different memory'
 for (const [reason, raw] of [
   ['corrupt', '{broken'], ['empty', ''], ['unsupported', JSON.stringify({ version: 2, draft: {} })],
   ['invalid fields', JSON.stringify({ version: 1, draft: { memoryId: 42, updates: {} } })],
+  ['empty memory ID', JSON.stringify({ version: 1, draft: { memoryId: '', expectedUpdatedAt: 'old', updates: { content: 'Original draft' } } })],
   ['oversized', 'x'.repeat(1_000_001)],
 ]) {
   test(`${reason} editor recovery is reserved until explicit discard`, async t => {

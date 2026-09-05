@@ -134,3 +134,30 @@ test('attention evidence is rechecked for archive and expiry before the drawer o
     assert.equal(store.drawerOpen,false);
   }
 });
+
+test('corrupt editor recovery blocks opening another memory until explicit discard', async t => {
+  localStorage.setItem('clio-editor-draft', '{broken');
+  const { store, editor } = setup(t, () => memory());
+  assert.equal(editor.recoveryBlocked.value, true);
+  assert.equal(await store.openDrawer('another'), false);
+  assert.equal(localStorage.getItem('clio-editor-draft'), '{broken');
+  assert.equal(editor.discard(), true);
+  assert.equal(await store.openDrawer('another'), true);
+});
+
+test('retrying unreadable editor recovery opens its original memory and restores its edits', async t => {
+  localStorage.setItem('clio-editor-draft', JSON.stringify({ version: 1, draft: { memoryId: 'recover-me', expectedUpdatedAt: 'original-version', updates: { content: 'Protected draft' } } }));
+  const getItem = localStorage.getItem;
+  let denied = true;
+  localStorage.getItem = key => { if (key === 'clio-editor-draft' && denied) throw Error('denied'); return getItem(key); };
+  t.after(() => { localStorage.getItem = getItem; });
+  const { store, editor } = setup(t, () => memory());
+  assert.equal(await store.openDrawer('another'), false);
+  denied = false;
+  await editor.retryRecovery();
+  await nextTick();
+  assert.equal(store.drawerMemory.id, 'recover-me');
+  assert.equal(editor.editContent.value, 'Protected draft');
+  assert.equal(editor.dirty.value, true);
+  assert.equal(editor.recoveryBlocked.value, false);
+});

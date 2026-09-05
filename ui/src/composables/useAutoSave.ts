@@ -8,7 +8,7 @@ type StoredDraft = { memoryId: string; expectedUpdatedAt: string; updates: Memor
 function isStoredDraft(value: unknown): value is StoredDraft {
   if (!value || typeof value !== "object") return false;
   const draft = value as StoredDraft;
-  if (typeof draft.memoryId !== "string" || typeof draft.expectedUpdatedAt !== "string" || !draft.updates || typeof draft.updates !== "object") return false;
+  if (typeof draft.memoryId !== "string" || !draft.memoryId || typeof draft.expectedUpdatedAt !== "string" || !draft.expectedUpdatedAt || !draft.updates || typeof draft.updates !== "object" || Array.isArray(draft.updates)) return false;
   return Object.entries(draft.updates).every(([key, field]) => {
     if (["content", "kind", "namespace"].includes(key)) return typeof field === "string";
     if (key === "title") return field === null || typeof field === "string";

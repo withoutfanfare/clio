@@ -63,7 +63,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `include_status_scope` is true. Existing callers retain array responses; the
   desktop requires this confirmation before accepting a remote inbox.
 - [Implementation evidence and remaining release checks](docs/reviews/2026-09-04-app-improvements.md)
-  record passing core/UI/adapter checks, native workflows with synthetic data and remaining restart/fault acceptance limits.
+  record core/UI/adapter checks, native restart/export/remote workflows and the disposition of three follow-up reviews.
 
 **Per-checkpoint token accounting and `clio usage` (2026-08-07)**
 - Migration `014_checkpoint_usage` adds model and token columns to
@@ -102,6 +102,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rejection. Stale requests cannot replace newer workspace results or reopen old evidence.
 - Modal keyboard handling, palette result scrolling, labels, text contrast and
   reduced-motion support improve desktop accessibility.
+- Unreadable recovery records and failed discards block replacement; same-memory
+  fetch races preserve confirmed edits. Palette navigation respects IME composition.
+- Attention titles respect namespace scope. Workspace purge rejects `global`
+  before backup, stored briefs validate rendering fields, and future spool timestamps
+  no longer hide bucket counts. The disposable fixture disables CORS explicitly.
 
 **Dead-letter recovery and SSH session isolation (2026-08-07)**
 - Long-lived `clio remote-mcp` bridges now use dedicated SSH connections instead
