@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, watch, onMounted, nextTick } from "vue";
+import { ref, computed, watch, onUnmounted, nextTick } from "vue";
 import { useMemoryStore } from "@/stores/memories";
 import * as api from "@/api/memory";
 import type { RecallItem } from "@/api/types";
@@ -25,6 +25,8 @@ interface BriefBlock {
 
 const store = useMemoryStore();
 
+const MAX_BLOCKS = 50;
+const saveMessage = ref("No saved draft");
 const blocks = ref<BriefBlock[]>(loadState());
 const searchQuery = ref("");
 const searchResults = ref<RecallItem[]>([]);
@@ -33,33 +35,57 @@ const showSearch = ref(false);
 const exportMessage = ref<string | null>(null);
 const searchInputRef = ref<HTMLInputElement | null>(null);
 
-const MAX_BLOCKS = 50;
-
 const memoryCount = computed(
   () => blocks.value.filter((b) => b.type === "memory").length,
 );
 
 const isEmpty = computed(() => blocks.value.length === 0);
 
-// ── Persistence (session-scoped via sessionStorage) ──
+// ── One durable local draft, preserving source IDs ──
 
 function loadState(): BriefBlock[] {
   try {
-    const raw = sessionStorage.getItem("clio-context-builder");
-    return raw ? JSON.parse(raw) : [];
+    const raw = localStorage.getItem("clio-context-builder");
+    const legacy = !raw ? sessionStorage.getItem("clio-context-builder") : null;
+    if (!raw && !legacy) return [];
+    const saved = JSON.parse(raw || legacy!);
+    const restored = legacy ? saved : saved.version === 1 ? saved.blocks : null;
+    if (!Array.isArray(restored) || restored.length > MAX_BLOCKS || restored.some((block) =>
+      !block || typeof block.id !== "string" || !["memory", "heading", "narrative"].includes(block.type) ||
+      Object.entries(block).some(([key, value]) => {
+        if (key === "memoryTags") return !Array.isArray(value) || value.some(tag => typeof tag !== "string");
+        if (key === "memoryTitle") return value !== null && typeof value !== "string";
+        return ["text", "memoryId", "memoryContent", "memoryNamespace", "memoryKind"].includes(key) && typeof value !== "string";
+      })
+    )) throw new Error("Invalid saved draft");
+    if (legacy) {
+      try {
+        localStorage.setItem("clio-context-builder", JSON.stringify({ version: 1, blocks: restored }));
+        sessionStorage.removeItem("clio-context-builder");
+      } catch {
+        saveMessage.value = "Restored this session's brief, but couldn't save it durably. Keep this window open and export a copy.";
+        return restored;
+      }
+    }
+    saveMessage.value = "Draft restored from this Mac";
+    return restored;
   } catch {
+    saveMessage.value = "Couldn't restore the saved brief. The stored draft has been left untouched.";
     return [];
   }
 }
 
 function saveState() {
-  sessionStorage.setItem(
-    "clio-context-builder",
-    JSON.stringify(blocks.value),
-  );
+  try {
+    localStorage.setItem("clio-context-builder", JSON.stringify({ version: 1, blocks: blocks.value }));
+    sessionStorage.removeItem("clio-context-builder");
+    saveMessage.value = "Draft saved on this Mac";
+  } catch {
+    saveMessage.value = "Couldn't save this draft. Keep this window open and export a copy.";
+  }
 }
 
-watch(blocks, saveState, { deep: true });
+watch(blocks, saveState, { deep: true, flush: "sync" });
 
 // ── Block manipulation ──
 
@@ -122,18 +148,21 @@ function moveBlockDown(index: number) {
 
 function clearAll() {
   blocks.value = [];
-  sessionStorage.removeItem("clio-context-builder");
 }
 
 // ── Search ──
 
+let searchRequest = 0;
 let searchTimer: ReturnType<typeof setTimeout> | null = null;
 
 function onSearchInput(query: string) {
   searchQuery.value = query;
+  const request = ++searchRequest;
+  const namespace = store.selectedNamespace;
   if (searchTimer) clearTimeout(searchTimer);
   if (!query.trim()) {
     searchResults.value = [];
+    searchLoading.value = false;
     return;
   }
   searchTimer = setTimeout(async () => {
@@ -141,14 +170,14 @@ function onSearchInput(query: string) {
     try {
       const result = await api.recall({
         query,
-        namespace: store.selectedNamespace ?? undefined,
+        namespace: namespace ?? undefined,
         limit: 15,
       });
-      searchResults.value = result.items;
+      if (request === searchRequest) searchResults.value = result.items;
     } catch {
-      searchResults.value = [];
+      if (request === searchRequest) searchResults.value = [];
     } finally {
-      searchLoading.value = false;
+      if (request === searchRequest) searchLoading.value = false;
     }
   }, 200);
 }
@@ -159,6 +188,9 @@ function openSearch() {
 }
 
 function closeSearch() {
+  ++searchRequest;
+  if (searchTimer) clearTimeout(searchTimer);
+  searchLoading.value = false;
   showSearch.value = false;
   searchQuery.value = "";
   searchResults.value = [];
@@ -198,6 +230,7 @@ function buildMarkdown(): string {
       }
       lines.push("");
       const meta: string[] = [];
+      if (block.memoryId) meta.push(`**Memory ID:** ${block.memoryId}`);
       if (block.memoryNamespace) meta.push(`**Namespace:** ${block.memoryNamespace}`);
       if (block.memoryKind) meta.push(`**Kind:** ${block.memoryKind}`);
       if (block.memoryTags?.length) meta.push(`**Tags:** ${block.memoryTags.join(", ")}`);
@@ -290,9 +323,8 @@ function onDragEnd() {
 
 // ── Add memories from current list via drag from memory list ──
 
-onMounted(() => {
-  // Load any previously saved state
-});
+watch(() => store.selectedNamespace, closeSearch);
+onUnmounted(closeSearch);
 </script>
 
 <template>
@@ -303,6 +335,8 @@ onMounted(() => {
         Assemble memories into a curated knowledge brief. Add section headings and narrative text between memories, then export as Markdown.
       </p>
     </div>
+
+    <p class="draft-status" role="status">{{ saveMessage }}</p>
 
     <!-- Toolbar -->
     <div class="builder-toolbar">
@@ -370,12 +404,14 @@ onMounted(() => {
     <!-- Search panel -->
     <Transition name="expand">
       <div v-if="showSearch" class="search-panel">
+        <p class="search-status">Search in {{ store.selectedNamespace || "All memories" }}</p>
         <div class="search-header">
           <input
             ref="searchInputRef"
             type="text"
             class="search-input"
             placeholder="Search memories to add…"
+            aria-label="Search memories to add"
             :value="searchQuery"
             @input="onSearchInput(($event.target as HTMLInputElement).value)"
             @keydown.escape="closeSearch"
@@ -532,6 +568,7 @@ onMounted(() => {
 </template>
 
 <style scoped>
+.draft-status { color: var(--color-text-secondary); font-size: 13px; margin-bottom: 16px; }
 .builder-view {
   padding-bottom: var(--space-12);
 }

@@ -55,6 +55,50 @@ fn has_issue(report: &clio_core::integrity::IntegrityReport, kind: &str, id: &st
         .any(|issue| issue.kind == kind && issue.affected_ids.iter().any(|affected| affected == id))
 }
 
+#[test]
+fn archived_only_recall_pages_exclude_active_and_preserve_total_past_last_page() {
+    let conn = test_db();
+    remember_in(&conn, "project:a", "active evidence");
+    let mut archived = Vec::new();
+    for _ in 0..3 {
+        let memory = remember_in(&conn, "project:a", "archived evidence");
+        repository::archive(&conn, &memory.id).unwrap();
+        archived.push(memory.id);
+    }
+    archived.sort();
+    let elsewhere = remember_in(&conn, "project:b", "archived elsewhere");
+    repository::archive(&conn, &elsewhere.id).unwrap();
+    conn.execute(
+        "UPDATE memories SET updated_at = '2026-01-01T00:00:00Z'",
+        [],
+    )
+    .unwrap();
+    for query in [None, Some("evidence")] {
+        let mut seen = Vec::new();
+        for offset in 0..=3 {
+            let q: RecallQuery = serde_json::from_value(serde_json::json!({
+                "namespace": "project:a", "query": query, "archived_only": true,
+                "limit": 1, "offset": offset, "sort_by": "updated_desc"
+            }))
+            .unwrap();
+            let result = repository::recall(&conn, &q).unwrap();
+            assert_eq!(result.total, 3);
+            assert_eq!(
+                serde_json::to_value(&result).unwrap()["archived_only"],
+                true
+            );
+            assert!(
+                result
+                    .items
+                    .iter()
+                    .all(|item| item.memory.archived_at.is_some())
+            );
+            seen.extend(result.items.into_iter().map(|item| item.memory.id));
+        }
+        assert_eq!(seen, archived);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Migration bootstrap
 // ---------------------------------------------------------------------------
@@ -716,6 +760,59 @@ fn archive_is_idempotent() {
     let a2 = repository::archive(&conn, &mem.id).unwrap();
     // archived_at should be the same (COALESCE preserves original).
     assert_eq!(a1.archived_at, a2.archived_at);
+}
+
+#[test]
+fn archive_by_source_reference_is_exact_and_missing_is_a_noop() {
+    let conn = test_db();
+    let projected = repository::remember(
+        &conn,
+        &RememberInput {
+            source: Some("waypoint-worktree".into()),
+            source_ref: Some("worktree:wt_demo:current".into()),
+            upsert: true,
+            ..base_input("Current worktree projection")
+        },
+        &Settings::default(),
+    )
+    .unwrap();
+    let other = repository::remember(
+        &conn,
+        &RememberInput {
+            source: Some("waypoint-worktree".into()),
+            source_ref: Some("worktree:wt_other:current".into()),
+            upsert: true,
+            ..base_input("Other worktree projection")
+        },
+        &Settings::default(),
+    )
+    .unwrap();
+
+    let archived =
+        repository::archive_by_source_ref(&conn, "waypoint-worktree", "worktree:wt_demo:current")
+            .unwrap()
+            .unwrap();
+    assert_eq!(archived.id, projected.id);
+    assert!(archived.archived_at.is_some());
+    let replayed =
+        repository::archive_by_source_ref(&conn, "waypoint-worktree", "worktree:wt_demo:current")
+            .unwrap()
+            .unwrap();
+    assert_eq!(
+        replayed.updated_at, archived.updated_at,
+        "retirement replay must not create fresh semantic activity"
+    );
+    assert!(
+        repository::get(&conn, &other.id)
+            .unwrap()
+            .archived_at
+            .is_none()
+    );
+    assert!(
+        repository::archive_by_source_ref(&conn, "waypoint-worktree", "worktree:missing:current")
+            .unwrap()
+            .is_none()
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1623,6 +1720,7 @@ fn bulk_link_expansion_returns_linked_memories() {
             tags: vec![],
             match_all_tags: true,
             include_archived: false,
+            archived_only: false,
             include_links: true,
             exclude_expired: false,
             importance_min: None,
@@ -1728,6 +1826,16 @@ fn backup_produces_standalone_snapshot_without_wal() {
         !backup_path.with_extension("db-wal").exists(),
         "VACUUM INTO snapshot must not carry a -wal sidecar"
     );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        assert_eq!(
+            std::fs::metadata(backup_path).unwrap().permissions().mode() & 0o777,
+            0o600,
+            "database backups contain private memory and must not be group/world-readable"
+        );
+    }
     let bconn = rusqlite::Connection::open(backup_path).unwrap();
     let n: i64 = bconn
         .query_row("SELECT COUNT(*) FROM memories", [], |r| r.get(0))
@@ -3401,4 +3509,23 @@ fn effectiveness_report_is_untracked_and_dedupes_surfaced_events() {
         .unwrap();
     assert_eq!(after_access, before_access);
     assert_eq!(after_events, before_events);
+}
+
+#[test]
+fn edited_inbox_items_remain_visible_until_reviewed() {
+    use clio_core::review;
+    let conn = test_db();
+    let input = serde_json::from_value(serde_json::json!({"content": "Review evidence"})).unwrap();
+    let item = review::queue_for_review(&conn, &input).unwrap();
+    let edits = serde_json::from_value(serde_json::json!({"title": "Revised title"})).unwrap();
+    review::edit_review(&conn, &item.id, &edits).unwrap();
+    assert_eq!(review::list_pending(&conn, 10).unwrap().len(), 1);
+    assert_eq!(
+        clio_core::attention::overview(&conn, None, None, 14)
+            .unwrap()
+            .review_pending,
+        1
+    );
+    review::approve_review(&conn, &item.id, &Settings::default()).unwrap();
+    assert!(review::list_pending(&conn, 10).unwrap().is_empty());
 }

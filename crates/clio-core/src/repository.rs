@@ -742,7 +742,12 @@ fn append_linked_memories(
 
     // Batch-fetch all linked memories in one query, reapplying the parent
     // query's archive/expiry eligibility.
-    let fetched = get_many_eligible(conn, &order, q.include_archived, q.exclude_expired)?;
+    let fetched = get_many_eligible(
+        conn,
+        &order,
+        q.include_archived || q.archived_only,
+        q.exclude_expired,
+    )?;
     let mut fetched_map: HashMap<String, Memory> =
         fetched.into_iter().map(|m| (m.id.clone(), m)).collect();
 
@@ -751,6 +756,9 @@ fn append_linked_memories(
         let Some(memory) = fetched_map.remove(id) else {
             continue; // hidden by eligibility
         };
+        if q.archived_only && memory.archived_at.is_none() {
+            continue;
+        }
         let (linked_from, link_context) = contexts.remove(id).expect("context recorded");
         linked_items.push(RecallItem {
             memory,
@@ -864,6 +872,7 @@ fn recall_fts(conn: &Connection, fts_query: &str, q: &RecallQuery) -> Result<Rec
         sql.push_str(" ORDER BY rank ASC, m.updated_at DESC");
     }
 
+    sql.push_str(", m.id ASC");
     let next_idx = param_values.len() + 1;
     sql.push_str(&format!(" LIMIT ?{next_idx}"));
     param_values.push(Box::new(q.limit));
@@ -908,6 +917,7 @@ fn recall_fts(conn: &Connection, fts_query: &str, q: &RecallQuery) -> Result<Rec
 
     let count = items.len() as u32;
     Ok(RecallResult {
+        archived_only: q.archived_only,
         total,
         count,
         offset: q.offset,
@@ -949,6 +959,7 @@ fn recall_recent(conn: &Connection, q: &RecallQuery) -> Result<RecallResult> {
         sql.push_str(" ORDER BY m.updated_at DESC");
     }
 
+    sql.push_str(", m.id ASC");
     let next_idx = param_values.len() + 1;
     sql.push_str(&format!(" LIMIT ?{next_idx}"));
     param_values.push(Box::new(q.limit));
@@ -983,8 +994,19 @@ fn recall_recent(conn: &Connection, q: &RecallQuery) -> Result<RecallResult> {
         });
     }
 
+    // An empty page still reports the filtered collection total.
+    if items.is_empty() {
+        let mut count_sql = String::from("SELECT COUNT(*) FROM memories m WHERE 1=1");
+        let mut count_params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+        append_filters(&mut count_sql, &mut count_params, q);
+        let refs: Vec<&dyn rusqlite::types::ToSql> =
+            count_params.iter().map(|p| p.as_ref()).collect();
+        total = conn.query_row(&count_sql, refs.as_slice(), |row| row.get(0))?;
+    }
+
     let count = items.len() as u32;
     Ok(RecallResult {
+        archived_only: q.archived_only,
         total,
         count,
         offset: q.offset,
@@ -998,7 +1020,9 @@ fn append_filters(
     params: &mut Vec<Box<dyn rusqlite::types::ToSql>>,
     q: &RecallQuery,
 ) {
-    if !q.include_archived {
+    if q.archived_only {
+        sql.push_str(" AND m.archived_at IS NOT NULL");
+    } else if !q.include_archived {
         sql.push_str(" AND m.archived_at IS NULL");
     }
 
@@ -1137,6 +1161,7 @@ pub fn recall_scoped(
         .collect();
 
     Ok(RecallResult {
+        archived_only: query.archived_only,
         total,
         count: paged.len() as u32,
         offset: query.offset,
@@ -1176,6 +1201,39 @@ pub fn archive(conn: &Connection, id: &str) -> Result<Memory> {
     )?;
 
     get_raw(conn, id)
+}
+
+/// Soft-archive the exact memory identified by its stable provenance.
+///
+/// A missing identity is a successful no-op so derived projections can retire
+/// idempotently even when their optional Clio write never succeeded.
+pub fn archive_by_source_ref(
+    conn: &Connection,
+    source: &str,
+    source_ref: &str,
+) -> Result<Option<Memory>> {
+    if source.trim().is_empty() || source_ref.trim().is_empty() {
+        return Err(ClioError::Validation(
+            "source and source_ref are required to archive by provenance".into(),
+        ));
+    }
+
+    crate::db::with_savepoint(conn, "archive_by_source_ref", || {
+        let Some(id) = find_by_source_ref(conn, source, source_ref)? else {
+            return Ok(None);
+        };
+        let current = get_raw(conn, &id)?;
+        if current.archived_at.is_some() {
+            return Ok(Some(current));
+        }
+        let now = now_utc();
+        conn.execute(
+            "UPDATE memories SET archived_at = ?1, updated_at = ?1
+             WHERE id = ?2 AND archived_at IS NULL",
+            params![now, id],
+        )?;
+        Ok(Some(get_raw(conn, &id)?))
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -1598,7 +1656,7 @@ fn get_many(conn: &Connection, ids: &[String]) -> Result<Vec<Memory>> {
 
 /// Fetch multiple memories by ID, applying archive/expiry eligibility in SQL.
 /// The eligibility clauses mirror `append_filters` exactly.
-fn get_many_eligible(
+pub(crate) fn get_many_eligible(
     conn: &Connection,
     ids: &[String],
     include_archived: bool,

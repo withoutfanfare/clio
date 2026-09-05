@@ -7,11 +7,11 @@
 //! suite rather than silently in Waypoint's.
 //!
 //! The full contract is documented in Waypoint at
-//! `docs/contracts/clio-worktree-projection-v1.md`.
+//! `docs/contracts/clio-worktree-projection-v2.md`.
 //!
-//! No production Clio code is required for any of this — it is coverage of the
-//! existing generic upsert, not a worktree-specific feature. Clio must never
-//! grow a worktrees table: the ledger's Markdown events are canonical.
+//! Projection writes use the generic upsert and retirement uses the generic
+//! source + source-ref archive seam. Clio must never grow a worktrees table:
+//! the ledger's Markdown events are canonical.
 //!
 //! These use an in-memory database, like the rest of the suite. Do not rewrite
 //! them to shell out to the `clio` binary: a shared Atlas route can be
@@ -26,7 +26,7 @@ use clio_core::settings::Settings;
 
 const SOURCE: &str = "waypoint-worktree";
 const SOURCE_REF: &str = "worktree:wt_019887c4:current";
-const NAMESPACE: &str = "project:bemanza-scooda";
+const NAMESPACE: &str = "project:scooda";
 
 fn test_db() -> rusqlite::Connection {
     db::open_in_memory().expect("failed to open in-memory DB")
@@ -218,7 +218,10 @@ fn archiving_a_projection_hides_it_from_default_recall_without_deleting_it() {
 
     // How an archived worktree leaves the active set (specification: archived
     // worktrees are archived in Clio, never deleted).
-    repository::archive(&conn, &memory.id).unwrap();
+    let archived = repository::archive_by_source_ref(&conn, SOURCE, SOURCE_REF)
+        .unwrap()
+        .expect("the stable projection identity should match");
+    assert_eq!(archived.id, memory.id);
 
     assert_eq!(recall_projections(&conn).total, 0);
 

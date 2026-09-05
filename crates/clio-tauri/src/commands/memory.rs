@@ -143,6 +143,7 @@ pub async fn cmd_recall(
     importance_max: Option<i32>,
     sort_by: Option<String>,
     include_archived: Option<bool>,
+    archived_only: Option<bool>,
     limit: Option<u32>,
     offset: Option<u32>,
 ) -> Result<RecallResult, CommandError> {
@@ -162,6 +163,7 @@ pub async fn cmd_recall(
                     "importance_max": importance_max,
                     "sort_by": sort_by,
                     "include_archived": include_archived.unwrap_or(false),
+                    "archived_only": archived_only.unwrap_or(false),
                     "limit": limit.unwrap_or(10),
                     "offset": offset.unwrap_or(0),
                     "response_format": "json",
@@ -179,6 +181,7 @@ pub async fn cmd_recall(
         tags: tags.unwrap_or_default(),
         match_all_tags: match_all_tags.unwrap_or(true),
         include_archived: include_archived.unwrap_or(false),
+        archived_only: archived_only.unwrap_or(false),
         importance_min,
         importance_max,
         sort_by: sort_by.as_deref().and_then(SortOrder::from_str_opt),
@@ -225,7 +228,9 @@ pub async fn cmd_recent(
     importance_max: Option<i32>,
     sort_by: Option<String>,
     include_archived: Option<bool>,
+    archived_only: Option<bool>,
     limit: Option<u32>,
+    offset: Option<u32>,
 ) -> Result<RecallResult, CommandError> {
     if let Some(remote) = state.remote() {
         let global = namespace.is_none();
@@ -242,7 +247,9 @@ pub async fn cmd_recent(
                     "importance_max": importance_max,
                     "sort_by": sort_by,
                     "include_archived": include_archived.unwrap_or(false),
+                    "archived_only": archived_only.unwrap_or(false),
                     "limit": limit.unwrap_or(10),
+                    "offset": offset.unwrap_or(0),
                     "response_format": "json",
                 }),
             )
@@ -258,11 +265,12 @@ pub async fn cmd_recent(
         tags: tags.unwrap_or_default(),
         match_all_tags: match_all_tags.unwrap_or(true),
         include_archived: include_archived.unwrap_or(false),
+        archived_only: archived_only.unwrap_or(false),
         importance_min,
         importance_max,
         sort_by: sort_by.as_deref().and_then(SortOrder::from_str_opt),
         limit: limit.unwrap_or(10),
-        offset: 0,
+        offset: offset.unwrap_or(0),
         include_links: false,
         exclude_expired: false,
         scoring: Some(app.settings.scoring.clone()),

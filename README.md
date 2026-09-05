@@ -51,7 +51,7 @@ AI coding assistants forget everything between sessions. You re-explain your pro
 - **Handoff briefs** — `clio brief --preset handoff --query <ticket-id>` assembles everything needed to pick up a ticket: relevant memories (including any tagged `ticket:<id>`), active constraints, and recent session receipts
 - **Always-on daemon** — inbox watcher, background linking, health checks
 - **10+ agent integrations** — Claude Code, Codex, Cursor, Windsurf, Gemini, Copilot, OpenCode, Kilo, Kimi, and any MCP-compatible client
-- **Desktop UI** — Tauri-based browse/edit/archive interface with backup-first workspace deletion
+- **Desktop UI** — Tauri-based paginated browsing, recoverable editing, Archive/Restore, attention and capture review, workspace shortcuts and durable context briefs; workspace deletion retains backup safeguards
 
 ## Quick Start
 

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted } from "vue";
+import { onMounted, watch } from "vue";
 import { SCard, SBadge, STag, SSectionHeader, SHeading } from "@stuntrocket/ui";
 import { useMemoryStore } from "@/stores/memories";
 
@@ -9,11 +9,17 @@ onMounted(() => {
   store.loadStats();
   store.loadActivity();
 });
+watch(() => store.selectedNamespace, () => { store.loadStats(); store.loadActivity(); });
 </script>
 
 <template>
   <div class="stats-view">
     <SHeading :level="1">Statistics</SHeading>
+    <p class="scope-note">{{ store.selectedNamespace || "All workspaces" }} · Includes active and archived memories</p>
+    <p class="scope-note">Links count outgoing connections from this collection, including links to other workspaces. Density is outgoing links per memory.</p>
+
+    <p v-if="store.statsError" class="scope-note" role="alert">{{ store.statsError }}</p>
+    <button v-if="store.statsError" class="stats-retry" @click="store.loadStats(); store.loadActivity()">Retry</button>
 
     <div class="stats-grid" v-if="store.currentStats">
       <SCard variant="glass" class="stat-card">
@@ -38,12 +44,12 @@ onMounted(() => {
       </SCard>
       <SCard variant="glass" class="stat-card">
         <span class="stat-value">{{ store.currentStats.link_density.toFixed(2) }}</span>
-        <span class="stat-label">Link Density</span>
+        <span class="stat-label">Links per memory</span>
       </SCard>
     </div>
 
     <div class="section" v-if="store.currentStats">
-      <SSectionHeader title="By Namespace" />
+      <SSectionHeader title="By workspace" />
       <div class="breakdown-list">
         <div
           v-for="[ns, count] in store.currentStats.by_namespace"
@@ -108,6 +114,7 @@ onMounted(() => {
 </template>
 
 <style scoped>
+.scope-note { color: var(--color-text-secondary); font-size: 13px; line-height: 1.6; margin-top: 8px; }
 .stats-view {
   padding-bottom: 48px;
 }
@@ -138,7 +145,7 @@ onMounted(() => {
 }
 
 .stat-label {
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.06em;
@@ -188,7 +195,7 @@ onMounted(() => {
 }
 
 .tag-count {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--color-text-tertiary);
   font-variant-numeric: tabular-nums;
   margin-left: 2px;
@@ -228,12 +235,12 @@ onMounted(() => {
 }
 
 .activity-ns {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--color-text-tertiary);
 }
 
 .activity-time {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--color-text-tertiary);
   font-variant-numeric: tabular-nums;
 }

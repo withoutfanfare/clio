@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted } from "vue";
+import { isTauri } from "@tauri-apps/api/core";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { SAmbientBlobs } from "@stuntrocket/ui";
 import AppBar from "./components/AppBar.vue";
 import SidePanel from "./components/SidePanel.vue";
@@ -13,6 +15,8 @@ import { useMemoryStore } from "@/stores/memories";
 import { useKeyboard } from "@/composables/useKeyboard";
 
 const store = useMemoryStore();
+let unlistenClose: (() => void) | undefined;
+let disposed = false;
 let statusInterval: ReturnType<typeof setInterval> | null = null;
 
 function refreshConnectionStatus() {
@@ -38,18 +42,6 @@ function openFocused() {
 }
 
 async function archiveFocused() {
-  if (store.drawerOpen) {
-    // Archive the drawer memory
-    if (!store.drawerMemory) return;
-    const { id, archived_at } = store.drawerMemory;
-    store.closeDrawer();
-    if (archived_at) {
-      await store.unarchiveMemory(id);
-    } else {
-      await store.archiveMemory(id);
-    }
-    return;
-  }
   // Archive the focused list item
   const item = store.navigableItems[store.focusedIndex];
   if (!item) return;
@@ -61,6 +53,7 @@ async function archiveFocused() {
 }
 
 useKeyboard({
+  isModalOpen: () => store.composeOpen || store.drawerOpen || store.paletteOpen || store.shortcutHelpOpen,
   onCompose: () => store.toggleCompose(),
   onSearch: () => (store.paletteOpen = !store.paletteOpen),
   onEscape: () => {
@@ -68,8 +61,10 @@ useKeyboard({
       store.shortcutHelpOpen = false;
     } else if (store.paletteOpen) {
       store.closePalette();
+    } else if (store.composeOpen) {
+      void store.closeCompose();
     } else if (store.drawerOpen) {
-      store.closeDrawer();
+      void store.closeDrawer();
     } else if (store.selectionMode) {
       store.clearSelection();
     } else {
@@ -86,6 +81,17 @@ useKeyboard({
 });
 
 onMounted(() => {
+  if (isTauri()) {
+    void getCurrentWindow().onCloseRequested(async (event) => {
+      // Clio stays resident when the window closes. Retain any unsaved draft.
+      event.preventDefault();
+      if (!(await store.closeCompose()) || !(await store.closeDrawer())) return;
+      await getCurrentWindow().hide();
+    }).then((unlisten) => {
+      if (disposed) unlisten();
+      else unlistenClose = unlisten;
+    }).catch(() => store.pushToast("Window close protection could not start. Close any drafts before hiding the window.", "error"));
+  }
   refreshConnectionStatus();
   store.fetchNamespaces();
   statusInterval = setInterval(refreshConnectionStatus, 15_000);
@@ -93,6 +99,8 @@ onMounted(() => {
 });
 
 onUnmounted(() => {
+  disposed = true;
+  unlistenClose?.();
   if (statusInterval) clearInterval(statusInterval);
   window.removeEventListener("focus", refreshConnectionStatus);
 });

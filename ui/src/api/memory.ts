@@ -25,6 +25,8 @@ import type {
   RecallResult,
   RecentEntry,
   RememberInput,
+  ReviewItem,
+  ReviewEditsInput,
   RestoreResult,
   SuggestionResult,
   UpdateInput,
@@ -81,6 +83,7 @@ export async function recall(params: {
   importance_max?: number;
   sort_by?: string;
   include_archived?: boolean;
+  archived_only?: boolean;
   limit?: number;
   offset?: number;
 }): Promise<RecallResult> {
@@ -94,6 +97,7 @@ export async function recall(params: {
     importanceMax: params.importance_max,
     sortBy: params.sort_by,
     includeArchived: params.include_archived,
+    archivedOnly: params.archived_only,
     limit: params.limit,
     offset: params.offset,
   });
@@ -112,7 +116,9 @@ export async function recent(params?: {
   importance_max?: number;
   sort_by?: string;
   include_archived?: boolean;
+  archived_only?: boolean;
   limit?: number;
+  offset?: number;
 }): Promise<RecallResult> {
   // Tauri converts Rust snake_case params to camelCase on the JS side.
   const p = params ?? {};
@@ -125,7 +131,9 @@ export async function recent(params?: {
     importanceMax: p.importance_max,
     sortBy: p.sort_by,
     includeArchived: p.include_archived,
+    archivedOnly: p.archived_only,
     limit: p.limit,
+    offset: p.offset,
   });
 }
 
@@ -405,4 +413,20 @@ export async function linkContexts(memoryId: string): Promise<LinkContext[]> {
 
 export async function captureQueueHealth(): Promise<CaptureQueueHealth | null> {
   return invoke<CaptureQueueHealth | null>("cmd_capture_queue_health");
+}
+
+export async function inboxList(): Promise<ReviewItem[]> {
+  return invoke<ReviewItem[]>("cmd_inbox_list");
+}
+
+export async function inboxApprove(reviewId: string): Promise<Memory> {
+  return invoke<Memory>("cmd_inbox_approve", { reviewId });
+}
+
+export async function inboxReject(reviewId: string): Promise<ReviewItem> {
+  return invoke<ReviewItem>("cmd_inbox_reject", { reviewId });
+}
+
+export async function inboxEdit(reviewId: string, edits: ReviewEditsInput): Promise<ReviewItem> {
+  return invoke<ReviewItem>("cmd_inbox_edit", { reviewId, ...edits });
 }

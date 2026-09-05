@@ -41,6 +41,7 @@ export interface RecallItem {
 }
 
 export interface RecallResult {
+  archived_only?: boolean;
   total: number;
   count: number;
   offset: number;
@@ -57,6 +58,7 @@ export interface MemoryLink {
 }
 
 export interface MemoryStats {
+  namespace?: string | null;
   total_memories: number;
   active_memories: number;
   archived_memories: number;
@@ -294,6 +296,7 @@ export interface EligibleAttention extends AttentionItem {
 }
 
 export interface AttentionOverview {
+  memory_titles?: Record<string, string>;
   eligible: EligibleAttention[];
   open: AttentionItem[];
   review_pending: number;
@@ -311,8 +314,20 @@ export interface LinkContext {
 }
 
 export interface CaptureQueueHealth {
-  pending: number;
-  processing: number;
-  dead: number;
+  pending: number | null;
+  processing: number | null;
+  dead: number | null;
   oldest_pending_age_secs: number | null;
+  scope: "local";
+  checked_at: string;
+  unavailable_buckets: string[];
+}
+
+export interface ReviewEditsInput {
+  namespace?: string;
+  kind?: string;
+  title?: string;
+  summary?: string;
+  tags?: string[];
+  importance?: number;
 }

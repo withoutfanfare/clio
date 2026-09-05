@@ -1,6 +1,7 @@
 import { onMounted, onUnmounted } from "vue";
 
 export interface KeyboardShortcuts {
+  isModalOpen?: () => boolean;
   onCompose?: () => void;
   onSearch?: () => void;
   onEscape?: () => void;
@@ -13,12 +14,24 @@ export interface KeyboardShortcuts {
 
 export function useKeyboard(shortcuts: KeyboardShortcuts) {
   function handler(e: KeyboardEvent) {
+    if (e.defaultPrevented || e.isComposing) return;
+    const target = e.target as HTMLElement | null;
+    const isInput = !!target && (
+      ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName) ||
+      target.isContentEditable || !!target.closest?.("form, [contenteditable='true']")
+    );
+    const isControl = isInput || !!target && (
+      ["BUTTON", "A", "SUMMARY"].includes(target.tagName) ||
+      !!target.closest?.("button, a, [role='button'], [role='combobox'], [role='menuitem']")
+    );
+    // Dialogues own Escape and form shortcuts, including while focus moves.
+    if (target?.closest?.("dialog[open]")) return;
+    if (shortcuts.isModalOpen?.() || target?.closest?.("[aria-modal='true']")) {
+      if (e.key === "Escape") shortcuts.onEscape?.();
+      return;
+    }
+    if (isInput) return;
     const meta = e.metaKey || e.ctrlKey;
-    const target = e.target as HTMLElement;
-    const isInput =
-      target.tagName === "INPUT" ||
-      target.tagName === "TEXTAREA" ||
-      target.isContentEditable;
 
     if (meta && e.key === "n") {
       e.preventDefault();
@@ -50,7 +63,7 @@ export function useKeyboard(shortcuts: KeyboardShortcuts) {
     }
 
     // j/k navigation — only when not in an input
-    if (!isInput) {
+    if (!isControl && !meta && !e.altKey) {
       if (e.key === "j") {
         e.preventDefault();
         shortcuts.onNavigateDown?.();

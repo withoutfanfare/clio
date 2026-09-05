@@ -128,12 +128,12 @@ pub fn run() {
                 })
                 .build(),
         )
-        .on_window_event(|window, event| {
+        .on_window_event(|_window, event| {
             // Keep Clio running in the background when the window is closed:
             // hide it instead of quitting. Reopen via the dock icon or the
             // Cmd+Shift+M global shortcut. Cmd+Q still quits.
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                let _ = window.hide();
+                // The frontend hides the resident window after its save guard succeeds.
                 api.prevent_close();
             }
         })
@@ -258,6 +258,10 @@ pub fn run() {
             commands::attention::cmd_action_cancel,
             commands::attention::cmd_link_contexts,
             commands::attention::cmd_capture_queue_health,
+            commands::inbox::cmd_inbox_list,
+            commands::inbox::cmd_inbox_approve,
+            commands::inbox::cmd_inbox_reject,
+            commands::inbox::cmd_inbox_edit,
             commands::namespaces::cmd_namespaces,
             commands::namespaces::cmd_namespace_details,
             commands::namespaces::cmd_rename_namespace,

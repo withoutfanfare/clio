@@ -19,6 +19,11 @@ const router = createRouter({
       component: () => import("@/views/AttentionView.vue"),
     },
     {
+      path: "/inbox",
+      name: "inbox",
+      component: () => import("@/views/InboxView.vue"),
+    },
+    {
       path: "/stats",
       name: "stats",
       component: () => import("@/views/StatsView.vue"),

@@ -29,6 +29,22 @@
   --color-accent: #8B5CF6;
   --color-accent-hover: #7C3AED;
   --color-accent-subtle: rgba(139, 92, 246, 0.10);
+  --color-text-secondary: #C2BDCB;
+  --color-text-tertiary: #A3A0B0;
+}
+
+:is(button, input, textarea, select, a):focus-visible {
+  outline: 2px solid #BCA4FF;
+  outline-offset: 3px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }
 
 /* ── SSelect width fix (migration guide Issue 3) ── */

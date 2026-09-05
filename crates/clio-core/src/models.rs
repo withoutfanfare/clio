@@ -199,6 +199,9 @@ pub struct RecallQuery {
     pub match_all_tags: bool,
     #[serde(default)]
     pub include_archived: bool,
+    /// Return only archived records; takes precedence over include_archived.
+    #[serde(default)]
+    pub archived_only: bool,
     /// When true, append linked memories to results.
     #[serde(default)]
     pub include_links: bool,
@@ -247,6 +250,7 @@ impl Default for RecallQuery {
             tags: Vec::new(),
             match_all_tags: true,
             include_archived: false,
+            archived_only: false,
             include_links: false,
             exclude_expired: false,
             importance_min: None,
@@ -293,6 +297,9 @@ pub struct LinkContext {
 /// Paginated recall result envelope.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RecallResult {
+    /// Confirms that the backend applied an archived-only query.
+    #[serde(default)]
+    pub archived_only: bool,
     pub total: u32,
     pub count: u32,
     pub offset: u32,
@@ -328,6 +335,9 @@ pub struct MemoryLink {
 /// Aggregated statistics about stored memories.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MemoryStats {
+    /// Applied collection scope; absent on older backends.
+    #[serde(default)]
+    pub namespace: Option<String>,
     pub total_memories: u32,
     pub active_memories: u32,
     pub archived_memories: u32,

@@ -482,6 +482,9 @@ pub fn attach_external(
 pub struct AttentionOverview {
     pub eligible: Vec<EligibleAttention>,
     pub open: Vec<AttentionItem>,
+    /// Titles of accessible evidence, keyed by full memory ID. Absent IDs have
+    /// archived, expired or missing evidence and must not expose old titles.
+    pub memory_titles: std::collections::BTreeMap<String, String>,
     pub review_pending: u32,
     /// `None` when the namespace has no consolidated singleton.
     pub consolidation_stale: Option<bool>,
@@ -508,7 +511,40 @@ pub fn overview(
     )?;
     let mut open = list_attention(conn, namespace, Some(STATUS_OPEN), 100)?;
     open.extend(list_attention(conn, namespace, Some(STATUS_SNOOZED), 100)?);
-    let review_pending = crate::review::review_stats(conn)?.pending;
+    let ids: Vec<String> = open
+        .iter()
+        .map(|item| item.memory_id.clone())
+        .chain(
+            eligible_items
+                .iter()
+                .map(|item| item.item.memory_id.clone()),
+        )
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    let memory_titles = crate::repository::get_many_eligible(conn, &ids, false, true)?
+        .into_iter()
+        .filter(|memory| namespace.is_none_or(|ns| memory.namespace == ns))
+        .map(|memory| {
+            let title = memory
+                .title
+                .filter(|title| !title.trim().is_empty())
+                .unwrap_or_else(|| {
+                    memory
+                        .content
+                        .lines()
+                        .map(str::trim)
+                        .find(|line| !line.is_empty())
+                        .unwrap_or("Untitled memory")
+                        .chars()
+                        .take(120)
+                        .collect()
+                });
+            (memory.id, title)
+        })
+        .collect();
+    let review_stats = crate::review::review_stats(conn)?;
+    let review_pending = review_stats.pending + review_stats.edited;
     let consolidation_stale = match namespace {
         Some(ns) => crate::consolidate::consolidation_is_stale(conn, ns)?,
         None => None,
@@ -516,6 +552,7 @@ pub fn overview(
     Ok(AttentionOverview {
         eligible: eligible_items,
         open,
+        memory_titles,
         review_pending,
         consolidation_stale,
         generated_at: now,
@@ -953,6 +990,65 @@ mod tests {
         assert_eq!(
             overview.consolidation_stale, None,
             "no singleton means no freshness claim"
+        );
+    }
+
+    #[test]
+    fn overview_titles_are_untracked_and_hide_archived_or_expired_evidence() {
+        let conn = test_conn();
+        let visible = remember(&conn, "Visible evidence");
+        let archived = remember(&conn, "Archived evidence");
+        let expired = remember(&conn, "Expired evidence");
+        for memory in [&visible, &archived, &expired] {
+            open_attention(&conn, &memory.id);
+        }
+        crate::repository::archive(&conn, &archived.id).unwrap();
+        conn.execute(
+            "UPDATE memories SET valid_until = '2000-01-01T00:00:00Z' WHERE id = ?1",
+            params![expired.id],
+        )
+        .unwrap();
+        let accesses: i64 = conn
+            .query_row("SELECT SUM(access_count) FROM memories", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        let value =
+            serde_json::to_value(overview(&conn, Some("project:attention-test"), None, 0).unwrap())
+                .unwrap();
+        assert_eq!(value["memory_titles"][&visible.id], "Visible evidence");
+        assert!(value["memory_titles"].get(&archived.id).is_none());
+        assert!(value["memory_titles"].get(&expired.id).is_none());
+        assert_eq!(
+            conn.query_row("SELECT SUM(access_count) FROM memories", [], |row| row
+                .get::<_, i64>(0))
+                .unwrap(),
+            accesses
+        );
+    }
+
+    #[test]
+    fn overview_titles_exclude_memories_moved_out_of_the_requested_namespace() {
+        let conn = test_conn();
+        let visible = remember(&conn, "Visible evidence");
+        let moved = remember(&conn, "Evidence moved to another workspace");
+        open_attention(&conn, &visible.id);
+        open_attention(&conn, &moved.id);
+        crate::repository::move_namespace(&conn, &moved.id, "project:other").unwrap();
+
+        let scoped = overview(&conn, Some("project:attention-test"), None, 0).unwrap();
+        assert!(scoped.open.iter().any(|item| item.memory_id == moved.id));
+        assert_eq!(
+            scoped.memory_titles.get(&visible.id).unwrap(),
+            "Visible evidence"
+        );
+        assert!(!scoped.memory_titles.contains_key(&moved.id));
+
+        let unscoped = overview(&conn, None, None, 0).unwrap();
+        assert_eq!(unscoped.memory_titles.len(), 2);
+        assert_eq!(
+            unscoped.memory_titles.get(&moved.id).unwrap(),
+            "Evidence moved to another workspace"
         );
     }
 

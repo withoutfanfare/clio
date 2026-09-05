@@ -1,33 +1,99 @@
 <script setup lang="ts">
-import { ref, watch, nextTick, computed } from "vue";
+import { ref, watch, nextTick, computed, onUnmounted, onMounted } from "vue";
 import { useMemoryStore } from "@/stores/memories";
+import NativeDialog from "./NativeDialog.vue";
+import { memoryKinds } from "@/utils/memoryKinds";
+import { readDraft, writeDraft, removeDraft } from "@/composables/draftStorage";
+
+const storageKey = "clio-create-draft";
+interface CreateDraft {
+  content: string; title: string; namespace: string; kind: string;
+  tags: string[]; tagInput: string; importance: number; mode: "manual" | "automatic";
+}
+function isCreateDraft(value: unknown): value is CreateDraft {
+  if (!value || typeof value !== "object") return false;
+  const draft = value as CreateDraft;
+  return [draft.content, draft.title, draft.namespace, draft.kind, draft.tagInput].every(field => typeof field === "string")
+    && Array.isArray(draft.tags) && draft.tags.every(tag => typeof tag === "string")
+    && Number.isInteger(draft.importance) && draft.importance >= 1 && draft.importance <= 5
+    && ["manual", "automatic"].includes(draft.mode);
+}
 
 const store = useMemoryStore();
-
 const content = ref("");
 const title = ref("");
-const namespace = ref(store.quickCreateLastNamespace);
-const kind = ref(store.quickCreateLastKind);
+const namespace = ref("global");
+const kind = ref("note");
 const tags = ref<string[]>([]);
 const tagInput = ref("");
 const importance = ref(3);
+const mode = ref<"manual" | "automatic">("manual");
 const submitting = ref(false);
+const recoveryError = ref<string | null>(null);
+const recoveryBlocked = ref(false);
+const recoveredDraft = ref(false);
+let restoringDraft = false;
+const submitError = ref<string | null>(null);
+const confirmingDiscard = ref(false);
 const contentRef = ref<HTMLTextAreaElement | null>(null);
+const open = computed(() => store.composeOpen);
+const hasDraft = computed(() => !!(content.value.trim() || title.value.trim() || tags.value.length || tagInput.value.trim()));
+const namespaces = computed(() => [...new Set(["global", namespace.value, ...store.allNamespaces])]);
+const kinds = computed(() => memoryKinds(store.availableKinds, [kind.value]));
+function retryRecovery(): boolean {
+  if (submitting.value || (!recoveryBlocked.value && hasDraft.value)) return false;
+  const result = readDraft(storageKey, isCreateDraft);
+  if (result.status === "error") {
+    recoveryBlocked.value = true;
+    recoveryError.value = "The saved creation draft could not be recovered. It has been kept. Retry recovery or explicitly discard it before creating another memory.";
+    return false;
+  }
+  restoringDraft = true;
+  if (result.status === "ready") {
+    content.value = result.draft.content;
+    title.value = result.draft.title;
+    namespace.value = result.draft.namespace;
+    kind.value = result.draft.kind;
+    tags.value = result.draft.tags;
+    tagInput.value = result.draft.tagInput;
+    importance.value = result.draft.importance;
+    mode.value = result.draft.mode;
+    recoveredDraft.value = true;
+  }
+  restoringDraft = false;
+  recoveryBlocked.value = false;
+  recoveryError.value = null;
+  return true;
+}
+retryRecovery();
+onMounted(() => {
+  if (recoveredDraft.value || recoveryBlocked.value) store.composeOpen = true;
+});
 
-const kinds = ["note", "observation", "decision", "constraint", "summary", "preference", "snippet"];
-
-const open = ref(false);
+watch(() => ({
+  content: content.value, title: title.value, namespace: namespace.value, kind: kind.value,
+  tags: tags.value, tagInput: tagInput.value, importance: importance.value, mode: mode.value,
+}), (draft) => {
+  if (recoveryBlocked.value || restoringDraft) return;
+  try {
+    if (hasDraft.value) writeDraft(storageKey, draft);
+    else removeDraft(storageKey);
+    recoveryError.value = null;
+  } catch {
+    recoveryError.value = "Draft recovery is unavailable. Keep Clio open until this draft is saved.";
+  }
+}, { flush: "sync" });
 
 watch(
   () => store.composeOpen,
-  (val) => {
-    open.value = val;
-    if (val) {
-      namespace.value = store.quickCreateLastNamespace;
-      kind.value = store.quickCreateLastKind;
+  (value) => {
+    if (value) {
+      if (!hasDraft.value && !recoveryBlocked.value) {
+        namespace.value = store.selectedNamespace || store.quickCreateLastNamespace || "global";
+        kind.value = store.quickCreateLastKind || "note";
+      }
+      confirmingDiscard.value = false;
       nextTick(() => contentRef.value?.focus());
-    } else {
-      reset();
     }
   },
 );
@@ -38,59 +104,88 @@ function reset() {
   tags.value = [];
   tagInput.value = "";
   importance.value = 3;
-  submitting.value = false;
+  submitError.value = null;
+  confirmingDiscard.value = false;
 }
 
-function addTag() {
-  const t = tagInput.value.trim().toLowerCase();
-  if (t && !tags.value.includes(t)) {
-    tags.value = [...tags.value, t];
+function canClose() {
+  if (submitting.value) return false;
+  if (hasDraft.value || recoveryBlocked.value) {
+    confirmingDiscard.value = true;
+    return false;
   }
+  reset();
+  return true;
+}
+store.setComposeCloseGuard(canClose);
+onUnmounted(() => store.setComposeCloseGuard(null));
+
+function addTag() {
+  const tag = tagInput.value.trim().toLowerCase();
+  if (tag && !tags.value.includes(tag)) tags.value = [...tags.value, tag];
   tagInput.value = "";
 }
 
 function removeTag(tag: string) {
-  tags.value = tags.value.filter((t) => t !== tag);
+  tags.value = tags.value.filter((item) => item !== tag);
 }
 
 async function submit() {
-  if (!content.value.trim() || submitting.value) return;
+  if (recoveryBlocked.value || !content.value.trim() || submitting.value) return;
+  addTag();
   submitting.value = true;
+  submitError.value = null;
   try {
-    await store.quickCreate({
-      content: content.value.trim(),
-      namespace: namespace.value || "global",
-      kind: kind.value || "note",
-      tags: tags.value.length ? tags.value : undefined,
-      title: title.value.trim() || undefined,
-      importance: importance.value,
-    });
-    store.composeOpen = false;
+    if (mode.value === "automatic") {
+      await store.captureMemory(content.value.trim(), namespace.value || "global");
+    } else {
+      await store.quickCreate({
+        content: content.value.trim(),
+        namespace: namespace.value || "global",
+        kind: kind.value || "note",
+        tags: tags.value.length ? tags.value : undefined,
+        title: title.value.trim() || undefined,
+        importance: importance.value,
+      });
+    }
     reset();
+    store.composeOpen = false;
+  } catch {
+    submitError.value = "Could not save. Your draft is still here. Check recent memories before retrying.";
   } finally {
     submitting.value = false;
   }
 }
 
-function handleKeydown(e: KeyboardEvent) {
-  if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
-    e.preventDefault();
-    submit();
+function handleKeydown(event: KeyboardEvent) {
+  if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
+    event.preventDefault();
+    void submit();
   }
 }
 
-function close() {
-  store.composeOpen = false;
+async function close() {
+  return store.closeCompose();
+}
+
+async function discardAndClose() {
+  if (submitting.value) return;
+  try { removeDraft(storageKey); }
+  catch {
+    recoveryError.value = "Could not discard the saved creation draft. It remains protected; retry when storage is available.";
+    return;
+  }
+  recoveryBlocked.value = false;
+  recoveryError.value = null;
+  recoveredDraft.value = false;
+  reset();
+  await close();
 }
 </script>
 
 <template>
-  <Teleport to="body">
-    <Transition name="fade">
-      <div v-if="open" class="qc-backdrop" @click="close" />
-    </Transition>
-    <Transition name="scale">
-      <div v-if="open" class="qc-modal">
+  <NativeDialog :open="open" label="New memory" @close="close">
+      <div class="qc-modal" :aria-busy="submitting" @keydown="handleKeydown">
         <div class="qc-header">
           <h2 class="qc-title">New memory</h2>
           <button class="qc-close" @click="close" aria-label="Close">
@@ -100,10 +195,18 @@ function close() {
           </button>
         </div>
 
-        <div class="qc-body">
+        <div class="qc-body" :inert="submitting || recoveryBlocked">
+          <fieldset class="qc-mode">
+            <legend class="qc-label">Entry method</legend>
+            <label><input v-model="mode" type="radio" value="manual" /> Manual entry</label>
+            <label><input v-model="mode" type="radio" value="automatic" /> Automatic capture</label>
+          </fieldset>
+          <p v-if="mode === 'automatic'" class="qc-hint">Automatically choose details from your text. Captures that need checking go to the review inbox.</p>
           <input
+            v-if="mode === 'manual'"
             v-model="title"
             class="qc-input"
+            aria-label="Memory title"
             placeholder="Title (optional)"
           />
 
@@ -111,25 +214,25 @@ function close() {
             ref="contentRef"
             v-model="content"
             class="qc-textarea"
+            aria-label="Memory content"
+            autofocus
             placeholder="What would you like to remember?"
-            @keydown="handleKeydown"
             rows="4"
           />
 
           <div class="qc-fields">
-            <div class="qc-field">
-              <label class="qc-label">Kind</label>
-              <select v-model="kind" class="qc-select">
+            <div v-if="mode === 'manual'" class="qc-field">
+              <label for="qc-kind" class="qc-label">Kind</label>
+              <select id="qc-kind" v-model="kind" class="qc-select">
                 <option v-for="k in kinds" :key="k" :value="k">{{ k }}</option>
               </select>
             </div>
 
             <div class="qc-field">
-              <label class="qc-label">Namespace</label>
-              <select v-model="namespace" class="qc-select">
-                <option value="global">global</option>
+              <label for="qc-namespace" class="qc-label">Namespace</label>
+              <select id="qc-namespace" v-model="namespace" class="qc-select">
                 <option
-                  v-for="ns in store.allNamespaces.filter((n: string) => n !== 'global')"
+                  v-for="ns in namespaces"
                   :key="ns"
                   :value="ns"
                 >
@@ -138,23 +241,26 @@ function close() {
               </select>
             </div>
 
-            <div class="qc-field">
-              <label class="qc-label">Importance</label>
-              <div class="qc-importance">
+            <div v-if="mode === 'manual'" class="qc-field">
+              <span class="qc-label">Importance</span>
+              <div class="qc-importance" role="group" aria-label="Importance">
                 <button
                   v-for="n in 5"
                   :key="n"
                   class="imp-dot"
                   :class="{ active: n <= importance }"
                   @click="importance = n"
+                  :aria-label="`Importance ${n} of 5`"
+                  :aria-pressed="importance === n"
                 />
               </div>
             </div>
 
-            <div class="qc-field">
-              <label class="qc-label">Tags</label>
+            <div v-if="mode === 'manual'" class="qc-field">
+              <label for="qc-tags" class="qc-label">Tags</label>
               <div class="qc-tags-row">
                 <input
+                  id="qc-tags"
                   v-model="tagInput"
                   class="qc-tag-input"
                   placeholder="Add tag..."
@@ -163,7 +269,7 @@ function close() {
                 <div v-if="tags.length" class="qc-tags">
                   <span v-for="tag in tags" :key="tag" class="qc-tag">
                     #{{ tag }}
-                    <button class="qc-tag-remove" @click="removeTag(tag)">&times;</button>
+                    <button class="qc-tag-remove" @click="removeTag(tag)" :aria-label="`Remove tag ${tag}`">&times;</button>
                   </span>
                 </div>
               </div>
@@ -171,30 +277,42 @@ function close() {
           </div>
         </div>
 
+        <div class="qc-feedback">
+          <p v-if="!recoveryBlocked" class="qc-hint" role="status">{{ mode === 'automatic' ? 'Capture destination' : 'Saving to' }}: <strong>{{ namespace || "global" }}</strong></p>
+          <p v-if="recoveredDraft && hasDraft" class="qc-hint">Recovered an unfinished draft. Review it before saving.</p>
+          <p v-if="recoveryError" class="qc-error" role="alert">{{ recoveryError }}</p>
+          <div v-if="recoveryBlocked">
+            <button class="qc-btn-ghost" @click="retryRecovery">Retry recovery</button>
+            <button class="qc-btn-ghost" @click="confirmingDiscard = true">Discard saved draft…</button>
+          </div>
+          <p v-if="submitError" class="qc-error" role="alert">{{ submitError }}</p>
+          <div v-if="confirmingDiscard" role="alert">
+            <p>Discard this unsaved draft?</p>
+            <button class="qc-btn-ghost" @click="confirmingDiscard = false; contentRef?.focus()">Keep editing</button>
+            <button class="qc-btn-ghost" :disabled="submitting" @click="discardAndClose">Discard draft</button>
+          </div>
+        </div>
         <div class="qc-footer">
           <button class="qc-btn-ghost" @click="close">Cancel</button>
           <button
             class="qc-btn-primary"
             @click="submit"
-            :disabled="!content.trim() || submitting"
+            :disabled="recoveryBlocked || !content.trim() || submitting"
           >
-            {{ submitting ? "Saving\u2026" : "Save" }}
+            {{ submitting ? "Saving\u2026" : mode === "automatic" ? "Capture" : "Save" }}
             <kbd class="qc-kbd">&#8984;&#9166;</kbd>
           </button>
         </div>
       </div>
-    </Transition>
-  </Teleport>
+  </NativeDialog>
 </template>
 
 <style scoped>
-.qc-backdrop {
-  position: fixed;
-  inset: 0;
-  background: color-mix(in srgb, var(--grey-950) 60%, transparent);
-  backdrop-filter: blur(2px);
-  z-index: 500;
-}
+.qc-mode { display: flex; flex-wrap: wrap; gap: var(--space-3); border: 0; padding: 0; }
+.qc-mode label { display: flex; gap: var(--space-1); align-items: center; font-size: var(--text-sm); }
+.qc-hint { font-size: var(--text-sm); color: var(--colour-text-muted); }
+.qc-feedback { padding: 0 var(--space-5) var(--space-3); font-size: var(--text-sm); }
+.qc-error { color: var(--color-danger); }
 
 .qc-modal {
   position: fixed;

@@ -22,6 +22,42 @@ const {
   resizeWithKeyboard,
 } = useSidebarResize();
 
+// Workspace shortcuts stay on this Mac and retain exact namespace identities.
+const workspaceQuery = ref("");
+function readWorkspaceList(key: string): string[] {
+  try {
+    const value = JSON.parse(localStorage.getItem(key) || "[]");
+    return Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === "string").slice(0, 8) : [];
+  } catch { return []; }
+}
+const pinnedWorkspaces = ref(readWorkspaceList("clio-workspace-pins"));
+const recentWorkspaces = ref(readWorkspaceList("clio-workspace-recent"));
+const workspaceSections = computed(() => {
+  const all = store.allNamespaces;
+  const query = workspaceQuery.value.trim().toLocaleLowerCase();
+  if (query) return [{ title: "Matching workspaces", names: all.filter(ns => ns.toLocaleLowerCase().includes(query)) }];
+  const pinned = pinnedWorkspaces.value.filter(ns => all.includes(ns));
+  const recent = recentWorkspaces.value.filter(ns => all.includes(ns) && !pinned.includes(ns));
+  return [
+    { title: "Pinned workspaces", names: pinned },
+    { title: "Recent workspaces", names: recent },
+    { title: "All workspaces", names: all.filter(ns => !pinned.includes(ns) && !recent.includes(ns)) },
+  ].filter(section => section.names.length);
+});
+function saveWorkspaceList(key: string, value: string[]) {
+  try { localStorage.setItem(key, JSON.stringify(value)); }
+  catch { store.pushToast("Couldn't save workspace shortcuts on this Mac", "error"); }
+}
+function toggleWorkspacePin(ns: string) {
+  // This action comes from a workspace in the successfully loaded list.
+  pinnedWorkspaces.value = pinnedWorkspaces.value.filter(item => store.allNamespaces.includes(item));
+  if (pinnedWorkspaces.value.includes(ns)) pinnedWorkspaces.value = pinnedWorkspaces.value.filter(item => item !== ns);
+  else if (pinnedWorkspaces.value.length < 8) pinnedWorkspaces.value.push(ns);
+  else { store.pushToast("You can pin up to eight workspaces", "info"); return; }
+  saveWorkspaceList("clio-workspace-pins", pinnedWorkspaces.value);
+  closeCtxMenu();
+}
+
 // Workspace deletion state
 const ctxMenu = ref<{
   x: number;
@@ -34,7 +70,6 @@ const ctxDeleting = ref(false);
 let ctxMenuRequest = 0;
 
 async function openDeleteMenu(e: MouseEvent, ns: string) {
-  if (ns === "global") return;
   e.preventDefault();
   e.stopPropagation();
   ctxConfirming.value = false;
@@ -59,8 +94,7 @@ async function openDeleteMenu(e: MouseEvent, ns: string) {
     }
   } catch {
     if (request === ctxMenuRequest && ctxMenu.value?.ns === ns) {
-      closeCtxMenu();
-      store.pushToast(`Couldn't load workspace details for "${ns}"`, "error");
+      store.pushToast(`Workspace deletion is unavailable: could not check "${ns}"`, "error");
     }
   }
 }
@@ -73,6 +107,7 @@ function closeCtxMenu() {
 
 async function ctxDelete() {
   if (!ctxMenu.value || ctxMenu.value.memoryCount === null || ctxDeleting.value) return;
+  if (ctxMenu.value.ns === "global") return;
   if (!ctxConfirming.value) {
     ctxConfirming.value = true;
     return;
@@ -81,6 +116,10 @@ async function ctxDelete() {
   ctxDeleting.value = true;
   try {
     const count = await api.purgeNamespace(ns);
+    pinnedWorkspaces.value = pinnedWorkspaces.value.filter(item => item !== ns);
+    recentWorkspaces.value = recentWorkspaces.value.filter(item => item !== ns);
+    saveWorkspaceList("clio-workspace-pins", pinnedWorkspaces.value);
+    saveWorkspaceList("clio-workspace-recent", recentWorkspaces.value);
     ctxMenu.value = null;
     ctxConfirming.value = false;
     if (store.selectedNamespace === ns) {
@@ -111,6 +150,10 @@ const projectCreating = ref(false);
 const memoryCount = computed(() => store.total);
 
 function selectNamespace(ns: string | null) {
+  if (ns) {
+    recentWorkspaces.value = [ns, ...recentWorkspaces.value.filter(item => item !== ns)].slice(0, 5);
+    saveWorkspaceList("clio-workspace-recent", recentWorkspaces.value);
+  }
   store.setNamespace(ns);
   store.loadRecent();
   router.push({ name: "home" });
@@ -186,11 +229,14 @@ async function createProject() {
         </svg>
         <span>All memories</span>
       </SSidebarLink>
+      <input v-model="workspaceQuery" class="workspace-search" type="search" aria-label="Find a workspace" placeholder="Find a workspace…" />
+      <p v-if="workspaceQuery && !workspaceSections[0]?.names.length" class="section-label">No matching workspaces</p>
+      <template v-for="section in workspaceSections" :key="section.title">
+        <p class="section-label workspace-section">{{ section.title }}</p>
       <div
-        v-for="ns in store.allNamespaces"
+        v-for="ns in section.names"
         :key="ns"
-        class="workspace-row"
-        :class="{ 'is-deletable': ns !== 'global' }"
+        class="workspace-row is-deletable"
       >
         <SSidebarLink
           class="workspace-link"
@@ -199,21 +245,21 @@ async function createProject() {
           @contextmenu="openDeleteMenu($event, ns)"
         >
           <span class="ns-dot" :style="{ background: getColour(ns) }" />
-          <span class="workspace-name">{{ ns }}</span>
+          <span class="workspace-name" :title="ns">{{ ns }}</span>
         </SSidebarLink>
         <button
-          v-if="ns !== 'global'"
           class="workspace-delete"
           type="button"
-          :aria-label="`Delete workspace ${ns}`"
-          :title="`Delete workspace ${ns}`"
+          :aria-label="`Manage workspace ${ns}`"
+          :title="`Manage workspace ${ns}`"
           @click="openDeleteMenu($event, ns)"
         >
           <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-            <path d="M3.5 4.5h9M6 4.5V3h4v1.5M5 6.5v5M8 6.5v5M11 6.5v5M4.5 4.5l.6 8.5h5.8l.6-8.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+            <circle cx="3" cy="8" r="1" fill="currentColor"/><circle cx="8" cy="8" r="1" fill="currentColor"/><circle cx="13" cy="8" r="1" fill="currentColor"/>
           </svg>
         </button>
       </div>
+      </template>
     </nav>
 
     <!-- Right-click context menu -->
@@ -225,6 +271,11 @@ async function createProject() {
         @click.stop
       >
         <button
+          class="ctx-item"
+          @click="toggleWorkspacePin(ctxMenu.ns)"
+        >{{ pinnedWorkspaces.includes(ctxMenu.ns) ? "Unpin workspace" : "Pin workspace" }}</button>
+        <button
+          v-if="ctxMenu.ns !== 'global'"
           class="ctx-item danger"
           :disabled="ctxMenu.memoryCount === null || ctxDeleting"
           @click="ctxDelete"
@@ -296,6 +347,12 @@ async function createProject() {
         </svg>
         Needs attention
       </SSidebarLink>
+      <SSidebarLink @click="router.push({ name: 'inbox' })">
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+          <path d="M2 3h12v10H2V3zM2 9h3l1 2h4l1-2h3" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/>
+        </svg>
+        Review inbox
+      </SSidebarLink>
       <SSidebarLink @click="goToStats">
         <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
           <rect x="2" y="9" width="3" height="5" rx="0.5" stroke="currentColor" stroke-width="1.2"/>
@@ -360,6 +417,8 @@ async function createProject() {
 </template>
 
 <style scoped>
+.workspace-search { width: 100%; min-height: 36px; margin: 8px 0; padding: 6px 10px; border: 1px solid var(--color-border-default); border-radius: 6px; background: var(--colour-surface-input); color: var(--color-text-primary); font: inherit; font-size: 13px; }
+.workspace-section { margin-top: 14px; }
 .side-panel {
   width: 220px;
   min-width: 220px;
@@ -454,7 +513,7 @@ async function createProject() {
 }
 
 .brand-count {
-  font-size: 10px;
+  font-size: 12px;
   color: var(--color-text-tertiary);
   font-variant-numeric: tabular-nums;
   line-height: 1;

@@ -1,8 +1,8 @@
 # Cadence Tasks
 
 ## TASK-1: Daemon 'stop'/'restart' leaves a stuck live process (run() never subscribes to shutdown broadcast)
-status: open
-labels: agent:needs-human
+status: completed
+labels: agent:triaged
 
 ## Problem
 
@@ -92,6 +92,10 @@ PR: https://github.com/withoutfanfare/clio/pull/1
 PR #1 (branch `task-1`) is **closed, not merged** (`mergedAt: null`). `gh pr diff 1` shows a zero-line diff against `origin/develop` — the fix already landed on `develop` via a separate commit (`d15994d fix(daemon,mcp): control-socket stop hangs, semantic recall global fallback`), confirmed by reading `crates/clio-daemon/src/main.rs` on `origin/develop`: `shutdown_rx` is subscribed before `control::serve` and the shutdown wait uses `tokio::select!` on both the OS signal and the control-socket receiver, matching this task's acceptance criteria.
 
 This does not fit the decision core's model (open PR passing/failing a bar) — the PR was superseded rather than reviewed and merged through the normal gate. Escalating to `agent:needs-human` rather than granting `agent:pr-open` (misleading — no open PR exists) or `agent:revise` (nothing left to revise). Recommend closing this task as `status: completed` once you confirm the develop fix covers it.
+
+## Resolution (2026-08-21)
+
+Closed as `completed` on the strength of commit `d15994d` (`fix(daemon,mcp): control-socket stop hangs, semantic recall global fallback`), which is on `develop`. Verified by reading `crates/clio-daemon/src/main.rs` at `develop`: `shutdown_rx` is subscribed at line 111 (before `control::serve` is spawned) and the shutdown wait at lines 182-187 is a `tokio::select!` on `shutdown_signal()` and `shutdown_rx.recv()`, falling through to the existing cleanup block. PR #1 was superseded by this commit rather than merged. Live daemon stop/restart was not re-exercised for this closure — code-level verification only.
 
 ## TASK-2: Integrity check falsely flags every unsorted-tag memory as corrupt (tags_text not sorted on write)
 status: completed
