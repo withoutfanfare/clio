@@ -38,10 +38,14 @@ those clients from exhausting Atlas's per-connection SSH session limit.
 Remote CLI forwarding also honours an explicit `CLIO_CONTEXT_CWD`, allowing a
 retained capture job to record its original path after that worktree is gone.
 
-Activating a new executable therefore does not interrupt an existing session.
-An existing process keeps using the old executable inode until its AI client is
-restarted. Restart every client after a release when all machines must use the
-same version.
+Changing the executable link alone leaves existing processes using the old
+executable inode. After activation, the release script therefore sends SIGTERM
+to existing `clio-mcp` processes owned by the deploying user. This terminates
+them immediately; an in-flight request may receive a transport error. Clients
+must reconnect to use the new executable, automatically where supported or by
+restarting their MCP integration. Set `CLIO_KEEP_MCP_SESSIONS=1` deliberately to
+skip this termination; those sessions retain the old executable until they
+disconnect.
 
 The optional macOS daemon is separate. It operates on a Mac's local database;
 it does not provide or maintain the Atlas MCP connection.
@@ -273,8 +277,10 @@ to the candidate before admitting new sessions. A different SHA is rejected;
 inspect the live migration state and roll the recorded candidate forward before
 reconnecting clients.
 
-After activation, restart the MCP integration in every AI client. A symlink
-change affects new processes only.
+After activation, confirm each AI client's MCP integration reconnects; restart
+the integration where reconnection is not automatic. If old sessions were
+retained with `CLIO_KEEP_MCP_SESSIONS=1`, reconnect them explicitly because a
+symlink change affects new processes only.
 
 ### Atlas rollback boundary
 

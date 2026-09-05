@@ -1,6 +1,20 @@
 # Clio app improvements — implementation record
 
-Status: all five approved slices of the [app review](2026-09-04-app-review.md) are implemented and independently reviewed. The packaged native app passed the synthetic-data workflows recorded below, including creation-draft and brief recovery after restart. All three subsequent RedPen reports are handled and moved into `implemented`; their dispositions and passing final checks are recorded below. This work has not changed the installed app or Atlas.
+Status: all five approved slices of the [app review](2026-09-04-app-review.md) and the valid follow-up review findings are implemented, reviewed and shipped. Runtime commit `5622456d710032096470ab60d2a3554806f4d7c2` is pushed to `develop`, deployed on Atlas and installed on this Mac. All three RedPen reports are handled and moved into `implemented`; their dispositions and verification are recorded below.
+
+## Release — 5 September 2026
+
+The user subsequently authorised committing, building and shipping the app and services. The release includes the native CLI, MCP executable, existing local daemon and production desktop app. The app was built from an isolated committed snapshot using the existing locked dependencies; only the build-command path was overridden for that snapshot.
+
+- `scripts/atlas-release.sh check` and `deploy` passed for the full runtime SHA. Linux CLI and MCP release builds passed. The verified online backup is `20260905T102519Z-5622456d710032096470ab60d2a3554806f4d7c2-1158736` under the standard Atlas backup directory. Backup and live SQLite `quick_check` both returned `ok`; migration versions match and no migration gate remains.
+- Activation terminated 28 old MCP sessions. A subsequent status check reported **1 running, 0 old/deleted**. Existing AI clients need to reconnect if they do not do so automatically.
+- `scripts/macos-install.sh install <runtime-sha> --with-daemon` passed and reported **Daemon installed and healthy**. The local MCP executable was separately built and atomically installed with a rollback copy. All three installed binaries match their release-build hashes and pass strict signature verification. The daemon's settings and LaunchAgent plist remained byte-identical.
+- `cargo tauri build --ci --bundles app -- --locked` passed. Clio **0.1.0**, native **arm64**, is installed at `/Applications/Clio.app` and has been launched successfully. Its executable SHA-256 matches the build: `bfd88971375be7fbf114ea2788110662dce9a6d5a8d95b89468c2b6c2f2366da`. `codesign --verify --deep --strict` passed. The previous app is retained in Trash; previous command-line binaries and release logs are retained with the standard deployment backups.
+- The installed app displayed **atlas · Connected**. Its Clio workspace loaded **18 archived records**, **2 unresolved inbox captures**, and statistics of **562 total / 544 active / 18 archived**. These are observations at verification time, not fixed dataset expectations.
+- A fresh bridge using the installed CLI passed live, read-only checks for scoped statistics, active/archive recall, pagination, the pending/edited inbox envelope, attention titles and semantic search.
+- Release verification passed **9 disposable CLI/MCP contract checks** and **28 adapter tests**. The earlier **110 UI**, **305 core** and **9 Tauri** checks cover the same application source. Temporary verification processes stopped, and the isolated release build workspace was removed. The production app and existing daemon intentionally remain running.
+
+This completes the authorised release on this Mac and Atlas. Other-machine installation and capture-hook recovery remain separate items in the [operational roadmap](../operations/roadmap.md).
 
 ## Behaviour
 
@@ -154,7 +168,7 @@ The reusable fixture is prepared for `node test/fixture-server.mjs` from `ui/`, 
 
 UI regression tests exercise compiled component setup state with mocked IPC. Native testing adds rendering, SQLite persistence, selected restart recovery, export and remote-connection evidence. Native fault injection, editor/inbox restart recovery, exhaustive accessibility checks and the window's hidden duration were not exercised. These limits do not create additional work within the user's instruction to handle the three reviews and then stop.
 
-The contract-check MCP process stopped and its disposable data was removed. The native app, remote bridge, MCP and verification/control processes also stopped. Synthetic native fixture database/settings/logs and the export remain in temporary storage. Installation, deployment, capture replay/purge, hook changes and live memory mutations were outside this work. Existing capture-recovery work remains in the operational roadmap.
+The review-phase contract-check MCP process stopped and its disposable data was removed. Its native app, remote bridge, MCP and verification/control processes also stopped. Synthetic native fixture database/settings/logs and the export remain in temporary storage. Installation and deployment were outside that earlier review phase and were subsequently completed under the release authorisation above. Capture replay/purge, hook changes and memory repair remain outside this release. Existing capture-recovery work remains in the operational roadmap.
 
 ## New files
 
