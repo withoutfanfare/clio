@@ -231,6 +231,12 @@ pub struct RecallQuery {
     /// own ranking. Deliberate recall stays tracked.
     #[serde(skip)]
     pub skip_access_tracking: bool,
+    /// When true, a multi-word `query` matches memories containing *any* of
+    /// its terms, ranked by BM25, instead of requiring every term. Internal-only:
+    /// resume briefs use it for natural-language prompts, where requiring every
+    /// word matches nothing.
+    #[serde(skip)]
+    pub match_any_term: bool,
 }
 
 fn default_true() -> bool {
@@ -260,6 +266,7 @@ impl Default for RecallQuery {
             offset: 0,
             scoring: None,
             skip_access_tracking: false,
+            match_any_term: false,
         }
     }
 }

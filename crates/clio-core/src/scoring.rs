@@ -80,6 +80,7 @@ mod tests {
         let s = ScoringConfig {
             decay_lambda: 0.0,
             access_boost_weight: 0.1,
+            min_similarity: 0.0,
         };
         let m = mem_at(5, 10, "2020-01-01T00:00:00Z");
         assert_eq!(composite_multiplier(&m, &s, OffsetDateTime::now_utc()), 1.0);
@@ -90,6 +91,7 @@ mod tests {
         let s = ScoringConfig {
             decay_lambda: 0.01,
             access_boost_weight: 0.1,
+            min_similarity: 0.0,
         };
         let now = OffsetDateTime::now_utc();
         let m = mem_at(3, 0, &now_str(now));
@@ -102,6 +104,7 @@ mod tests {
         let s = ScoringConfig {
             decay_lambda: 0.01,
             access_boost_weight: 0.1,
+            min_similarity: 0.0,
         };
         let now = OffsetDateTime::now_utc();
         let hi = composite_multiplier(&mem_at(5, 0, &now_str(now)), &s, now);
@@ -117,6 +120,7 @@ mod tests {
         let s = ScoringConfig {
             decay_lambda: 0.05,
             access_boost_weight: 0.0,
+            min_similarity: 0.0,
         };
         let now = OffsetDateTime::now_utc();
         let fresh = composite_multiplier(&mem_at(3, 0, &now_str(now)), &s, now);

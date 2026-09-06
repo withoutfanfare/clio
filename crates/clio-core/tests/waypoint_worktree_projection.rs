@@ -1,17 +1,15 @@
-//! Contract tests for Waypoint's worktree projection.
+//! Historical integration tests from Waypoint's retired Worktree Ledger
+//! projection.
 //!
-//! Waypoint publishes exactly one memory per git worktree, keyed on
+//! That integration published one memory per git worktree, keyed on
 //! `source = "waypoint-worktree"` plus `source_ref = "worktree:<id>:current"`,
-//! and republishes it after every ledger event. These tests pin the behaviour
-//! Waypoint depends on from Clio's side, so a change here fails in Clio's own
-//! suite rather than silently in Waypoint's.
+//! and republished it after each event. The integration and its external
+//! contract have been retired, but these tests remain useful coverage for
+//! Clio's generic `source + source_ref` upsert, tag, recall, archive, and resume
+//! behaviour.
 //!
-//! The full contract is documented in Waypoint at
-//! `docs/contracts/clio-worktree-projection-v2.md`.
-//!
-//! Projection writes use the generic upsert and retirement uses the generic
-//! source + source-ref archive seam. Clio must never grow a worktrees table:
-//! the ledger's Markdown events are canonical.
+//! The historical projection used the generic upsert and source + source-ref
+//! archive seams; Clio has no worktree-specific storage.
 //!
 //! These use an in-memory database, like the rest of the suite. Do not rewrite
 //! them to shell out to the `clio` binary: a shared Atlas route can be
@@ -32,7 +30,7 @@ fn test_db() -> rusqlite::Connection {
     db::open_in_memory().expect("failed to open in-memory DB")
 }
 
-/// The exact payload Waypoint sends for one worktree's current view.
+/// A representative payload retained from the historical integration.
 fn projection(content: &str, importance: i32) -> RememberInput {
     RememberInput {
         namespace: NAMESPACE.into(),
@@ -193,7 +191,8 @@ fn an_updated_projection_can_change_importance_as_the_risk_changes() {
     )
     .unwrap();
 
-    // The worktree becomes dirty, so Waypoint republishes at importance 4.
+    // The historical projection republished at importance 4 for a dirty
+    // worktree.
     repository::remember(
         &conn,
         &projection("Dirty: 2 modified, 1 untracked.", 4),
@@ -216,8 +215,8 @@ fn archiving_a_projection_hides_it_from_default_recall_without_deleting_it() {
     )
     .unwrap();
 
-    // How an archived worktree leaves the active set (specification: archived
-    // worktrees are archived in Clio, never deleted).
+    // The historical integration archived retired worktrees instead of
+    // deleting them.
     let archived = repository::archive_by_source_ref(&conn, SOURCE, SOURCE_REF)
         .unwrap()
         .expect("the stable projection identity should match");
@@ -253,9 +252,8 @@ fn a_projection_surfaces_through_the_generic_resume_brief() {
     )
     .unwrap();
 
-    // Waypoint deliberately uses Clio's existing generic handoff path rather
-    // than a second, worktree-specific "resume" API. This proves a projection
-    // is reachable through it.
+    // The historical integration used Clio's generic handoff path. This keeps
+    // coverage that a source-tagged summary remains reachable through it.
     let brief = assembly::build_resume_brief(
         &conn,
         &ResumeRequest {

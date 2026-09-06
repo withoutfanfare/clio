@@ -1761,6 +1761,7 @@ impl ClioServer {
                 offset: params.offset,
                 scoring,
                 skip_access_tracking: false,
+                match_any_term: false,
             };
 
             // --global: search all namespaces without scoping.
@@ -2616,6 +2617,7 @@ impl ClioServer {
                 char_budget: params.char_budget,
                 scoring: Some(settings.scoring.clone()),
                 dormant_days: settings.attention.dormant_days,
+                max_age_days: settings.attention.max_age_days,
                 now: None,
             };
 
@@ -2779,6 +2781,7 @@ impl ClioServer {
                         detected_namespace.as_deref(),
                         params.scope.as_deref(),
                         settings.attention.dormant_days,
+                        settings.attention.max_age_days,
                     )
                     .map_err(|e| format_clio_error(&e))?;
                     serde_json::to_string_pretty(&overview)
@@ -2790,6 +2793,7 @@ impl ClioServer {
                         scope: params.scope.clone(),
                         now: clio_core::models::now_utc(),
                         dormant_days: settings.attention.dormant_days,
+                        max_age_days: settings.attention.max_age_days,
                     };
                     let items =
                         attention::eligible(&conn, &context).map_err(|e| format_clio_error(&e))?;

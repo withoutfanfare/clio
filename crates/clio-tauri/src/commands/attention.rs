@@ -28,6 +28,7 @@ pub async fn cmd_attention_overview(
         namespace.as_deref(),
         None,
         app.settings.attention.dormant_days,
+        app.settings.attention.max_age_days,
     )?;
     Ok(serde_json::to_value(overview)?)
 }

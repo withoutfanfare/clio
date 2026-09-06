@@ -19,6 +19,12 @@ pub struct ScoringConfig {
     /// Weight for access frequency boost. 0.0 = disabled.
     #[serde(default = "default_access_boost")]
     pub access_boost_weight: f64,
+
+    /// Cosine similarity floor for semantic search (0.0–1.0). Memories below
+    /// it are dropped before ranking, so an unrelated query returns nothing
+    /// rather than its nearest neighbours. 0.0 = disabled.
+    #[serde(default = "default_min_similarity")]
+    pub min_similarity: f64,
 }
 
 fn default_decay_lambda() -> f64 {
@@ -29,11 +35,16 @@ fn default_access_boost() -> f64 {
     0.1
 }
 
+fn default_min_similarity() -> f64 {
+    0.35
+}
+
 impl Default for ScoringConfig {
     fn default() -> Self {
         Self {
             decay_lambda: default_decay_lambda(),
             access_boost_weight: default_access_boost(),
+            min_similarity: default_min_similarity(),
         }
     }
 }
@@ -198,9 +209,19 @@ pub struct AttentionConfig {
     /// reports it as dormant. `0` disables dormancy surfacing.
     #[serde(default = "default_dormant_days")]
     pub dormant_days: u32,
+
+    /// Days an open item may sit untouched before it stops surfacing
+    /// automatically (project-session, dormant and waiting triggers). Items
+    /// with a due date or reminder are exempt. `0` disables the cap.
+    #[serde(default = "default_max_age_days")]
+    pub max_age_days: u32,
 }
 
 fn default_dormant_days() -> u32 {
+    14
+}
+
+fn default_max_age_days() -> u32 {
     14
 }
 
@@ -208,6 +229,7 @@ impl Default for AttentionConfig {
     fn default() -> Self {
         Self {
             dormant_days: default_dormant_days(),
+            max_age_days: default_max_age_days(),
         }
     }
 }
