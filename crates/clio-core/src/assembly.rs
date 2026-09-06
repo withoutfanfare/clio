@@ -715,8 +715,8 @@ pub fn build_resume_brief(conn: &Connection, request: &ResumeRequest) -> Result<
     }
 
     // 2. Blocked / waiting items (open, waiting_on set, not already included).
-    // The same age cap applies as for eligibility: a wait nobody has touched
-    // in weeks is stale, not blocking.
+    // Undated waits nobody has touched in weeks are stale, not blocking.
+    // Explicit due dates and reminders are exempt from the age cap.
     let stale_before = attention::stale_before(&now, request.max_age_days);
     let mut waiting = Vec::new();
     for item in attention::list_attention(conn, Some(&namespace), Some(attention::STATUS_OPEN), 50)?
@@ -724,9 +724,11 @@ pub fn build_resume_brief(conn: &Connection, request: &ResumeRequest) -> Result<
         let Some(waiting_on) = item.waiting_on.clone() else {
             continue;
         };
-        if stale_before
-            .as_deref()
-            .is_some_and(|cutoff| item.updated_at.as_str() < cutoff)
+        if item.due_at.is_none()
+            && item.remind_at.is_none()
+            && stale_before
+                .as_deref()
+                .is_some_and(|cutoff| item.updated_at.as_str() < cutoff)
         {
             continue;
         }
@@ -1573,6 +1575,59 @@ mod tests {
                 .any(|i| i.reason == "global constraint"),
             "global preferences arrive with a modest prior"
         );
+    }
+
+    #[test]
+    fn resume_waiting_age_cap_exempts_dates() {
+        for (due_at, remind_at, visible_with_cap) in [
+            (None, None, false),
+            (Some("2026-08-01T00:00:00Z"), None, true),
+            (None, Some("2026-08-01T00:00:00Z"), true),
+            (
+                Some("2026-08-01T00:00:00Z"),
+                Some("2026-08-01T00:00:00Z"),
+                true,
+            ),
+        ] {
+            let conn = test_db();
+            let ns = "project:resume";
+            let memory = make_memory(&conn, ns, "task", "Await the release window");
+            let item = crate::attention::create_attention(
+                &conn,
+                &crate::attention::AttentionInput {
+                    memory_id: memory.id.clone(),
+                    due_at: due_at.map(String::from),
+                    remind_at: remind_at.map(String::from),
+                    waiting_on: Some("Release approval".into()),
+                    ..crate::attention::AttentionInput::default()
+                },
+            )
+            .unwrap();
+            conn.execute(
+                "UPDATE attention_items SET updated_at = '2026-06-01T00:00:00Z' WHERE id = ?1",
+                [&item.id],
+            )
+            .unwrap();
+
+            for (max_age_days, visible) in [(14, visible_with_cap), (0, true)] {
+                let request = ResumeRequest {
+                    max_age_days,
+                    ..resume_request(ns)
+                };
+                let brief = build_resume_brief(&conn, &request).unwrap();
+                assert!(section(&brief, "Needs attention").is_none());
+                let waiting = section(&brief, "Waiting on");
+                assert_eq!(
+                    waiting.is_some(),
+                    visible,
+                    "due_at={due_at:?}, remind_at={remind_at:?}, max_age_days={max_age_days}",
+                );
+                if let Some(waiting) = waiting {
+                    assert_eq!(waiting.items.len(), 1);
+                    assert_eq!(waiting.items[0].memory_id, memory.id);
+                }
+            }
+        }
     }
 
     #[test]
