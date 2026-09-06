@@ -38,10 +38,9 @@ Module map: `repository.rs`, `db.rs`, `migrations.rs`/`migrate.rs`, `models.rs`,
 ## Verification
 
 - Tests: `cargo test -p clio-core` (inline tests + `tests/integration.rs`).
-- `tests/waypoint_worktree_projection.rs` pins the generic `source + source_ref`
-  upsert that Waypoint's Worktree Ledger depends on (one memory per worktree,
-  tags round-tripping, archive-not-delete). Keep it passing: breaking it breaks
-  an external consumer. Clio must never grow a worktrees table — the ledger's
-  Markdown events are canonical.
+- `tests/waypoint_worktree_projection.rs` originated as coverage for Waypoint's
+  retired Worktree Ledger projection. It remains valuable generic coverage for
+  `source + source_ref` upserts, tag-based recall, archive-not-delete, and
+  resume briefs. Keep these storage and retrieval behaviours passing.
 - Single test: `cargo test -p clio-core <name>`.
 - Lint/format: `cargo clippy` / `cargo fmt`.
