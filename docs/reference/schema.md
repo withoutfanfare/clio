@@ -611,6 +611,68 @@ that list stale until its time-to-live expires.
 - Rollback proceeds only when every affected entity still matches the committed
   after-state, and its inverse is itself journalled atomically.
 
+## `work_runs` and `work_reports` (isolated proof)
+
+Migration `016_work_reporting_proof` adds direct reporting storage for the
+[disposable core proof](../work-reporting-proof.md). These records are independent
+of memories, recall and acceptance authority. No installed adapter exposes them.
+
+```sql
+CREATE TABLE work_runs (
+    source TEXT NOT NULL,
+    run_id TEXT NOT NULL,
+    project TEXT NOT NULL,
+    task TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    worktree TEXT NOT NULL,
+    previous_source TEXT,
+    previous_run_id TEXT,
+    PRIMARY KEY (source, run_id),
+    UNIQUE (previous_source, previous_run_id),
+    FOREIGN KEY (previous_source, previous_run_id) REFERENCES work_runs(source, run_id),
+    CHECK ((previous_source IS NULL) = (previous_run_id IS NULL))
+);
+
+CREATE TABLE work_reports (
+    id INTEGER PRIMARY KEY,
+    source TEXT NOT NULL,
+    run_id TEXT NOT NULL,
+    sequence INTEGER NOT NULL CHECK (sequence >= 0),
+    observed_at INTEGER NOT NULL CHECK (observed_at >= 0),
+    received_at INTEGER NOT NULL CHECK (received_at >= observed_at),
+    payload TEXT NOT NULL,
+    UNIQUE (source, run_id, sequence),
+    FOREIGN KEY (source, run_id) REFERENCES work_runs(source, run_id)
+);
+```
+
+### Storage and read contract
+
+- `(project, task)` groups task views; `(source, run_id)` identifies a reporting run.
+- Sequence `0` registers a run. Its project, task, session and worktree cannot
+  change. `previous_source` and `previous_run_id` retain its optional predecessor.
+- A predecessor must already exist within the same project and task. The unique
+  predecessor constraint permits one successor; previous reports remain readable.
+- `payload` serialises the complete `WorkReport`, including title, revision,
+  state, summary, next action, evidence references and evidence availability.
+- `report` validates input, owns its write transaction and returns a receipt after
+  commit. Caller-owned transactions are rejected; failed writes return no receipt.
+- `(source, run_id, sequence)` is the report identity. Exact retries return the
+  original receipt; changed duplicates fail. Core writes append reports without updates.
+- History is ordered by sequence. The overview selects the highest sequence per
+  run, including retained predecessors; arrival order cannot replace a newer sequence.
+- These two report timestamps use **Unix seconds**, unlike Clio's text timestamps.
+  Freshness uses `now - observed_at > stale_after_secs`; receipt replay cannot refresh it.
+- Task freshness and evidence availability consider runs without successors.
+  Disagreement in state, next actor or next step yields `conflict`, even when stale.
+- A stale `running` report yields `reporting_missing`; `waiting` with next actor
+  `user` yields `needs_user`. `implemented` is a reported claim, never human acceptance.
+
+Core validation limits identifiers, title and revision to 240 characters, worktree
+and each evidence reference to 2,000, summary and next step to 1,000, and evidence
+to 32 references. Required text cannot be blank; text cannot contain NUL.
+The primary and unique constraints provide the proof's indexes; no extra index is added.
+
 ## Indexes
 
 Required indexes:
@@ -920,6 +982,8 @@ The export format should be easy for:
 | `013_delivery_external_identity` | unique `(destination, external_id)` on delivered outbox rows |
 | `014_checkpoint_usage` | nullable model and token-usage columns on `session_checkpoints` |
 | `015_memory_repair_journal` | immutable repair transaction/journal tables, rollback linkage and database-wide generation triggers |
+| `016_work_reporting_proof` | isolated `work_runs` identities and `work_reports` receipts for direct reporting |
+| `017_work_guidance` | receipt-scoped human acceptance and separately stored next-task recommendations |
 
 ## Invariants For Implementers
 
@@ -973,3 +1037,7 @@ The schema is ready for coding agents when:
 - [Settings Reference](settings.md) — configuration keys and defaults
 - [Architecture](../../context/ARCHITECTURE.md) — system overview and crate boundaries
 - [Documentation Index](../README.md) — all available documentation
+
+### Work guidance (migration 017)
+
+`work_acceptances` stores one immutable JSON decision per implementation `receipt_id` (foreign key to `work_reports.id`). `work_recommendations` stores one JSON recommendation per `(project, parent_task)`, with `checked_at` guarding replacement order. Neither table rewrites agent receipts or registers a run. The local CLI owns these explicit writes; the core overview joins acceptance and filters recommendations whose proposed task already reports. See [work reporting](../work-reporting.md#human-acceptance-and-next-task-guidance-local-pilot).

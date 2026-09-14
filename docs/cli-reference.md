@@ -57,6 +57,38 @@ client configuration.
 
 ---
 
+## Work Reports
+
+Use an explicit local database for an isolated run; all work commands output JSON:
+
+```bash
+clio --local --db-path ./sample-work.sqlite work report - < report.json
+clio --local --db-path ./sample-work.sqlite work report report.json
+clio --local --db-path ./sample-work.sqlite work accept - < acceptance.json
+clio --local --db-path ./sample-work.sqlite work recommend - < recommendation.json
+clio --local --db-path ./sample-work.sqlite work overview
+clio --local --db-path ./sample-work.sqlite work overview \
+  --project sample-project --stale-after-secs 300
+clio --local --db-path ./sample-work.sqlite work history \
+  --source sample-client --run-id sample-run
+```
+
+`report` takes a complete typed report from a file or stdin, up to 128 KiB.
+It returns `{id, received_at, report}` after commit. Exact retries return the
+original receipt; conflicting duplicates fail. `history` returns receipts in sequence order.
+`overview` returns `{tasks: [...]}`; project matching is exact, with no identity inferred from the working directory.
+The freshness threshold defaults to 300 seconds and must be non-negative.
+
+Without `--local` or an explicit `--db-path`, report, overview and history can use the configured
+shared route. Acceptance and recommendation writes require both flags and stay local. Shared routing requires stdin: `clio work report - < local.json`;
+file paths remain supported with `--local` or `--db-path`.
+Direct CLI calls do not queue failures. The optional durable publisher
+supports explicit local destinations only and always forces `--local`.
+See [Direct Work Reporting](work-reporting.md) for a complete sample report and opt-in retries.
+Reports record observations; `implemented` does not grant human acceptance.
+
+---
+
 ## Storing Memories
 
 ```sh

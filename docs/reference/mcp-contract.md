@@ -174,6 +174,79 @@ Semantics:
 
 ## Tool Definitions
 
+## `work_report`
+
+Stores a direct work observation and returns its committed receipt as a JSON text result.
+Input is `{ "report": WorkReport }`. Every field below is required except `supersedes`;
+unknown fields are rejected. Identity is explicit and never inferred from `cwd` or namespace settings.
+
+| Report field | Contract |
+|---|---|
+| `project`, `task` | Exact task identity; required nonblank strings, each at most 240 characters |
+| `task_title` | Display title; required nonblank string, at most 240 characters |
+| `source`, `session_id`, `run_id` | Explicit reporter and session/run identities; required nonblank strings, at most 240 characters each |
+| `worktree` | Originating worktree; required nonblank string, at most 2,000 characters |
+| `revision` | Reported revision; required nonblank string, at most 240 characters |
+| `sequence` | Non-negative integer; register a new run at `0`, increment for new observations |
+| `observed_at` | Non-negative Unix seconds, no later than server receipt time |
+| `state` | `running`, `waiting`, `stopped` or `implemented` |
+| `summary`, `next_step` | Strings, at most 1,000 characters each; may be empty |
+| `next_actor` | `agent`, `user`, `other` or `none` |
+| `evidence` | Array of up to 32 nonblank reference strings, at most 2,000 characters each |
+| `evidence_status` | `current` or `unavailable`; availability is reported, not independently verified |
+| `supersedes` | Optional `null` or `{ "source": "previous-source", "run_id": "previous-run" }`; predecessor identifiers follow the same string limits |
+
+Text cannot contain NUL. `(source, run_id, sequence)` identifies a report.
+Exact retries return the original `{id, received_at, report}` receipt, including its original receipt time.
+Different content under the same identity fails. The server supplies `received_at` as Unix seconds after validating the observation.
+
+Run project, task, session and worktree bindings cannot change. A successor must
+reference an existing run in the same task, and a run can have only one successor.
+Lower sequences remain historical without replacing the highest sequence.
+Validation, identity conflict or storage failure returns an error without a new receipt.
+`implemented` is a reporter's claim, never human acceptance.
+
+For a complete dynamically timestamped report, see [Direct Work Reporting](../work-reporting.md).
+Wrap that report object in the `report` property when calling this tool.
+Raw MCP calls have no durable client queue; the caller must retry the exact payload after uncertain delivery.
+
+## `work_overview`
+
+Reads reports using the server's current time and returns `{ "tasks": [...] }` as JSON text.
+
+```json
+{ "project": "sample-project", "stale_after_secs": 300 }
+```
+
+Both fields are optional. Omit `project` or use `null` to include all projects;
+otherwise matching is exact and the string cannot be blank or contain NUL.
+`stale_after_secs` defaults to `300` and must be non-negative. Unknown fields are rejected.
+
+Each task contains `project`, `task`, `task_title`, `state`, `next_actor`, `stale`,
+`source_unavailable` and `runs`. Each run contains its latest `receipt`, plus
+`superseded` and `stale`; the receipt includes the complete submitted report.
+
+The highest sequence determines each run's latest observation. Freshness uses
+`now - observed_at > stale_after_secs`; arrival or replay does not renew it.
+Task flags consider runs without successors. Different state, next actor or next
+step among those runs produces `conflict`, including stale runs, with next actor `other`.
+Otherwise, stale `running` becomes `reporting_missing`, and `waiting` with next
+actor `user` becomes `needs_user`; other states keep their reported value.
+Unavailable evidence remains visible through `source_unavailable`.
+An empty result does not establish that no work is happening elsewhere.
+
+## `work_history`
+
+Reads immutable receipts for one explicit run as a JSON text array:
+
+```json
+{ "source": "sample-client", "run_id": "sample-run" }
+```
+
+Both strings are required; unknown fields are rejected. Receipts are ordered by
+sequence, including reports from a superseded run. An unknown run returns `[]`.
+This tool does not change freshness, status or acceptance.
+
 ## `memory_remember`
 
 Store or upsert a memory record.

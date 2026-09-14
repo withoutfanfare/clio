@@ -26,10 +26,78 @@ use clio_core::error::ClioError;
 use clio_core::models::{
     LinkInput, Memory, RecallItem, RecallQuery, RecallResult, RememberInput, SortOrder, UpdateInput,
 };
+use clio_core::work_reports;
 
 // ---------------------------------------------------------------------------
 // Parameter types for MCP tools
 // ---------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct WorkReportParams {
+    /// Explicit work observation. It never grants acceptance or completion authority.
+    #[schemars(schema_with = "work_report_schema")]
+    report: work_reports::WorkReport,
+}
+
+fn work_report_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    schemars::json_schema!({
+        "type": "object", "additionalProperties": false,
+        "required": ["project", "task", "task_title", "source", "session_id", "run_id", "sequence",
+            "observed_at", "worktree", "revision", "state", "summary", "next_step", "next_actor", "evidence", "evidence_status"],
+        "properties": {
+            "project": {"type": "string", "minLength": 1, "maxLength": 240, "description": "Exact explicit project identity; never inferred from cwd."},
+            "task": {"type": "string", "minLength": 1, "maxLength": 240},
+            "task_title": {"type": "string", "minLength": 1, "maxLength": 240},
+            "source": {"type": "string", "minLength": 1, "maxLength": 240},
+            "session_id": {"type": "string", "minLength": 1, "maxLength": 240},
+            "run_id": {"type": "string", "minLength": 1, "maxLength": 240},
+            "sequence": {"type": "integer", "minimum": 0, "description": "Register with zero; increment for each update. Replay the identical payload when retrying."},
+            "observed_at": {"type": "integer", "minimum": 0, "description": "Observation time as UTC Unix seconds, no later than server receipt time."},
+            "worktree": {"type": "string", "minLength": 1, "maxLength": 2000},
+            "revision": {"type": "string", "minLength": 1, "maxLength": 240},
+            "state": {"type": "string", "enum": ["running", "waiting", "stopped", "implemented"]},
+            "summary": {"type": "string", "maxLength": 1000},
+            "next_step": {"type": "string", "maxLength": 1000},
+            "next_actor": {"type": "string", "enum": ["agent", "user", "other", "none"]},
+            "evidence": {"type": "array", "maxItems": 32, "items": {"type": "string", "minLength": 1, "maxLength": 2000}},
+            "evidence_status": {"type": "string", "enum": ["current", "unavailable"]},
+            "supersedes": {"anyOf": [{"type": "null"}, {
+                "type": "object", "additionalProperties": false, "required": ["source", "run_id"],
+                "properties": {
+                    "source": {"type": "string", "minLength": 1, "maxLength": 240},
+                    "run_id": {"type": "string", "minLength": 1, "maxLength": 240}
+                }
+            }]}
+        }
+    })
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct WorkOverviewParams {
+    /// Exact explicit project identity. Omit to show all reported projects.
+    project: Option<String>,
+    /// Nonnegative freshness window in seconds; defaults to 300.
+    #[schemars(range(min = 0))]
+    stale_after_secs: Option<i64>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct WorkHistoryParams {
+    source: String,
+    run_id: String,
+}
+
+fn work_now() -> Result<i64, String> {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| format!("Clock error: {e}"))?
+        .as_secs()
+        .try_into()
+        .map_err(|e| format!("Clock error: {e}"))
+}
 
 #[derive(Debug, Deserialize, JsonSchema)]
 struct RememberParams {
@@ -1618,6 +1686,67 @@ impl ClioServer {
         }
     }
 
+    #[tool(
+        description = "Store an explicit work observation and return its durable receipt. Identical retries replay the receipt; conflicting retries fail. Reports are observations, never acceptance authority. No identity is inferred from cwd."
+    )]
+    async fn work_report(
+        &self,
+        Parameters(params): Parameters<WorkReportParams>,
+    ) -> Result<String, String> {
+        let conn = self.conn.clone();
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock().map_err(|e| format!("lock error: {e}"))?;
+            let receipt = work_reports::report(&conn, &params.report, work_now()?)
+                .map_err(|e| format_clio_error(&e))?;
+            serde_json::to_string_pretty(&receipt).map_err(|e| format!("Serialisation error: {e}"))
+        })
+        .await
+        .map_err(|e| format!("Internal error: task failed: {e}"))?
+    }
+
+    #[tool(
+        description = "Read current work observations, optionally filtered by an exact explicit project identity. Freshness defaults to 300 seconds. Reports are observations, never acceptance authority."
+    )]
+    async fn work_overview(
+        &self,
+        Parameters(params): Parameters<WorkOverviewParams>,
+    ) -> Result<String, String> {
+        let conn = self.conn.clone();
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock().map_err(|e| format!("lock error: {e}"))?;
+            let overview = work_reports::overview_for_project(
+                &conn,
+                work_now()?,
+                params
+                    .stale_after_secs
+                    .unwrap_or(work_reports::DEFAULT_STALE_AFTER_SECS),
+                params.project.as_deref(),
+            )
+            .map_err(|e| format_clio_error(&e))?;
+            serde_json::to_string_pretty(&overview).map_err(|e| format!("Serialisation error: {e}"))
+        })
+        .await
+        .map_err(|e| format!("Internal error: task failed: {e}"))?
+    }
+
+    #[tool(
+        description = "Read immutable work receipts for an explicit source and run_id, ordered by sequence, including superseded runs. Reports are observations, never acceptance authority."
+    )]
+    async fn work_history(
+        &self,
+        Parameters(params): Parameters<WorkHistoryParams>,
+    ) -> Result<String, String> {
+        let conn = self.conn.clone();
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock().map_err(|e| format!("lock error: {e}"))?;
+            let history = work_reports::history(&conn, &params.source, &params.run_id)
+                .map_err(|e| format_clio_error(&e))?;
+            serde_json::to_string_pretty(&history).map_err(|e| format!("Serialisation error: {e}"))
+        })
+        .await
+        .map_err(|e| format!("Internal error: task failed: {e}"))?
+    }
+
     /// Store a memory record.
     #[tool(
         description = "Store a memory. Upsert (replace-in-place) requires BOTH `source` and \
@@ -3168,6 +3297,135 @@ mod maintenance_lock_tests {
         );
         drop(maintenance);
         std::fs::remove_file(lock_path).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod work_report_tests {
+    use super::*;
+    use serde_json::{Value, json};
+
+    #[tokio::test]
+    async fn work_handlers_replay_conflict_history_and_exact_filter() {
+        let server = ClioServer::new(
+            PathBuf::from("unused-work-proof.db"),
+            clio_core::db::open_in_memory().unwrap(),
+            clio_core::settings::Settings::default(),
+            None,
+        );
+        for name in ["work_report", "work_overview", "work_history"] {
+            assert!(server.tool_router.has_route(name));
+        }
+        let mut input = json!({"report": {
+            "project":"exact/project", "task":"task-1", "task_title":"Adapter proof",
+            "source":"adapter-test", "session_id":"session-1", "run_id":"run-1",
+            "sequence":0, "observed_at":1, "worktree":"/isolated/tree", "revision":"abc123",
+            "state":"running", "summary":"Test observation", "next_step":"Check receipt",
+            "next_actor":"agent", "evidence":[], "evidence_status":"current", "supersedes":null
+        }});
+        let before = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let first = server
+            .work_report(Parameters(serde_json::from_value(input.clone()).unwrap()))
+            .await
+            .unwrap();
+        let receipt: Value = serde_json::from_str(&first).unwrap();
+        assert!(receipt["received_at"].as_u64().unwrap() >= before);
+        assert_eq!(
+            first,
+            server
+                .work_report(Parameters(serde_json::from_value(input.clone()).unwrap()))
+                .await
+                .unwrap()
+        );
+        input["report"]["summary"] = json!("Changed payload");
+        assert!(
+            server
+                .work_report(Parameters(serde_json::from_value(input.clone()).unwrap()))
+                .await
+                .unwrap_err()
+                .contains("different payload")
+        );
+        input["report"]["authority"] = json!("accepted");
+        assert!(serde_json::from_value::<WorkReportParams>(input).is_err());
+        let overview = server
+            .work_overview(Parameters(WorkOverviewParams {
+                project: Some("exact/project".into()),
+                stale_after_secs: None,
+            }))
+            .await
+            .unwrap();
+        let overview: Value = serde_json::from_str(&overview).unwrap();
+        assert_eq!(overview["tasks"].as_array().unwrap().len(), 1);
+        assert_eq!(overview["tasks"][0]["state"], "reporting_missing");
+        let empty = server
+            .work_overview(Parameters(WorkOverviewParams {
+                project: Some("exact".into()),
+                stale_after_secs: None,
+            }))
+            .await
+            .unwrap();
+        assert_eq!(
+            serde_json::from_str::<Value>(&empty).unwrap()["tasks"],
+            json!([])
+        );
+        assert!(
+            server
+                .work_overview(Parameters(WorkOverviewParams {
+                    project: Some(" ".into()),
+                    stale_after_secs: None
+                }))
+                .await
+                .is_err()
+        );
+        assert!(
+            server
+                .work_overview(Parameters(WorkOverviewParams {
+                    project: None,
+                    stale_after_secs: Some(-1)
+                }))
+                .await
+                .is_err()
+        );
+        let history = server
+            .work_history(Parameters(WorkHistoryParams {
+                source: "adapter-test".into(),
+                run_id: "run-1".into(),
+            }))
+            .await
+            .unwrap();
+        assert_eq!(
+            serde_json::from_str::<Value>(&history).unwrap(),
+            json!([receipt])
+        );
+    }
+
+    #[test]
+    fn work_report_schema_exposes_required_identity_and_closed_vocabulary() {
+        let schema = serde_json::to_value(schemars::schema_for!(WorkReportParams)).unwrap();
+        let report = &schema["properties"]["report"];
+        for field in [
+            "project",
+            "task",
+            "session_id",
+            "run_id",
+            "worktree",
+            "revision",
+        ] {
+            assert!(
+                report["required"]
+                    .as_array()
+                    .unwrap()
+                    .contains(&json!(field))
+            );
+        }
+        assert_eq!(
+            report["properties"]["state"]["enum"],
+            json!(["running", "waiting", "stopped", "implemented"])
+        );
+        assert_eq!(report["additionalProperties"], false);
     }
 }
 
