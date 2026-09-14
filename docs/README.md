@@ -26,6 +26,7 @@ New to Clio? Start here:
 | [MCP Agent Setup](mcp-agent-setup.md) | Connecting AI agents locally or to shared memory over SSH |
 | [Desktop App (Tauri)](tauri-app.md) | Building, using, and extending the desktop app |
 | [Resource Limits](resource-limits.md) | Sizing constraints and thresholds |
+| [Direct Work Reporting](work-reporting.md) | Session reports, local queue and desktop Work page |
 
 ### Reference Documentation
 
@@ -58,6 +59,7 @@ For AI agents using Clio via MCP:
 | [Schema Reference](reference/schema.md) | SQLite tables, indexes, FTS, triggers |
 | [MCP Contract](reference/mcp-contract.md) | MCP tool and resource definitions |
 | [Settings Reference](reference/settings.md) | All configuration keys and defaults |
+| [Direct Work-reporting Proof](work-reporting-proof.md) | Disposable core reporting example, API and proof limits |
 | [Desktop App (Tauri)](tauri-app.md) | Tauri commands, frontend architecture, design system |
 | [Security Review](security-review.md) | Codebase security audit findings |
 | [Deployment Runbook](operations/deployment.md) | Releasing Atlas and installing native Mac components |

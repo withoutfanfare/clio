@@ -27,6 +27,7 @@ use clio_core::repository;
 use clio_core::review;
 use clio_core::settings;
 use clio_core::stats;
+use clio_core::work_reports;
 
 // ---------------------------------------------------------------------------
 // CLI argument definitions
@@ -54,6 +55,11 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Report and inspect work observations (never acceptance authority).
+    Work {
+        #[command(subcommand)]
+        command: WorkCommand,
+    },
     /// Initialise the database (optionally create a .clio-namespace file).
     Init(InitArgs),
 
@@ -195,6 +201,33 @@ enum Command {
     Cache {
         #[command(subcommand)]
         command: CacheCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum WorkCommand {
+    /// Record explicit human acceptance of one implementation receipt (local only).
+    Accept { input: String },
+    /// Store an evidence-backed next-task recommendation without starting it (local only).
+    Recommend { input: String },
+    /// Submit an explicit JSON report and print its durable receipt as JSON.
+    Report {
+        /// JSON file path, or `-` for stdin (maximum 128 KiB).
+        input: String,
+    },
+    /// Show current observations as JSON, optionally scoped to an exact project.
+    Overview {
+        #[arg(long)]
+        project: Option<String>,
+        #[arg(long, default_value_t = work_reports::DEFAULT_STALE_AFTER_SECS)]
+        stale_after_secs: i64,
+    },
+    /// Show immutable receipts for an explicit source and run as JSON.
+    History {
+        #[arg(long)]
+        source: String,
+        #[arg(long)]
+        run_id: String,
     },
 }
 
@@ -1247,10 +1280,28 @@ fn main() {
 }
 
 fn run_with_routing(cli: Cli, raw_args: &[OsString]) -> Result<(), Box<dyn std::error::Error>> {
+    if matches!(
+        &cli.command,
+        Command::Work {
+            command: WorkCommand::Accept { .. } | WorkCommand::Recommend { .. }
+        }
+    ) && (!cli.local || cli.db_path.is_none())
+    {
+        return Err(
+            "work acceptance and recommendations require --local and an explicit --db-path".into(),
+        );
+    }
     if !cli.local && cli.db_path.is_none() && command_uses_shared_storage(&cli.command) {
         let local_db = resolve_db_path(None)?;
         let local_settings = settings::load(&local_db)?;
         if let Some(remote) = local_settings.remote.as_ref() {
+            if matches!(&cli.command, Command::Work { command: WorkCommand::Report { input } } if input != "-")
+            {
+                return Err(
+                    "shared work reporting requires stdin; use `clio work report - < local.json`"
+                        .into(),
+                );
+            }
             remote.validate()?;
             let namespace = current_namespace();
             let cwd = current_context_cwd();
@@ -1279,6 +1330,7 @@ fn command_uses_shared_storage(command: &Command) -> bool {
 
 fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     match cli.command {
+        Command::Work { command } => cmd_work(cli.db_path.as_deref(), command),
         Command::Init(args) => cmd_init(cli.db_path.as_deref(), args),
         Command::Context => cmd_context(cli.json),
         Command::Remember(args) => cmd_remember(cli.db_path.as_deref(), cli.json, args),
@@ -1387,6 +1439,64 @@ fn open_db(explicit: Option<&str>) -> Result<rusqlite::Connection, Box<dyn std::
     let path = resolve_db_path(explicit)?;
     let conn = db::open(&path)?;
     Ok(conn)
+}
+
+fn cmd_work(db_path: Option<&str>, command: WorkCommand) -> Result<(), Box<dyn std::error::Error>> {
+    // Receipt and overview clocks belong to this adapter, never to a submitted report.
+    let now = || -> Result<i64, Box<dyn std::error::Error>> {
+        Ok(std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_secs()
+            .try_into()?)
+    };
+    let output =
+        match command {
+            WorkCommand::Report { ref input }
+            | WorkCommand::Accept { ref input }
+            | WorkCommand::Recommend { ref input } => {
+                const MAX_BYTES: u64 = 128 * 1024;
+                let reader: Box<dyn Read> = if input == "-" {
+                    Box::new(io::stdin())
+                } else {
+                    Box::new(std::fs::File::open(input)?)
+                };
+                let mut bytes = Vec::new();
+                reader.take(MAX_BYTES + 1).read_to_end(&mut bytes)?;
+                if bytes.len() as u64 > MAX_BYTES {
+                    return Err("work report exceeds 128 KiB".into());
+                }
+                let conn = open_db(db_path)?;
+                match command {
+                    WorkCommand::Accept { .. } => serde_json::to_value(work_reports::accept(
+                        &conn,
+                        &serde_json::from_slice(&bytes)?,
+                        now()?,
+                    )?)?,
+                    WorkCommand::Recommend { .. } => serde_json::to_value(
+                        work_reports::recommend(&conn, &serde_json::from_slice(&bytes)?, now()?)?,
+                    )?,
+                    _ => serde_json::to_value(work_reports::report(
+                        &conn,
+                        &serde_json::from_slice(&bytes)?,
+                        now()?,
+                    )?)?,
+                }
+            }
+            WorkCommand::Overview {
+                project,
+                stale_after_secs,
+            } => serde_json::to_value(work_reports::overview_for_project(
+                &open_db(db_path)?,
+                now()?,
+                stale_after_secs,
+                project.as_deref(),
+            )?)?,
+            WorkCommand::History { source, run_id } => {
+                serde_json::to_value(work_reports::history(&open_db(db_path)?, &source, &run_id)?)?
+            }
+        };
+    println!("{}", serde_json::to_string_pretty(&output)?);
+    Ok(())
 }
 
 fn cmd_repair(
@@ -5027,6 +5137,21 @@ fn setup_json_merge(p: &SetupMergeParams<'_>) -> Result<(), Box<dyn std::error::
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn work_commands_route_to_shared_storage() {
+        for args in [
+            vec!["clio", "work", "report", "-"],
+            vec!["clio", "work", "overview"],
+            vec![
+                "clio", "work", "history", "--source", "agent", "--run-id", "run",
+            ],
+        ] {
+            assert!(command_uses_shared_storage(
+                &Cli::try_parse_from(args).unwrap().command
+            ));
+        }
+    }
 
     #[test]
     fn private_output_publish_never_replaces_a_concurrent_destination() {

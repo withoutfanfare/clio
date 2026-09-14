@@ -1,4 +1,5 @@
 pub mod attention;
+pub mod work;
 pub mod clipboard;
 pub mod deduplication;
 pub mod inbox;

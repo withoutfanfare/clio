@@ -222,9 +222,11 @@ pub fn run() {
             }
 
             // Register global hotkey: Cmd+Shift+M to show/hide the window.
-            app.global_shortcut()
-                .register("CmdOrCtrl+Shift+M")
-                .map_err(|e| format!("failed to register global shortcut: {e}"))?;
+            if std::env::var("CLIO_DISABLE_GLOBAL_SHORTCUT").as_deref() != Ok("1") {
+                app.global_shortcut()
+                    .register("CmdOrCtrl+Shift+M")
+                    .map_err(|e| format!("failed to register global shortcut: {e}"))?;
+            }
 
             Ok(())
         })
@@ -253,6 +255,9 @@ pub fn run() {
             commands::stats::cmd_stats,
             commands::stats::cmd_activity,
             commands::attention::cmd_attention_overview,
+            commands::work::cmd_work_overview,
+            commands::work::cmd_accept_work_change,
+            commands::work::cmd_open_work_evidence,
             commands::attention::cmd_action_complete,
             commands::attention::cmd_action_snooze,
             commands::attention::cmd_action_cancel,

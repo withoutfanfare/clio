@@ -33,3 +33,4 @@ pub mod stats;
 pub mod title;
 pub mod usage;
 mod validate;
+pub mod work_reports;
