@@ -17,6 +17,18 @@ pub fn remember(
     input: &RememberInput,
     settings: &crate::settings::Settings,
 ) -> Result<Memory> {
+    // Store bare names under `project:` so one project never splits in two.
+    let canonical;
+    let input = match crate::context::canonical_namespace(&input.namespace) {
+        ns if ns != input.namespace => {
+            canonical = RememberInput {
+                namespace: ns,
+                ..input.clone()
+            };
+            &canonical
+        }
+        _ => input,
+    };
     validate::remember_input(input)?;
 
     let tags = normalise_tags(&input.tags);
@@ -422,6 +434,30 @@ pub fn get(conn: &Connection, id: &str) -> Result<Memory> {
 ///
 /// Use this for internal lookups (existence checks, linked memory resolution)
 /// where we don't want to inflate access_count.
+/// A live memory in `namespace` with the same kind and title (ignoring case
+/// and surrounding spaces), if one exists.
+pub fn find_title_duplicate(
+    conn: &Connection,
+    namespace: &str,
+    kind: &str,
+    title: &str,
+) -> Result<Option<String>> {
+    let title = title.trim();
+    if title.is_empty() {
+        return Ok(None);
+    }
+    Ok(conn
+        .query_row(
+            "SELECT id FROM memories
+             WHERE namespace = ?1 AND kind = ?2 AND archived_at IS NULL
+               AND lower(trim(title)) = lower(?3)
+             ORDER BY updated_at DESC LIMIT 1",
+            params![namespace, kind, title],
+            |row| row.get(0),
+        )
+        .optional()?)
+}
+
 pub(crate) fn get_raw(conn: &Connection, id: &str) -> Result<Memory> {
     let mut stmt = conn.prepare(
         "SELECT id, namespace, kind, title, summary, content, tags_text,
@@ -547,6 +583,18 @@ fn row_to_memory(raw: MemoryRow) -> Result<Memory> {
 /// When `include_links` is true, linked memories are appended to the results
 /// with a `linked_from` indicator showing which result memory they are linked from.
 pub fn recall(conn: &Connection, query: &RecallQuery) -> Result<RecallResult> {
+    // A bare project name finds the same memories as its `project:` form.
+    let canonical;
+    let query = match query.namespace.as_deref().map(crate::context::canonical_namespace) {
+        Some(ns) if Some(ns.as_str()) != query.namespace.as_deref() => {
+            canonical = RecallQuery {
+                namespace: Some(ns),
+                ..query.clone()
+            };
+            &canonical
+        }
+        _ => query,
+    };
     let mut result = if let Some(ref fts_query) = query.query {
         recall_fts(conn, fts_query, query)?
     } else {
@@ -1157,6 +1205,7 @@ pub fn recall_scoped(
     query: &RecallQuery,
     detected_namespace: &str,
 ) -> Result<RecallResult> {
+    let detected_namespace = &crate::context::canonical_namespace(detected_namespace);
     // If detection falls back to "global", keep default recall global-only.
     // Callers use the explicit global flag for an all-namespace search.
     if detected_namespace == "global" {

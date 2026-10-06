@@ -616,6 +616,11 @@ pub struct ResumeBrief {
     pub generated_at: String,
 }
 
+/// An undated task shown in this many sessions without anyone touching it
+/// stops being shown automatically. Acting on it, or giving it a date,
+/// brings it back.
+pub const IGNORED_SESSION_LIMIT: usize = 20;
+
 /// Upper bound on a resume item's excerpt when no summary exists.
 const RESUME_EXCERPT_CHARS: usize = 400;
 
@@ -706,6 +711,9 @@ pub fn build_resume_brief(conn: &Connection, request: &ResumeRequest) -> Result<
     let mut surfaced: Vec<(crate::attention::AttentionItem, String)> = Vec::new();
     let mut needs_attention = Vec::new();
     for entry in eligible {
+        if ignored_too_long(conn, &entry.item)? {
+            continue;
+        }
         let Some(memory) = eligible_memory(conn, &entry.item.memory_id, &now)? else {
             continue;
         };
@@ -737,6 +745,9 @@ pub fn build_resume_brief(conn: &Connection, request: &ResumeRequest) -> Result<
             {
                 continue;
             }
+        }
+        if ignored_too_long(conn, &item)? {
+            continue;
         }
         let Some(memory) = eligible_memory(conn, &item.memory_id, &now)? else {
             continue;
@@ -869,6 +880,17 @@ pub fn build_resume_brief(conn: &Connection, request: &ResumeRequest) -> Result<
                 attention::record_surfaced(conn, item, scope, reason, Some("resume"));
             }
         }
+        // Record the other shown memories too, so usefulness can be measured
+        // against everything an agent was given, not just open work.
+        let attention_ids: std::collections::HashSet<&str> =
+            surfaced.iter().map(|(i, _)| i.memory_id.as_str()).collect();
+        for section in &sections {
+            for item in &section.items {
+                if !attention_ids.contains(item.memory_id.as_str()) {
+                    record_shown(conn, item, &section.heading, scope);
+                }
+            }
+        }
     }
 
     let total_items: u32 = sections.iter().map(|s| s.items.len() as u32).sum();
@@ -878,6 +900,38 @@ pub fn build_resume_brief(conn: &Connection, request: &ResumeRequest) -> Result<
         total_items,
         generated_at: now,
     })
+}
+
+/// True when an undated attention item has been shown in at least
+/// [`IGNORED_SESSION_LIMIT`] sessions since anyone last touched it.
+fn ignored_too_long(conn: &Connection, item: &crate::attention::AttentionItem) -> Result<bool> {
+    if item.due_at.is_some() || item.remind_at.is_some() {
+        return Ok(false);
+    }
+    let sessions: i64 = conn.query_row(
+        "SELECT COUNT(DISTINCT session_id) FROM memory_events
+         WHERE memory_id = ?1 AND event_type = 'surfaced' AND created_at >= ?2",
+        rusqlite::params![item.memory_id, item.updated_at],
+        |row| row.get(0),
+    )?;
+    Ok(sessions >= IGNORED_SESSION_LIMIT as i64)
+}
+
+/// Log that a non-attention memory was shown in a resume brief. Idempotent
+/// per session and section; fire-and-forget.
+fn record_shown(conn: &Connection, item: &ResumeItem, section: &str, scope: &str) {
+    crate::events::log_event(
+        conn,
+        &crate::events::EventInput {
+            idempotency_key: Some(format!("surfaced:{}:{scope}:{section}", item.memory_id)),
+            memory_id: Some(item.memory_id.clone()),
+            actor: Some("resume".into()),
+            session_id: Some(scope.to_string()),
+            event_type: crate::events::EVENT_SURFACED.into(),
+            reason: Some(section.to_string()),
+            ..crate::events::EventInput::default()
+        },
+    );
 }
 
 /// Load a memory for resume inclusion, applying archive/expiry eligibility.
@@ -1498,6 +1552,58 @@ mod tests {
 
     fn section<'b>(brief: &'b ResumeBrief, heading: &str) -> Option<&'b ResumeSection> {
         brief.sections.iter().find(|s| s.heading == heading)
+    }
+
+    fn surfaced_count(conn: &Connection, memory_id: &str) -> i64 {
+        conn.query_row(
+            "SELECT COUNT(*) FROM memory_events WHERE event_type = 'surfaced' AND memory_id = ?1",
+            [memory_id],
+            |r| r.get(0),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn resume_records_every_shown_memory_once_per_session() {
+        let conn = test_db();
+        let ns = "project:resume";
+        let constraint = make_memory(&conn, ns, "constraint", "Never edit applied migrations");
+
+        let mut request = resume_request(ns);
+        request.session_id = Some("session-1".into());
+        build_resume_brief(&conn, &request).unwrap();
+        build_resume_brief(&conn, &request).unwrap();
+
+        assert_eq!(surfaced_count(&conn, &constraint.id), 1);
+    }
+
+    #[test]
+    fn resume_stops_showing_a_task_ignored_in_many_sessions() {
+        let conn = test_db();
+        let ns = "project:resume";
+        let ignored = open_action(&conn, ns, "Reproduce the critical finding", None);
+        conn.execute(
+            "UPDATE attention_items SET trigger_kind = 'project-session' WHERE memory_id = ?1",
+            [&ignored.id],
+        )
+        .unwrap();
+        let overdue = open_action(&conn, ns, "Ship the fix", Some("2026-07-01T00:00:00Z"));
+
+        let shown = |session: &str| {
+            let mut request = resume_request(ns);
+            request.session_id = Some(session.into());
+            let brief = build_resume_brief(&conn, &request).unwrap();
+            section(&brief, "Needs attention")
+                .map(|s| s.items.iter().map(|i| i.memory_id.clone()).collect())
+                .unwrap_or_default()
+        };
+        for n in 0..IGNORED_SESSION_LIMIT {
+            assert!(shown(&format!("session-{n}")).contains(&ignored.id));
+        }
+
+        let after = shown("one-session-too-many");
+        assert!(!after.contains(&ignored.id), "ignored task still shown");
+        assert!(after.contains(&overdue.id), "dated work keeps showing");
     }
 
     #[test]

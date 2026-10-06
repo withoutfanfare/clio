@@ -398,7 +398,7 @@ pub fn embed_checkpoint_memories(
         }
     };
     for id in memory_ids {
-        match crate::repository::get(conn, id) {
+        match crate::repository::get_raw(conn, id) {
             Ok(memory) => {
                 if let Err(e) = crate::embeddings::embed_and_store(conn, backend.as_ref(), &memory)
                 {

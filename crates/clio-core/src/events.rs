@@ -24,6 +24,11 @@ pub const EVENT_RESOLVED: &str = "resolved";
 pub const EVENT_CANCELLED: &str = "cancelled";
 pub const EVENT_EXTERNAL_ATTACHED: &str = "external_attached";
 pub const EVENT_RESOLUTION_CANDIDATE: &str = "resolution_candidate";
+/// An agent's or the user's verdict on a memory: `useful`, `wrong` or `stale`.
+pub const EVENT_FEEDBACK: &str = "feedback";
+
+/// The verdicts [`record_feedback`] accepts.
+pub const FEEDBACK_VERDICTS: &[&str] = &["useful", "wrong", "stale"];
 
 const KNOWN_EVENT_TYPES: &[&str] = &[
     EVENT_ATTENTION_OPENED,
@@ -36,7 +41,40 @@ const KNOWN_EVENT_TYPES: &[&str] = &[
     EVENT_CANCELLED,
     EVENT_EXTERNAL_ATTACHED,
     EVENT_RESOLUTION_CANDIDATE,
+    EVENT_FEEDBACK,
 ];
+
+/// Record a verdict on whether a memory helped. One verdict per memory and
+/// session; a later verdict in the same session is ignored.
+pub fn record_feedback(
+    conn: &Connection,
+    memory_id: &str,
+    verdict: &str,
+    session_id: Option<&str>,
+    actor: Option<&str>,
+) -> Result<()> {
+    if !FEEDBACK_VERDICTS.contains(&verdict) {
+        return Err(ClioError::Validation(format!(
+            "verdict must be one of {}",
+            FEEDBACK_VERDICTS.join(", ")
+        )));
+    }
+    let memory = crate::repository::get_raw(conn, memory_id)?;
+    record_event(
+        conn,
+        &EventInput {
+            idempotency_key: session_id.map(|s| format!("feedback:{memory_id}:{s}")),
+            memory_id: Some(memory.id),
+            namespace: Some(memory.namespace),
+            actor: actor.map(String::from),
+            session_id: session_id.map(String::from),
+            event_type: EVENT_FEEDBACK.into(),
+            reason: Some(verdict.into()),
+            ..EventInput::default()
+        },
+    )?;
+    Ok(())
+}
 
 /// Input for one event record.
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
