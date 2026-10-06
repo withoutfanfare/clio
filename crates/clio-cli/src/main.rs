@@ -84,6 +84,9 @@ enum Command {
     /// Soft-archive a memory.
     Archive(ArchiveArgs),
 
+    /// Mark whether a memory helped: useful, wrong or stale.
+    Feedback(FeedbackArgs),
+
     /// Restore an archived memory.
     Unarchive {
         /// The memory ID to unarchive.
@@ -393,6 +396,19 @@ struct RecentArgs {
     /// Offset for pagination.
     #[arg(long, default_value_t = 0)]
     offset: u32,
+}
+
+#[derive(Parser)]
+struct FeedbackArgs {
+    /// Memory ID.
+    id: String,
+
+    /// useful, wrong or stale.
+    verdict: String,
+
+    /// Session the verdict belongs to; one verdict per memory and session.
+    #[arg(long)]
+    session: Option<String>,
 }
 
 #[derive(Parser)]
@@ -1338,6 +1354,18 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         Command::Show { id } => cmd_show(cli.db_path.as_deref(), cli.json, &id),
         Command::Recent(args) => cmd_recent(cli.db_path.as_deref(), cli.json, args),
         Command::Archive(args) => cmd_archive(cli.db_path.as_deref(), cli.json, args),
+        Command::Feedback(args) => {
+            let conn = open_db(cli.db_path.as_deref())?;
+            clio_core::events::record_feedback(
+                &conn,
+                &args.id,
+                &args.verdict,
+                args.session.as_deref(),
+                Some("cli"),
+            )?;
+            eprintln!("Recorded: {}.", args.verdict);
+            Ok(())
+        }
         Command::Unarchive { id } => cmd_unarchive(cli.db_path.as_deref(), cli.json, &id),
         Command::Move(args) => cmd_move(cli.db_path.as_deref(), cli.json, args),
         Command::Delete { id } => cmd_delete(cli.db_path.as_deref(), cli.json, &id),
@@ -1402,6 +1430,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
 
 const FORWARDED_NAMESPACE_ENV: &str = "CLIO_CONTEXT_NAMESPACE";
 const FORWARDED_CWD_ENV: &str = "CLIO_CONTEXT_CWD";
+const FORWARDED_HOST_ENV: &str = "CLIO_CONTEXT_HOST";
 
 fn current_namespace() -> Option<String> {
     std::env::var(FORWARDED_NAMESPACE_ENV)
@@ -1433,6 +1462,15 @@ fn current_context_cwd() -> Option<String> {
             .ok()
             .map(|path| path.display().to_string())
     })
+}
+
+/// The machine the context working directory belongs to: forwarded by the
+/// Mac when a command runs on the shared server, otherwise this machine.
+fn current_context_host() -> Option<String> {
+    std::env::var(FORWARDED_HOST_ENV)
+        .ok()
+        .filter(|host| !host.is_empty())
+        .or_else(clio_core::context::local_host)
 }
 
 fn open_db(explicit: Option<&str>) -> Result<rusqlite::Connection, Box<dyn std::error::Error>> {
@@ -2781,6 +2819,7 @@ fn cmd_checkpoint(
         recover_stale: args.recover_stale,
         namespace_override: args.namespace,
         default_namespace,
+        host: cwd.as_ref().and_then(|_| current_context_host()),
         cwd,
         branch: args.branch,
         ticket: args.ticket,
@@ -2902,6 +2941,7 @@ fn cmd_distill(
         &args.source,
         args.source_ref.as_deref(),
         cwd.as_deref(),
+        current_context_host().as_deref(),
         &s,
     )?;
 
@@ -3588,6 +3628,13 @@ fn cmd_effectiveness(
             eprintln!("  delivery {status}: {count}");
         }
         eprintln!("  review pending:   {}", report.review_pending);
+        eprintln!("  by kind (live / shown / recalled / useful / wrong / stale):");
+        for (kind, u) in &report.by_kind {
+            eprintln!(
+                "    {kind:<12} {:>6} {:>6} {:>6} {:>4} {:>4} {:>4}",
+                u.live, u.shown, u.recalled, u.useful, u.wrong, u.stale
+            );
+        }
         if report.corrupt_rows > 0 {
             eprintln!("  CORRUPT ROWS:     {}", report.corrupt_rows);
         }

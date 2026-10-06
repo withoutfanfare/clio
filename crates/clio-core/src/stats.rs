@@ -493,7 +493,23 @@ pub struct EffectivenessReport {
     pub review_pending: u32,
     /// Rows whose JSON payloads failed to validate — reported, not hidden.
     pub corrupt_rows: i64,
+    /// Live memories by kind: how many were shown, recalled and judged.
+    pub by_kind: std::collections::BTreeMap<String, KindUsage>,
     pub generated_at: String,
+}
+
+/// Usage of one kind of live memory. A kind that is rarely shown or recalled
+/// is a candidate to stop capturing.
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize)]
+pub struct KindUsage {
+    pub live: i64,
+    /// Shown automatically at least once (a `surfaced` event).
+    pub shown: i64,
+    /// Asked for on purpose at least once (access count above zero).
+    pub recalled: i64,
+    pub useful: i64,
+    pub wrong: i64,
+    pub stale: i64,
 }
 
 /// Build the effectiveness report from untracked reads only.
@@ -656,6 +672,44 @@ pub fn effectiveness(
         |row| row.get(0),
     )?;
 
+    let mut by_kind = std::collections::BTreeMap::new();
+    {
+        let judged = |verdict: &str| {
+            format!(
+                "SUM(EXISTS (SELECT 1 FROM memory_events e WHERE e.memory_id = m.id
+                   AND e.event_type = 'feedback' AND e.reason = '{verdict}'))"
+            )
+        };
+        let mut stmt = conn.prepare(&format!(
+            "SELECT m.kind, COUNT(*),
+                    SUM(EXISTS (SELECT 1 FROM memory_events e
+                                WHERE e.memory_id = m.id AND e.event_type = 'surfaced')),
+                    SUM(m.access_count > 0), {}, {}, {}
+             FROM memories m WHERE m.archived_at IS NULL{} GROUP BY m.kind",
+            judged("useful"),
+            judged("wrong"),
+            judged("stale"),
+            ns_clause("m.namespace")
+        ))?;
+        let rows = stmt.query_map(refs.as_slice(), |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                KindUsage {
+                    live: row.get(1)?,
+                    shown: row.get(2)?,
+                    recalled: row.get(3)?,
+                    useful: row.get(4)?,
+                    wrong: row.get(5)?,
+                    stale: row.get(6)?,
+                },
+            ))
+        })?;
+        for row in rows {
+            let (kind, usage) = row?;
+            by_kind.insert(kind, usage);
+        }
+    }
+
     Ok(EffectivenessReport {
         namespace: namespace.map(String::from),
         checkpoints_total,
@@ -670,6 +724,70 @@ pub fn effectiveness(
         deliveries,
         review_pending,
         corrupt_rows,
+        by_kind,
         generated_at: crate::models::now_utc(),
     })
+}
+
+#[cfg(test)]
+mod usage_by_kind_tests {
+    use super::*;
+    use crate::repository;
+
+    #[test]
+    fn effectiveness_reports_shown_recalled_and_judged_by_kind() {
+        let conn = crate::db::open_in_memory().unwrap();
+        let settings = crate::settings::Settings::default();
+        let remember = |kind: &str, content: &str| {
+            repository::remember(
+                &conn,
+                &crate::models::RememberInput {
+                    namespace: "project:demo".into(),
+                    kind: kind.into(),
+                    title: Some(content.into()),
+                    summary: None,
+                    content: content.into(),
+                    tags: vec![],
+                    source: None,
+                    source_ref: None,
+                    confidence: None,
+                    importance: 3,
+                    metadata: serde_json::json!({}),
+                    valid_from: None,
+                    valid_until: None,
+                    upsert: false,
+                },
+                &settings,
+            )
+            .unwrap()
+        };
+        let shown = remember("fact", "Shown and useful");
+        remember("fact", "Never shown");
+        remember("receipt", "A receipt");
+        crate::events::log_event(
+            &conn,
+            &crate::events::EventInput {
+                memory_id: Some(shown.id.clone()),
+                event_type: crate::events::EVENT_SURFACED.into(),
+                ..Default::default()
+            },
+        );
+        repository::get(&conn, &shown.id).unwrap();
+        crate::events::record_feedback(&conn, &shown.id, "useful", Some("s1"), None).unwrap();
+        assert!(crate::events::record_feedback(&conn, &shown.id, "great", None, None).is_err());
+
+        let report = effectiveness(&conn, None, 0).unwrap();
+        assert_eq!(
+            report.by_kind["fact"],
+            KindUsage {
+                live: 2,
+                shown: 1,
+                recalled: 1,
+                useful: 1,
+                wrong: 0,
+                stale: 0
+            }
+        );
+        assert_eq!(report.by_kind["receipt"].shown, 0);
+    }
 }

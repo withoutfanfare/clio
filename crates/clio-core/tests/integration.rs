@@ -1947,8 +1947,8 @@ fn merge_does_not_inflate_access_count() {
 fn recall_scoped_total_counts_each_namespace_once() {
     let conn = test_db();
     // Two matches in the project namespace, one in global — all disjoint by namespace.
-    remember_in(&conn, "proj", "alpha one note");
-    remember_in(&conn, "proj", "alpha two note");
+    remember_in(&conn, "project:proj", "alpha one note");
+    remember_in(&conn, "project:proj", "alpha two note");
     remember_in(&conn, "global", "alpha three note");
 
     // limit high enough that the scoped pass does not satisfy it alone, exercising the merge.
@@ -1957,7 +1957,7 @@ fn recall_scoped_total_counts_each_namespace_once() {
         limit: 5,
         ..Default::default()
     };
-    let res = repository::recall_scoped(&conn, &q, "proj").unwrap();
+    let res = repository::recall_scoped(&conn, &q, "project:proj").unwrap();
 
     assert_eq!(res.count, 3, "should merge 2 project + 1 global match");
     assert_eq!(
@@ -2626,7 +2626,7 @@ fn recall_scoped_pages_across_namespaces() {
 
     // Three memories in the detected namespace, three in global (disjoint).
     for i in 0..3 {
-        remember_in(&conn, "projectx", &format!("scoped fact {i}"));
+        remember_in(&conn, "project:projectx", &format!("scoped fact {i}"));
     }
     for i in 0..3 {
         remember_in(&conn, "global", &format!("global fact {i}"));
@@ -2640,7 +2640,7 @@ fn recall_scoped_pages_across_namespaces() {
                 offset,
                 ..RecallQuery::default()
             },
-            "projectx",
+            "project:projectx",
         )
         .unwrap()
     };
@@ -2649,13 +2649,13 @@ fn recall_scoped_pages_across_namespaces() {
     let p1 = page(0, 2);
     assert_eq!(p1.total, 6);
     assert_eq!(p1.count, 2);
-    assert!(p1.items.iter().all(|it| it.memory.namespace == "projectx"));
+    assert!(p1.items.iter().all(|it| it.memory.namespace == "project:projectx"));
 
     // Page 2 (offset 2): pages across the boundary — last scoped + first global.
     let p2 = page(2, 2);
     assert_eq!(p2.total, 6);
     assert_eq!(p2.count, 2);
-    assert_eq!(p2.items[0].memory.namespace, "projectx");
+    assert_eq!(p2.items[0].memory.namespace, "project:projectx");
     assert_eq!(p2.items[1].memory.namespace, "global");
 
     // No id appears on both pages.
@@ -2779,6 +2779,7 @@ fn session_attention_cases_route_to_the_annotated_outcome() {
                 namespace_override: None,
                 default_namespace: Some("project:clio".into()),
                 cwd: None,
+                host: None,
                 branch: Some("develop".into()),
                 ticket: Some("CLIO-42".into()),
             },
@@ -3461,6 +3462,7 @@ fn repeated_evidence_across_sessions_keeps_one_memory_with_occurrences() {
         namespace_override: None,
         default_namespace: Some("project:occ".into()),
         cwd: None,
+        host: None,
         branch: None,
         ticket: None,
     };

@@ -377,6 +377,16 @@ struct ArchiveParams {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+struct FeedbackParams {
+    /// Memory ID.
+    memory_id: String,
+    /// useful, wrong or stale.
+    verdict: String,
+    /// Current session ID; one verdict per memory and session.
+    session_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 struct UnarchiveParams {
     /// Memory ID.
     memory_id: String,
@@ -2034,6 +2044,32 @@ impl ClioServer {
         .map_err(|e| format!("Internal error: task failed: {e}"))?
     }
 
+    /// Record whether a memory helped.
+    #[tool(
+        description = "Mark a recalled or injected memory as useful, wrong or stale. Call it when a memory changed what you did (useful) or misled you (wrong/stale)."
+    )]
+    async fn memory_feedback(
+        &self,
+        Parameters(params): Parameters<FeedbackParams>,
+    ) -> Result<String, String> {
+        validate_memory_id(&params.memory_id, "memory_id")?;
+        let conn = self.conn.clone();
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock().map_err(|e| format!("lock error: {e}"))?;
+            clio_core::events::record_feedback(
+                &conn,
+                &params.memory_id,
+                &params.verdict,
+                params.session_id.as_deref(),
+                Some("agent"),
+            )
+            .map_err(|e| format_clio_error(&e))?;
+            Ok(format!("Recorded: {}.", params.verdict))
+        })
+        .await
+        .map_err(|e| format!("Internal error: task failed: {e}"))?
+    }
+
     /// Unarchive a memory.
     #[tool(description = "Unarchive a memory by ID.")]
     async fn memory_unarchive(
@@ -2310,6 +2346,12 @@ impl ClioServer {
                 recover_stale: false,
                 namespace_override: params.namespace,
                 default_namespace,
+                // The bridge strips `cwd`, so a cwd seen here came from a
+                // client on this machine.
+                host: params
+                    .cwd
+                    .as_ref()
+                    .and_then(|_| clio_core::context::local_host()),
                 cwd: params.cwd,
                 branch: params.branch,
                 ticket: params.ticket,

@@ -112,7 +112,8 @@ pub fn find_candidates(
     let rows = load_namespace_rows(conn)?;
 
     // For the folder-gone check, gather every project slug present on disk once.
-    let disk_slugs = if criteria.folder_gone {
+    // A machine with none of the dev roots cannot judge by slug at all.
+    let disk_slugs = if criteria.folder_gone && dev_roots.iter().any(|r| r.is_dir()) {
         Some(collect_disk_slugs(dev_roots))
     } else {
         None
@@ -140,14 +141,17 @@ pub fn find_candidates(
 
         if criteria.folder_gone {
             if let Some(slug) = project_slug(&row.namespace) {
-                let gone = match recorded_cwd(conn, &row.namespace) {
-                    // A recorded working directory gives a reliable answer.
-                    Some(cwd) => !Path::new(&cwd).exists(),
-                    // Otherwise fall back to the slug-on-disk heuristic.
-                    None => disk_slugs
+                let cwds = recorded_cwds(conn, &row.namespace);
+                let gone = if cwds.is_empty() {
+                    // No recorded working directory: fall back to the
+                    // slug-on-disk heuristic.
+                    disk_slugs
                         .as_ref()
                         .map(|slugs| !slugs.contains(&slug))
-                        .unwrap_or(false),
+                        .unwrap_or(false)
+                } else {
+                    // Recorded working directories give a reliable answer.
+                    cwds_gone(&cwds)
                 };
                 if gone {
                     reasons.push(CleanupReason::FolderGone);
@@ -183,29 +187,52 @@ fn project_slug(namespace: &str) -> Option<String> {
     namespace.strip_prefix("project:").map(str::to_string)
 }
 
-/// The most recently recorded working directory for a namespace, read from the
-/// `cwd` key of a memory's metadata. Returns `None` if no memory recorded one.
-fn recorded_cwd(conn: &Connection, namespace: &str) -> Option<String> {
-    let mut stmt = conn
-        .prepare(
-            "SELECT metadata_json FROM memories
-             WHERE namespace = ?1 AND metadata_json != '{}'
-             ORDER BY updated_at DESC LIMIT 25",
-        )
-        .ok()?;
-    let rows = stmt
-        .query_map([namespace], |row| row.get::<_, String>(0))
-        .ok()?;
-    for meta in rows.flatten() {
-        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&meta) {
-            if let Some(cwd) = v.get("cwd").and_then(|c| c.as_str()) {
-                if !cwd.is_empty() {
-                    return Some(cwd.to_string());
-                }
-            }
-        }
-    }
-    None
+/// A working directory recorded in a memory's metadata, with the machine it
+/// was recorded on (`None` for memories stored before hosts were recorded).
+struct RecordedCwd {
+    cwd: String,
+    host: Option<String>,
+}
+
+/// Every distinct working directory recorded for a namespace, read from the
+/// `cwd` and `host` keys of its memories' metadata. Empty if none recorded one.
+fn recorded_cwds(conn: &Connection, namespace: &str) -> Vec<RecordedCwd> {
+    let Ok(mut stmt) = conn.prepare(
+        "SELECT DISTINCT json_extract(metadata_json, '$.cwd'),
+                         json_extract(metadata_json, '$.host')
+         FROM memories
+         WHERE namespace = ?1 AND json_valid(metadata_json)",
+    ) else {
+        return Vec::new();
+    };
+    let Ok(rows) = stmt.query_map([namespace], |row| {
+        Ok((
+            row.get::<_, Option<String>>(0)?,
+            row.get::<_, Option<String>>(1)?,
+        ))
+    }) else {
+        return Vec::new();
+    };
+    rows.flatten()
+        .filter_map(|(cwd, host)| {
+            cwd.filter(|c| !c.is_empty())
+                .map(|cwd| RecordedCwd { cwd, host })
+        })
+        .collect()
+}
+
+/// A project is gone only when every recorded folder is shown missing here.
+/// A folder is shown missing when it was recorded on this machine (or on an
+/// unknown one) and is absent while its parent folder exists. A folder from
+/// another machine, or one whose parent is also missing (such as a Mac's home
+/// folder seen from the shared server), cannot show that a project is gone.
+fn cwds_gone(cwds: &[RecordedCwd]) -> bool {
+    let here = crate::context::local_host();
+    cwds.iter().all(|r| {
+        let path = Path::new(&r.cwd);
+        let this_machine = r.host.is_none() || r.host == here;
+        this_machine && !path.exists() && path.parent().is_some_and(Path::exists)
+    })
 }
 
 fn is_older_than_months(last_activity: &str, months: u32, now: OffsetDateTime) -> bool {
@@ -507,6 +534,113 @@ mod tests {
         let found = find_candidates(&conn, &criteria, &[], now()).unwrap();
         let names: Vec<_> = found.iter().map(|c| c.namespace.as_str()).collect();
         assert_eq!(names, vec!["project:vanished"]);
+    }
+
+    #[test]
+    fn folder_gone_ignores_folders_this_machine_cannot_see() {
+        // The shared database runs on a server where the Mac's home folder
+        // does not exist. A path whose parent is missing tells us nothing.
+        let conn = test_conn();
+        let tmp = tempfile::tempdir().unwrap();
+        let other_machine = tmp.path().join("Users").join("someone").join("proj");
+        insert_with_cwd(&conn, "project:elsewhere", other_machine.to_str().unwrap());
+
+        let criteria = CleanupCriteria {
+            stale_months: None,
+            all_archived: false,
+            folder_gone: true,
+        };
+        let found = find_candidates(&conn, &criteria, &[], now()).unwrap();
+        assert!(found.is_empty(), "flagged: {found:?}");
+    }
+
+    fn insert_with_cwd_on_host(conn: &Connection, namespace: &str, cwd: &str, host: &str) {
+        insert_with_cwd(conn, namespace, cwd);
+        conn.execute(
+            "UPDATE memories SET metadata_json = json_set(metadata_json, '$.host', ?1)
+             WHERE namespace = ?2",
+            rusqlite::params![host, namespace],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn folder_gone_only_judges_folders_recorded_on_this_machine() {
+        // Both folders are missing and their parent exists, but only one was
+        // recorded here. The other machine may still have its folder.
+        let conn = test_conn();
+        let tmp = tempfile::tempdir().unwrap();
+        let this_host = crate::context::local_host().expect("test machine has a name");
+        insert_with_cwd_on_host(
+            &conn,
+            "project:here",
+            tmp.path().join("here").to_str().unwrap(),
+            &this_host,
+        );
+        insert_with_cwd_on_host(
+            &conn,
+            "project:other-mac",
+            tmp.path().join("other").to_str().unwrap(),
+            "some-other-mac",
+        );
+
+        let criteria = CleanupCriteria {
+            stale_months: None,
+            all_archived: false,
+            folder_gone: true,
+        };
+        let found = find_candidates(&conn, &criteria, &[], now()).unwrap();
+        let names: Vec<_> = found.iter().map(|c| c.namespace.as_str()).collect();
+        assert_eq!(names, vec!["project:here"]);
+    }
+
+    #[test]
+    fn folder_gone_keeps_namespace_while_any_recorded_cwd_exists() {
+        let conn = test_conn();
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("repo");
+        std::fs::create_dir(&repo).unwrap();
+
+        // An older memory from the repo, a newer one from a deleted worktree.
+        insert_with_cwd(&conn, "project:repo", repo.to_str().unwrap());
+        insert_with_cwd(
+            &conn,
+            "project:repo",
+            tmp.path().join("repo-old-worktree").to_str().unwrap(),
+        );
+        conn.execute(
+            "UPDATE memories SET updated_at = CASE
+                 WHEN metadata_json LIKE '%old-worktree%' THEN '2026-06-19T00:00:00Z'
+                 ELSE '2026-01-01T00:00:00Z' END",
+            [],
+        )
+        .unwrap();
+
+        let criteria = CleanupCriteria {
+            stale_months: None,
+            all_archived: false,
+            folder_gone: true,
+        };
+        let found = find_candidates(&conn, &criteria, &[], now()).unwrap();
+        assert!(found.is_empty(), "flagged: {found:?}");
+    }
+
+    #[test]
+    fn folder_gone_skips_slug_check_when_no_dev_root_exists() {
+        // Without a recorded cwd, the slug check needs a dev root to scan.
+        // On a machine with none of them, it cannot tell.
+        let conn = test_conn();
+        let tmp = tempfile::tempdir().unwrap();
+        insert(&conn, "project:unknown", "2026-06-19T00:00:00Z", false);
+
+        let criteria = CleanupCriteria {
+            stale_months: None,
+            all_archived: false,
+            folder_gone: true,
+        };
+        let found =
+            find_candidates(&conn, &criteria, &[tmp.path().join("Development")], now()).unwrap();
+        assert!(found.is_empty(), "flagged: {found:?}");
     }
 
     #[test]

@@ -50,7 +50,7 @@ pub fn detect_namespace(cwd: &Path) -> Option<DetectedContext> {
         let ns_file = dir.join(".clio-namespace");
         if ns_file.is_file() {
             if let Ok(content) = std::fs::read_to_string(&ns_file) {
-                let namespace = content.trim().to_string();
+                let namespace = canonical_namespace(content.trim());
                 if !namespace.is_empty()
                     && namespace.len() <= 120
                     && !namespace.chars().any(|c| c.is_control())
@@ -200,6 +200,21 @@ pub fn init_namespace(dir: &Path, namespace: &str) -> std::io::Result<()> {
     std::fs::write(&path, format!("{namespace}\n"))
 }
 
+/// The stored form of a namespace. A bare name such as `clio` becomes
+/// `project:clio`, so one project never splits across two spellings.
+/// `global` and anything already carrying a `kind:` prefix are unchanged.
+pub fn canonical_namespace(namespace: &str) -> String {
+    if namespace == "global" || namespace.contains(':') {
+        return namespace.to_string();
+    }
+    let slug = slugify(namespace);
+    if slug.is_empty() {
+        namespace.to_string()
+    } else {
+        format!("project:{slug}")
+    }
+}
+
 /// Convert a directory name into a URL-safe slug.
 pub fn slugify(name: &str) -> String {
     name.chars()
@@ -215,10 +230,44 @@ pub fn slugify(name: &str) -> String {
         .to_string()
 }
 
+/// This machine's name, lower-cased and without a `.local` suffix, e.g.
+/// `mbpro`. Recorded beside a memory's working directory so a later folder
+/// check knows which machine the path belongs to.
+pub fn local_host() -> Option<String> {
+    let mut buf = [0u8; 256];
+    // SAFETY: the buffer is valid for its full length; gethostname writes at
+    // most that many bytes.
+    let rc = unsafe { libc::gethostname(buf.as_mut_ptr().cast(), buf.len()) };
+    if rc != 0 {
+        return None;
+    }
+    let end = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
+    let name = String::from_utf8_lossy(&buf[..end]).to_lowercase();
+    let name = name.strip_suffix(".local").unwrap_or(&name).to_string();
+    (!name.is_empty()).then_some(name)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    #[test]
+    fn bare_namespaces_become_project_namespaces() {
+        assert_eq!(canonical_namespace("clio"), "project:clio");
+        assert_eq!(canonical_namespace("AnsibleScooda"), "project:ansiblescooda");
+        assert_eq!(canonical_namespace("global"), "global");
+        assert_eq!(canonical_namespace("project:Scooda"), "project:Scooda");
+        assert_eq!(canonical_namespace("topic:rust"), "topic:rust");
+    }
+
+    #[test]
+    fn namespace_file_with_a_bare_name_is_read_as_a_project() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(tmp.path().join(".clio-namespace"), "clio\n").unwrap();
+        let ctx = detect_namespace(tmp.path()).unwrap();
+        assert_eq!(ctx.namespace, "project:clio");
+    }
 
     #[test]
     fn test_slugify() {
