@@ -1402,6 +1402,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
 
 const FORWARDED_NAMESPACE_ENV: &str = "CLIO_CONTEXT_NAMESPACE";
 const FORWARDED_CWD_ENV: &str = "CLIO_CONTEXT_CWD";
+const FORWARDED_HOST_ENV: &str = "CLIO_CONTEXT_HOST";
 
 fn current_namespace() -> Option<String> {
     std::env::var(FORWARDED_NAMESPACE_ENV)
@@ -1433,6 +1434,15 @@ fn current_context_cwd() -> Option<String> {
             .ok()
             .map(|path| path.display().to_string())
     })
+}
+
+/// The machine the context working directory belongs to: forwarded by the
+/// Mac when a command runs on the shared server, otherwise this machine.
+fn current_context_host() -> Option<String> {
+    std::env::var(FORWARDED_HOST_ENV)
+        .ok()
+        .filter(|host| !host.is_empty())
+        .or_else(clio_core::context::local_host)
 }
 
 fn open_db(explicit: Option<&str>) -> Result<rusqlite::Connection, Box<dyn std::error::Error>> {
@@ -2781,6 +2791,7 @@ fn cmd_checkpoint(
         recover_stale: args.recover_stale,
         namespace_override: args.namespace,
         default_namespace,
+        host: cwd.as_ref().and_then(|_| current_context_host()),
         cwd,
         branch: args.branch,
         ticket: args.ticket,
@@ -2902,6 +2913,7 @@ fn cmd_distill(
         &args.source,
         args.source_ref.as_deref(),
         cwd.as_deref(),
+        current_context_host().as_deref(),
         &s,
     )?;
 

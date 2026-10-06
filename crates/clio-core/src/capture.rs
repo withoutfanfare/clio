@@ -828,16 +828,21 @@ pub fn distill_and_store(
     source: &str,
     source_ref: Option<&str>,
     cwd: Option<&str>,
+    host: Option<&str>,
     settings: &crate::settings::Settings,
 ) -> Result<Vec<CaptureResult>> {
     let memories = distill(text, config)?;
 
     // Record the originating working directory so namespaces can later be
     // matched to a real path (powers reliable "folder gone" cleanup).
-    let metadata = match cwd {
-        Some(c) => serde_json::json!({ "cwd": c }),
-        None => serde_json::json!({}),
-    };
+    let mut metadata = serde_json::Map::new();
+    if let Some(c) = cwd {
+        metadata.insert("cwd".into(), serde_json::json!(c));
+        if let Some(h) = host {
+            metadata.insert("host".into(), serde_json::json!(h));
+        }
+    }
+    let metadata = serde_json::Value::Object(metadata);
 
     let mut results = Vec::with_capacity(memories.len());
     for (index, memory) in memories.iter().enumerate() {

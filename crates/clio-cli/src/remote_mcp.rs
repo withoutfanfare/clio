@@ -248,6 +248,9 @@ fn remote_cli_command(
     }
     if let Some(cwd) = cwd {
         parts.push(format!("CLIO_CONTEXT_CWD={}", shell_quote(cwd)));
+        if let Some(host) = clio_core::context::local_host() {
+            parts.push(format!("CLIO_CONTEXT_HOST={}", shell_quote(&host)));
+        }
     }
     parts.push(shell_quote(&config.cli_binary));
     parts.extend(
@@ -426,7 +429,10 @@ mod tests {
                 Some("project:clio"),
                 Some("/deleted/worktree"),
             ),
-            "env CLIO_DB_PATH='/srv/memory db' CLIO_CONTEXT_NAMESPACE='project:clio' CLIO_CONTEXT_CWD='/deleted/worktree' '/srv/clio'\\''s bin' 'recall' '--query' 'Danny'\\''s notes'"
+            format!(
+                "env CLIO_DB_PATH='/srv/memory db' CLIO_CONTEXT_NAMESPACE='project:clio' CLIO_CONTEXT_CWD='/deleted/worktree' CLIO_CONTEXT_HOST='{}' '/srv/clio'\\''s bin' 'recall' '--query' 'Danny'\\''s notes'",
+                clio_core::context::local_host().unwrap()
+            )
         );
     }
 }
