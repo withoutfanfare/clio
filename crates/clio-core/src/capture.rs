@@ -908,7 +908,7 @@ pub(crate) fn store_or_queue(
     // inbox either.
     if let Some(existing_id) = crate::repository::find_content_duplicate(conn, namespace, content)?
     {
-        let memory = crate::repository::get(conn, &existing_id)?;
+        let memory = crate::repository::get_raw(conn, &existing_id)?;
         // Repeated exact evidence strengthens the canonical memory: keep one
         // row, record this sighting's provenance as an occurrence.
         crate::occurrences::record_occurrence(conn, &existing_id, Some(source), source_ref, None)?;
@@ -1005,6 +1005,45 @@ pub(crate) fn store_or_queue(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn fact(title: &str) -> ClassificationResult {
+        ClassificationResult {
+            kind: "fact".into(),
+            title: title.into(),
+            summary: title.into(),
+            tags: vec![],
+            namespace: "project:demo".into(),
+            importance: 3,
+            confidence: 1.0,
+        }
+    }
+
+    #[test]
+    fn saving_a_memory_does_not_count_as_reading_it() {
+        let conn = crate::db::open_in_memory().unwrap();
+        let settings = crate::settings::Settings::default();
+        let store = |text: &str| {
+            store_or_queue(
+                &conn,
+                text,
+                &fact("The spool uses atomic renames"),
+                "project:demo",
+                "capture",
+                None,
+                &serde_json::json!({}),
+                &settings,
+                false,
+            )
+            .unwrap()
+        };
+        store("The spool uses atomic renames.");
+        store("The spool uses atomic renames.");
+
+        let count: i64 = conn
+            .query_row("SELECT MAX(access_count) FROM memories", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 0);
+    }
 
     #[cfg(feature = "capture")]
     #[test]
