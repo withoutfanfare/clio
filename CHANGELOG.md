@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Direct concurrent work reports through CLI and MCP, with immutable receipts,
+  explicit handovers and visible missing or conflicting reporting.
+- A compact Work dashboard that refreshes automatically and expands into tasks,
+  sessions, worktrees and evidence. Implementation remains distinct from acceptance.
+- An opt-in local reporting client with a durable queue and automatic retry mode.
+  No reporting hooks or services are installed automatically.
+
 ### Changed
 
 **Clearer desktop scope and retrieval (2026-09-05)**

@@ -70,8 +70,8 @@ pub fn detect_namespace(cwd: &Path) -> Option<DetectedContext> {
     for dir in cwd.ancestors() {
         let git_dir = dir.join(".git");
         if git_dir.exists() {
-            if let Some(name) = dir.file_name().and_then(|n| n.to_str()) {
-                let slug = slugify(name);
+            if let Some(name) = project_name(dir) {
+                let slug = slugify(&name);
                 if !slug.is_empty() {
                     return Some(DetectedContext {
                         namespace: format!("project:{slug}"),
@@ -102,6 +102,36 @@ pub fn detect_namespace(cwd: &Path) -> Option<DetectedContext> {
     }
 
     None
+}
+
+/// The project name for a checkout rooted at `dir`.
+///
+/// A linked worktree is named after its repository, not its own folder: the
+/// bare repo `acme.git` or the folder holding `acme/.git`. Any other
+/// directory is named after itself.
+pub fn project_name(dir: &Path) -> Option<String> {
+    if let Some(common) = worktree_common_dir(dir) {
+        let repo = if common.file_name().is_some_and(|n| n == ".git") {
+            common.parent()?
+        } else {
+            common.as_path()
+        };
+        let name = repo.file_name()?.to_str()?;
+        return Some(name.strip_suffix(".git").unwrap_or(name).to_string());
+    }
+    dir.file_name()?.to_str().map(str::to_string)
+}
+
+/// The shared git directory of a linked worktree at `dir`, if it is one.
+///
+/// A worktree's `.git` is a file (`gitdir: <path>`) whose target holds a
+/// `commondir` file pointing at the repository's own git directory.
+/// Submodules have the `.git` file but no `commondir`, so they return `None`.
+fn worktree_common_dir(dir: &Path) -> Option<std::path::PathBuf> {
+    let pointer = std::fs::read_to_string(dir.join(".git")).ok()?;
+    let gitdir = dir.join(pointer.trim().strip_prefix("gitdir:")?.trim());
+    let common = std::fs::read_to_string(gitdir.join("commondir")).ok()?;
+    std::fs::canonicalize(gitdir.join(common.trim())).ok()
 }
 
 /// Resolve the effective namespace for a command invocation.
@@ -296,6 +326,99 @@ mod tests {
 
         let ctx = detect_namespace(&sub).expect("should detect namespace from ancestor");
         assert_eq!(ctx.namespace, "project:my-repo");
+    }
+
+    /// Run `git` with the caller's repository variables removed, so the test
+    /// works even when launched from inside a git hook.
+    fn git(cwd: &Path, args: &[&str]) {
+        let status = std::process::Command::new("git")
+            .args(args)
+            .current_dir(cwd)
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_INDEX_FILE")
+            .env_remove("GIT_COMMON_DIR")
+            .status()
+            .expect("git should run");
+        assert!(status.success(), "git {args:?} failed");
+    }
+
+    /// A repository with one commit, so worktrees can be added from it.
+    fn seed_repo(dir: &Path) {
+        std::fs::create_dir_all(dir).unwrap();
+        git(dir, &["init", "-q"]);
+        git(
+            dir,
+            &[
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "commit",
+                "-q",
+                "--allow-empty",
+                "-m",
+                "seed",
+            ],
+        );
+    }
+
+    #[test]
+    fn bare_repo_worktree_uses_repo_name() {
+        let tmp = TempDir::new().unwrap();
+        seed_repo(&tmp.path().join("seed"));
+        git(tmp.path(), &["clone", "-q", "--bare", "seed", "acme.git"]);
+        git(
+            &tmp.path().join("acme.git"),
+            &["worktree", "add", "-q", "../acme-worktrees/main"],
+        );
+        let worktree = tmp.path().join("acme-worktrees").join("main");
+
+        let ctx = detect_namespace(&worktree).expect("should detect namespace");
+        assert_eq!(ctx.namespace, "project:acme");
+        assert!(matches!(ctx.source, DetectionSource::GitDirectory));
+        assert_eq!(ctx.marker_path, worktree.display().to_string());
+    }
+
+    #[test]
+    fn linked_worktree_of_plain_repo_uses_repo_name() {
+        let tmp = TempDir::new().unwrap();
+        let repo = tmp.path().join("acme");
+        seed_repo(&repo);
+        git(
+            &repo,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "feature",
+                "../acme-worktrees/feature",
+            ],
+        );
+        let sub = tmp
+            .path()
+            .join("acme-worktrees")
+            .join("feature")
+            .join("src");
+        std::fs::create_dir_all(&sub).unwrap();
+
+        let ctx = detect_namespace(&sub).expect("should detect namespace");
+        assert_eq!(ctx.namespace, "project:acme");
+    }
+
+    #[test]
+    fn git_file_without_commondir_uses_folder_name() {
+        // A submodule's `.git` file points at a git directory with no
+        // `commondir`, so the checkout folder still names the project.
+        let tmp = TempDir::new().unwrap();
+        std::fs::create_dir_all(tmp.path().join("modules").join("lib")).unwrap();
+        let root = tmp.path().join("lib");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join(".git"), "gitdir: ../modules/lib\n").unwrap();
+
+        let ctx = detect_namespace(&root).expect("should detect namespace");
+        assert_eq!(ctx.namespace, "project:lib");
     }
 
     #[test]

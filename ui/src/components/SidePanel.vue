@@ -221,7 +221,7 @@ async function createProject() {
 
     <nav class="panel-nav">
       <SSidebarLink
-        :active="store.selectedNamespace === null"
+        :active="router.currentRoute.value.name === 'home' && store.selectedNamespace === null"
         @click="selectNamespace(null)"
       >
         <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
@@ -240,7 +240,7 @@ async function createProject() {
       >
         <SSidebarLink
           class="workspace-link"
-          :active="store.selectedNamespace === ns"
+          :active="router.currentRoute.value.name === 'home' && store.selectedNamespace === ns"
           @click="selectNamespace(ns)"
           @contextmenu="openDeleteMenu($event, ns)"
         >
@@ -340,6 +340,13 @@ async function createProject() {
     </Transition>
 
     <div class="panel-footer">
+      <SSidebarLink :active="router.currentRoute.value.name === 'work'" @click="router.push({ name: 'work' })">
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+          <rect x="2" y="4" width="12" height="10" rx="1" stroke="currentColor" stroke-width="1.2"/>
+          <path d="M5 4V2h6v2M2 8h12" stroke="currentColor" stroke-width="1.2"/>
+        </svg>
+        Work
+      </SSidebarLink>
       <SSidebarLink @click="router.push({ name: 'attention' })">
         <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
           <circle cx="8" cy="8" r="6" stroke="currentColor" stroke-width="1.2"/>

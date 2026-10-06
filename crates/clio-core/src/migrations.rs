@@ -519,6 +519,52 @@ const MIGRATIONS: &[Migration] = &[
             END;
         "#,
     },
+    Migration {
+        version: "016_work_reporting_proof",
+        sql: r#"
+            CREATE TABLE work_runs (
+                source TEXT NOT NULL,
+                run_id TEXT NOT NULL,
+                project TEXT NOT NULL,
+                task TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                worktree TEXT NOT NULL,
+                previous_source TEXT,
+                previous_run_id TEXT,
+                PRIMARY KEY (source, run_id),
+                UNIQUE (previous_source, previous_run_id),
+                FOREIGN KEY (previous_source, previous_run_id) REFERENCES work_runs(source, run_id),
+                CHECK ((previous_source IS NULL) = (previous_run_id IS NULL))
+            );
+            CREATE TABLE work_reports (
+                id INTEGER PRIMARY KEY,
+                source TEXT NOT NULL,
+                run_id TEXT NOT NULL,
+                sequence INTEGER NOT NULL CHECK (sequence >= 0),
+                observed_at INTEGER NOT NULL CHECK (observed_at >= 0),
+                received_at INTEGER NOT NULL CHECK (received_at >= observed_at),
+                payload TEXT NOT NULL,
+                UNIQUE (source, run_id, sequence),
+                FOREIGN KEY (source, run_id) REFERENCES work_runs(source, run_id)
+            );
+        "#,
+    },
+    Migration {
+        version: "017_work_guidance",
+        sql: r#"
+            CREATE TABLE work_acceptances (
+                receipt_id INTEGER PRIMARY KEY REFERENCES work_reports(id),
+                payload TEXT NOT NULL
+            );
+            CREATE TABLE work_recommendations (
+                project TEXT NOT NULL,
+                parent_task TEXT NOT NULL,
+                checked_at INTEGER NOT NULL,
+                payload TEXT NOT NULL,
+                PRIMARY KEY (project, parent_task)
+            );
+        "#,
+    },
 ];
 
 /// Run all pending migrations inside a transaction.
