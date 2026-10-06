@@ -35,6 +35,9 @@ pub struct CheckpointRequest {
     pub default_namespace: Option<String>,
     /// Originating working directory, recorded in memory metadata.
     pub cwd: Option<String>,
+    /// Machine the working directory belongs to, recorded beside it.
+    #[serde(default)]
+    pub host: Option<String>,
     /// Git branch active during the session, if any.
     pub branch: Option<String>,
     /// Ticket/issue identifier associated with the work, if any.
@@ -186,6 +189,9 @@ pub fn store_checkpoint(
             let mut meta = serde_json::Map::new();
             if let Some(cwd) = &req.cwd {
                 meta.insert("cwd".into(), serde_json::json!(cwd));
+                if let Some(host) = &req.host {
+                    meta.insert("host".into(), serde_json::json!(host));
+                }
             }
             if let Some(branch) = &req.branch {
                 meta.insert("branch".into(), serde_json::json!(branch));
@@ -474,6 +480,7 @@ mod tests {
             namespace_override: None,
             default_namespace: Some("project:checkpoint-test".into()),
             cwd: Some("/tmp/project".into()),
+            host: Some("mbpro".into()),
             branch: Some("develop".into()),
             ticket: None,
         }
@@ -507,6 +514,21 @@ mod tests {
         assert!(result.queued_review_ids.is_empty());
         assert_eq!(memory_count(&conn), 2);
         assert_eq!(checkpoint_count(&conn), 1);
+    }
+
+    #[test]
+    fn checkpoint_records_cwd_with_its_host() {
+        let conn = test_conn();
+        let settings = Settings::default();
+
+        store_checkpoint(&conn, &request(10), &[atom("fact one")], &settings).unwrap();
+
+        let meta: String = conn
+            .query_row("SELECT metadata_json FROM memories", [], |r| r.get(0))
+            .unwrap();
+        let meta: serde_json::Value = serde_json::from_str(&meta).unwrap();
+        assert_eq!(meta["cwd"], "/tmp/project");
+        assert_eq!(meta["host"], "mbpro");
     }
 
     #[test]

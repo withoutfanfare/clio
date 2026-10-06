@@ -2310,6 +2310,12 @@ impl ClioServer {
                 recover_stale: false,
                 namespace_override: params.namespace,
                 default_namespace,
+                // The bridge strips `cwd`, so a cwd seen here came from a
+                // client on this machine.
+                host: params
+                    .cwd
+                    .as_ref()
+                    .and_then(|_| clio_core::context::local_host()),
                 cwd: params.cwd,
                 branch: params.branch,
                 ticket: params.ticket,

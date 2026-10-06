@@ -187,31 +187,52 @@ fn project_slug(namespace: &str) -> Option<String> {
     namespace.strip_prefix("project:").map(str::to_string)
 }
 
+/// A working directory recorded in a memory's metadata, with the machine it
+/// was recorded on (`None` for memories stored before hosts were recorded).
+struct RecordedCwd {
+    cwd: String,
+    host: Option<String>,
+}
+
 /// Every distinct working directory recorded for a namespace, read from the
-/// `cwd` key of its memories' metadata. Empty if no memory recorded one.
-fn recorded_cwds(conn: &Connection, namespace: &str) -> Vec<String> {
+/// `cwd` and `host` keys of its memories' metadata. Empty if none recorded one.
+fn recorded_cwds(conn: &Connection, namespace: &str) -> Vec<RecordedCwd> {
     let Ok(mut stmt) = conn.prepare(
-        "SELECT DISTINCT json_extract(metadata_json, '$.cwd') FROM memories
+        "SELECT DISTINCT json_extract(metadata_json, '$.cwd'),
+                         json_extract(metadata_json, '$.host')
+         FROM memories
          WHERE namespace = ?1 AND json_valid(metadata_json)",
     ) else {
         return Vec::new();
     };
-    let Ok(rows) = stmt.query_map([namespace], |row| row.get::<_, Option<String>>(0)) else {
+    let Ok(rows) = stmt.query_map([namespace], |row| {
+        Ok((
+            row.get::<_, Option<String>>(0)?,
+            row.get::<_, Option<String>>(1)?,
+        ))
+    }) else {
         return Vec::new();
     };
     rows.flatten()
-        .flatten()
-        .filter(|cwd| !cwd.is_empty())
+        .filter_map(|(cwd, host)| {
+            cwd.filter(|c| !c.is_empty())
+                .map(|cwd| RecordedCwd { cwd, host })
+        })
         .collect()
 }
 
-/// A project is gone only when none of its recorded folders exist, and at
-/// least one of them could be checked here: its parent folder exists on this
-/// machine. Paths from another machine (such as a Mac's home folder seen from
-/// the shared server) cannot show that a folder is gone.
-fn cwds_gone(cwds: &[String]) -> bool {
-    let paths: Vec<&Path> = cwds.iter().map(Path::new).collect();
-    !paths.iter().any(|p| p.exists()) && paths.iter().any(|p| p.parent().is_some_and(Path::exists))
+/// A project is gone only when every recorded folder is shown missing here.
+/// A folder is shown missing when it was recorded on this machine (or on an
+/// unknown one) and is absent while its parent folder exists. A folder from
+/// another machine, or one whose parent is also missing (such as a Mac's home
+/// folder seen from the shared server), cannot show that a project is gone.
+fn cwds_gone(cwds: &[RecordedCwd]) -> bool {
+    let here = crate::context::local_host();
+    cwds.iter().all(|r| {
+        let path = Path::new(&r.cwd);
+        let this_machine = r.host.is_none() || r.host == here;
+        this_machine && !path.exists() && path.parent().is_some_and(Path::exists)
+    })
 }
 
 fn is_older_than_months(last_activity: &str, months: u32, now: OffsetDateTime) -> bool {
@@ -531,6 +552,46 @@ mod tests {
         };
         let found = find_candidates(&conn, &criteria, &[], now()).unwrap();
         assert!(found.is_empty(), "flagged: {found:?}");
+    }
+
+    fn insert_with_cwd_on_host(conn: &Connection, namespace: &str, cwd: &str, host: &str) {
+        insert_with_cwd(conn, namespace, cwd);
+        conn.execute(
+            "UPDATE memories SET metadata_json = json_set(metadata_json, '$.host', ?1)
+             WHERE namespace = ?2",
+            rusqlite::params![host, namespace],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn folder_gone_only_judges_folders_recorded_on_this_machine() {
+        // Both folders are missing and their parent exists, but only one was
+        // recorded here. The other machine may still have its folder.
+        let conn = test_conn();
+        let tmp = tempfile::tempdir().unwrap();
+        let this_host = crate::context::local_host().expect("test machine has a name");
+        insert_with_cwd_on_host(
+            &conn,
+            "project:here",
+            tmp.path().join("here").to_str().unwrap(),
+            &this_host,
+        );
+        insert_with_cwd_on_host(
+            &conn,
+            "project:other-mac",
+            tmp.path().join("other").to_str().unwrap(),
+            "some-other-mac",
+        );
+
+        let criteria = CleanupCriteria {
+            stale_months: None,
+            all_archived: false,
+            folder_gone: true,
+        };
+        let found = find_candidates(&conn, &criteria, &[], now()).unwrap();
+        let names: Vec<_> = found.iter().map(|c| c.namespace.as_str()).collect();
+        assert_eq!(names, vec!["project:here"]);
     }
 
     #[test]

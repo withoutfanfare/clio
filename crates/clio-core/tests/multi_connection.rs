@@ -475,6 +475,7 @@ fn checkpoint_request() -> clio_core::checkpoint::CheckpointRequest {
         namespace_override: None,
         default_namespace: Some("project:multi-machine".into()),
         cwd: None,
+        host: None,
         branch: None,
         ticket: None,
     }

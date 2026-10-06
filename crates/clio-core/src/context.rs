@@ -215,6 +215,23 @@ pub fn slugify(name: &str) -> String {
         .to_string()
 }
 
+/// This machine's name, lower-cased and without a `.local` suffix, e.g.
+/// `mbpro`. Recorded beside a memory's working directory so a later folder
+/// check knows which machine the path belongs to.
+pub fn local_host() -> Option<String> {
+    let mut buf = [0u8; 256];
+    // SAFETY: the buffer is valid for its full length; gethostname writes at
+    // most that many bytes.
+    let rc = unsafe { libc::gethostname(buf.as_mut_ptr().cast(), buf.len()) };
+    if rc != 0 {
+        return None;
+    }
+    let end = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
+    let name = String::from_utf8_lossy(&buf[..end]).to_lowercase();
+    let name = name.strip_suffix(".local").unwrap_or(&name).to_string();
+    (!name.is_empty()).then_some(name)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

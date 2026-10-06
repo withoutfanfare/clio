@@ -2779,6 +2779,7 @@ fn session_attention_cases_route_to_the_annotated_outcome() {
                 namespace_override: None,
                 default_namespace: Some("project:clio".into()),
                 cwd: None,
+                host: None,
                 branch: Some("develop".into()),
                 ticket: Some("CLIO-42".into()),
             },
@@ -3461,6 +3462,7 @@ fn repeated_evidence_across_sessions_keeps_one_memory_with_occurrences() {
         namespace_override: None,
         default_namespace: Some("project:occ".into()),
         cwd: None,
+        host: None,
         branch: None,
         ticket: None,
     };
