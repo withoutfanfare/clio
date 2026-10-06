@@ -934,29 +934,50 @@ pub(crate) fn store_or_queue(
         return Ok(CaptureResult::Stored(memory));
     }
 
+    let queue = |metadata: serde_json::Value| -> Result<CaptureResult> {
+        let review_input = ReviewInput {
+            content: content.to_string(),
+            suggested_namespace: namespace.to_string(),
+            suggested_kind: classification.kind.clone(),
+            suggested_title: Some(classification.title.clone()),
+            suggested_summary: if classification.summary.is_empty() {
+                None
+            } else {
+                Some(classification.summary.clone())
+            },
+            suggested_tags: classification.tags.clone(),
+            suggested_importance: classification.importance,
+            suggested_confidence: Some(classification.confidence),
+            source_route: Some(source.to_string()),
+            source_ref: source_ref.map(String::from),
+            metadata,
+        };
+        let review_item = crate::review::queue_for_review(conn, &review_input)?;
+        Ok(CaptureResult::Queued(review_item))
+    };
+
+    // A live memory of the same kind and title is probably the same fact in
+    // new words: let a person decide rather than store a second copy.
+    // Receipts share generic titles, so they are exempt.
+    if classification.kind != "receipt" {
+        if let Some(existing_id) = crate::repository::find_title_duplicate(
+            conn,
+            namespace,
+            &classification.kind,
+            &classification.title,
+        )? {
+            let mut metadata = metadata.clone();
+            if let Some(object) = metadata.as_object_mut() {
+                object.insert("possible_duplicate_of".into(), serde_json::json!(existing_id));
+            }
+            return queue(metadata);
+        }
+    }
+
     // Check whether this capture should be routed to the review queue.
     if let Some(threshold) = settings.capture.review_threshold {
         if classification.confidence < threshold {
-            let review_input = ReviewInput {
-                content: content.to_string(),
-                suggested_namespace: namespace.to_string(),
-                suggested_kind: classification.kind.clone(),
-                suggested_title: Some(classification.title.clone()),
-                suggested_summary: if classification.summary.is_empty() {
-                    None
-                } else {
-                    Some(classification.summary.clone())
-                },
-                suggested_tags: classification.tags.clone(),
-                suggested_importance: classification.importance,
-                suggested_confidence: Some(classification.confidence),
-                source_route: Some(source.to_string()),
-                source_ref: source_ref.map(String::from),
-                metadata: metadata.clone(),
-            };
-
-            let review_item = crate::review::queue_for_review(conn, &review_input)?;
-            return Ok(CaptureResult::Queued(review_item));
+            return queue(metadata.clone());
         }
     }
 
@@ -1016,6 +1037,39 @@ mod tests {
             importance: 3,
             confidence: 1.0,
         }
+    }
+
+    #[test]
+    fn same_title_with_new_wording_goes_to_review_not_storage() {
+        let conn = crate::db::open_in_memory().unwrap();
+        let settings = crate::settings::Settings::default();
+        let store = |kind: &str, text: &str| {
+            let mut classification = fact("Spool durability");
+            classification.kind = kind.into();
+            store_or_queue(
+                &conn,
+                text,
+                &classification,
+                "project:demo",
+                "capture",
+                None,
+                &serde_json::json!({}),
+                &settings,
+                false,
+            )
+            .unwrap()
+        };
+        let CaptureResult::Stored(first) = store("fact", "The spool uses atomic renames.") else {
+            panic!("first capture should be stored");
+        };
+        let CaptureResult::Queued(item) = store("fact", "Spool writes rename atomically.") else {
+            panic!("a same-title paraphrase should be queued for review");
+        };
+        assert_eq!(item.metadata["possible_duplicate_of"], first.id.as_str());
+
+        // Receipts legitimately share titles, so they are always stored.
+        assert!(matches!(store("receipt", "Ran the suite."), CaptureResult::Stored(_)));
+        assert!(matches!(store("receipt", "Shipped it."), CaptureResult::Stored(_)));
     }
 
     #[test]

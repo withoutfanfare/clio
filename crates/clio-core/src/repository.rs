@@ -434,6 +434,30 @@ pub fn get(conn: &Connection, id: &str) -> Result<Memory> {
 ///
 /// Use this for internal lookups (existence checks, linked memory resolution)
 /// where we don't want to inflate access_count.
+/// A live memory in `namespace` with the same kind and title (ignoring case
+/// and surrounding spaces), if one exists.
+pub fn find_title_duplicate(
+    conn: &Connection,
+    namespace: &str,
+    kind: &str,
+    title: &str,
+) -> Result<Option<String>> {
+    let title = title.trim();
+    if title.is_empty() {
+        return Ok(None);
+    }
+    Ok(conn
+        .query_row(
+            "SELECT id FROM memories
+             WHERE namespace = ?1 AND kind = ?2 AND archived_at IS NULL
+               AND lower(trim(title)) = lower(?3)
+             ORDER BY updated_at DESC LIMIT 1",
+            params![namespace, kind, title],
+            |row| row.get(0),
+        )
+        .optional()?)
+}
+
 pub(crate) fn get_raw(conn: &Connection, id: &str) -> Result<Memory> {
     let mut stmt = conn.prepare(
         "SELECT id, namespace, kind, title, summary, content, tags_text,
