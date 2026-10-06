@@ -1595,7 +1595,7 @@ mod tests {
             let brief = build_resume_brief(&conn, &request).unwrap();
             section(&brief, "Needs attention")
                 .map(|s| s.items.iter().map(|i| i.memory_id.clone()).collect())
-                .unwrap_or_else(Vec::new)
+                .unwrap_or_default()
         };
         for n in 0..IGNORED_SESSION_LIMIT {
             assert!(shown(&format!("session-{n}")).contains(&ignored.id));
