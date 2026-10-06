@@ -79,7 +79,7 @@ Every read tool should:
 Several tools accept an optional `cwd` parameter (working directory path). When `cwd` is provided and `namespace` is omitted, the server attempts to detect the project namespace from the directory tree:
 
 1. Search every ancestor from `cwd` for `.clio-namespace`; the nearest valid file supplies the full namespace string (e.g. `project:clio`). This explicit marker wins over any nested package manifest.
-2. If no `.clio-namespace` exists, use the nearest `.git` marker and derive `project:<repo-name>` from its directory.
+2. If no `.clio-namespace` exists, use the nearest `.git` marker and derive `project:<repo-name>` from its directory. A linked worktree takes the name of its repository instead: `<name>` for a bare `<name>.git`, or the folder that holds `.git`.
 3. Otherwise use the nearest `Cargo.toml` or `package.json` and derive `project:<dir-name>` from its directory.
 4. If no marker is found, fall back to `global`.
 

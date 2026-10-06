@@ -6,7 +6,7 @@
 //! takes a database backup first via [`execute_cleanup`].
 
 use crate::backup;
-use crate::context::slugify;
+use crate::context::{project_name, slugify};
 use crate::error::Result;
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
@@ -260,8 +260,8 @@ fn scan_dir(dir: &Path, depth: u32, max_depth: u32, slugs: &mut HashSet<String>)
     // A project root yields its slug and is not descended into — namespaces
     // come from project roots, not their sub-directories.
     if depth > 0 && is_project_root(dir) {
-        if let Some(name) = dir.file_name().and_then(|n| n.to_str()) {
-            slugs.insert(slugify(name));
+        if let Some(name) = project_name(dir) {
+            slugs.insert(slugify(&name));
         }
         return;
     }
@@ -370,6 +370,26 @@ mod tests {
             &time::format_description::well_known::Rfc3339,
         )
         .unwrap()
+    }
+
+    #[test]
+    fn disk_slugs_name_worktrees_after_their_repo() {
+        // `acme.git` is a bare repo; `acme-worktrees/main` is its worktree.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let gitdir = tmp.path().join("acme.git").join("worktrees").join("main");
+        std::fs::create_dir_all(&gitdir).unwrap();
+        std::fs::write(gitdir.join("commondir"), "../..\n").unwrap();
+        let worktree = tmp.path().join("acme-worktrees").join("main");
+        std::fs::create_dir_all(&worktree).unwrap();
+        std::fs::write(
+            worktree.join(".git"),
+            format!("gitdir: {}\n", gitdir.display()),
+        )
+        .unwrap();
+
+        let slugs = collect_disk_slugs(&[tmp.path().to_path_buf()]);
+        assert!(slugs.contains("acme"), "slugs: {slugs:?}");
+        assert!(!slugs.contains("main"), "slugs: {slugs:?}");
     }
 
     #[test]
