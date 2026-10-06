@@ -377,6 +377,16 @@ struct ArchiveParams {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+struct FeedbackParams {
+    /// Memory ID.
+    memory_id: String,
+    /// useful, wrong or stale.
+    verdict: String,
+    /// Current session ID; one verdict per memory and session.
+    session_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 struct UnarchiveParams {
     /// Memory ID.
     memory_id: String,
@@ -2029,6 +2039,32 @@ impl ClioServer {
                 .archive(&conn, &params.memory_id)
                 .map_err(|e| format_clio_error(&e))?;
             serde_json::to_string_pretty(&memory).map_err(|e| format!("Serialisation error: {e}"))
+        })
+        .await
+        .map_err(|e| format!("Internal error: task failed: {e}"))?
+    }
+
+    /// Record whether a memory helped.
+    #[tool(
+        description = "Mark a recalled or injected memory as useful, wrong or stale. Call it when a memory changed what you did (useful) or misled you (wrong/stale)."
+    )]
+    async fn memory_feedback(
+        &self,
+        Parameters(params): Parameters<FeedbackParams>,
+    ) -> Result<String, String> {
+        validate_memory_id(&params.memory_id, "memory_id")?;
+        let conn = self.conn.clone();
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock().map_err(|e| format!("lock error: {e}"))?;
+            clio_core::events::record_feedback(
+                &conn,
+                &params.memory_id,
+                &params.verdict,
+                params.session_id.as_deref(),
+                Some("agent"),
+            )
+            .map_err(|e| format_clio_error(&e))?;
+            Ok(format!("Recorded: {}.", params.verdict))
         })
         .await
         .map_err(|e| format!("Internal error: task failed: {e}"))?
