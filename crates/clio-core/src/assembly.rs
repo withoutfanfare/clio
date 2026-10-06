@@ -1594,7 +1594,7 @@ mod tests {
             request.session_id = Some(session.into());
             let brief = build_resume_brief(&conn, &request).unwrap();
             section(&brief, "Needs attention")
-                .map(|s| s.items.iter().map(|i| i.memory_id.clone()).collect())
+                .map(|s| s.items.iter().map(|i| i.memory_id.clone()).collect::<Vec<_>>())
                 .unwrap_or_default()
         };
         for n in 0..IGNORED_SESSION_LIMIT {
