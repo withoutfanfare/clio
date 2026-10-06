@@ -17,6 +17,18 @@ pub fn remember(
     input: &RememberInput,
     settings: &crate::settings::Settings,
 ) -> Result<Memory> {
+    // Store bare names under `project:` so one project never splits in two.
+    let canonical;
+    let input = match crate::context::canonical_namespace(&input.namespace) {
+        ns if ns != input.namespace => {
+            canonical = RememberInput {
+                namespace: ns,
+                ..input.clone()
+            };
+            &canonical
+        }
+        _ => input,
+    };
     validate::remember_input(input)?;
 
     let tags = normalise_tags(&input.tags);
@@ -547,6 +559,18 @@ fn row_to_memory(raw: MemoryRow) -> Result<Memory> {
 /// When `include_links` is true, linked memories are appended to the results
 /// with a `linked_from` indicator showing which result memory they are linked from.
 pub fn recall(conn: &Connection, query: &RecallQuery) -> Result<RecallResult> {
+    // A bare project name finds the same memories as its `project:` form.
+    let canonical;
+    let query = match query.namespace.as_deref().map(crate::context::canonical_namespace) {
+        Some(ns) if Some(ns.as_str()) != query.namespace.as_deref() => {
+            canonical = RecallQuery {
+                namespace: Some(ns),
+                ..query.clone()
+            };
+            &canonical
+        }
+        _ => query,
+    };
     let mut result = if let Some(ref fts_query) = query.query {
         recall_fts(conn, fts_query, query)?
     } else {
@@ -1157,6 +1181,7 @@ pub fn recall_scoped(
     query: &RecallQuery,
     detected_namespace: &str,
 ) -> Result<RecallResult> {
+    let detected_namespace = &crate::context::canonical_namespace(detected_namespace);
     // If detection falls back to "global", keep default recall global-only.
     // Callers use the explicit global flag for an all-namespace search.
     if detected_namespace == "global" {
