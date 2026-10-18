@@ -176,7 +176,7 @@ All hook script changes happen in `~/Ai/Assets/Claude/Skills/clio-hooks/scripts/
 
 ### Task 3.1 — Kill silent failure (S)
 
-- [ ] Un-hardcode `/Users/dannyharding/.cargo/bin/clio` in `session_start.py` and `session_stop.py`: use `$CLIO_BIN` env override, then `shutil.which("clio")`, then the cargo default.
+- [ ] Un-hardcode `/Users/you/.cargo/bin/clio` in `session_start.py` and `session_stop.py`: use `$CLIO_BIN` env override, then `shutil.which("clio")`, then the cargo default.
 - [ ] On any hook failure, emit one plain-English stderr line (visible in Claude Code) in addition to the CSV row.
 - [ ] Add a `clio doctor`-style check to the report script: daemon up? DB reachable? last N hook outcomes?
 

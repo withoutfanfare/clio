@@ -1720,7 +1720,7 @@ Direct binary:
     "clio": {
       "command": "/absolute/path/to/clio-mcp",
       "env": {
-        "CLIO_DB_PATH": "/Users/dannyharding/.clio/shared.db"
+        "CLIO_DB_PATH": "/Users/you/.clio/shared.db"
       }
     }
   }
@@ -1739,9 +1739,9 @@ During development:
         "-p",
         "clio-mcp"
       ],
-      "cwd": "/Users/dannyharding/Databases/AI",
+      "cwd": "/Users/you/Databases/AI",
       "env": {
-        "CLIO_DB_PATH": "/Users/dannyharding/.clio/shared.db"
+        "CLIO_DB_PATH": "/Users/you/.clio/shared.db"
       }
     }
   }

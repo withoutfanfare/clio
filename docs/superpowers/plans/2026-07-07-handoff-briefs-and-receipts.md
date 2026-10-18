@@ -19,7 +19,7 @@
 - Work on branch `feat/handoff-and-receipts` off `develop` in the clio repo.
 - Verify with `cargo test -p clio-core`, `cargo clippy`, `cargo fmt`.
 - Hook scripts live in `~/.claude/personal-skills/clio-hooks/scripts/` (reached via the `~/.claude/skills/clio-hooks` symlink); that directory is inside the `~/.claude` git repo — commit there too.
-- Cadence skill files live in `/Users/dannyharding/Development/Code/Project/cadence/skills/` — commit in that repo.
+- Cadence skill files live in `/Users/you/Development/Code/Project/cadence/skills/` — commit in that repo.
 - Every meaningful change requires a DOX pass (root `CLAUDE.md` rule): check whether the nearest `CLAUDE.md` files need updating; here the durable contracts land in `context/DOMAIN_RULES.md` and `docs/reference/mcp-contract.md` (Tasks 3), so the crate-level CLAUDE.md files need no edits.
 
 ---
@@ -31,7 +31,7 @@
 - [ ] **Step 1: Create the working branch**
 
 ```bash
-cd /Users/dannyharding/Development/Code/Project/clio
+cd /Users/you/Development/Code/Project/clio
 git checkout develop && git pull && git checkout -b feat/handoff-and-receipts
 ```
 
@@ -663,7 +663,7 @@ python3 - <<'EOF'
 import json, pathlib
 p = pathlib.Path.home() / ".codex" / "hooks.json"
 data = json.loads(p.read_text())
-entry = {"hooks": [{"command": "python3 '/Users/dannyharding/.claude/skills/clio-hooks/scripts/codex_stop.py'", "type": "command", "timeout": 150}]}
+entry = {"hooks": [{"command": "python3 '/Users/you/.claude/skills/clio-hooks/scripts/codex_stop.py'", "type": "command", "timeout": 150}]}
 stops = data["hooks"].setdefault("Stop", [])
 if any("codex_stop.py" in json.dumps(e) for e in stops):
     print("already registered")
@@ -693,8 +693,8 @@ git commit -m "feat(clio-hooks): capture Codex sessions into Clio via Stop hook"
 Two skill files in the cadence repo gain a handoff-brief pull and the ticket-tag rule. This is prose, not code — the loops execute these instructions.
 
 **Files:**
-- Modify: `/Users/dannyharding/Development/Code/Project/cadence/skills/cadence-loop-spec/SKILL.md`
-- Modify: `/Users/dannyharding/Development/Code/Project/cadence/skills/cadence-loop-build/SKILL.md`
+- Modify: `/Users/you/Development/Code/Project/cadence/skills/cadence-loop-spec/SKILL.md`
+- Modify: `/Users/you/Development/Code/Project/cadence/skills/cadence-loop-build/SKILL.md`
 
 **Interfaces:**
 - Consumes: `clio brief --preset handoff` (Task 2/3) and the `ticket:<id>` tag convention (Task 3).
@@ -727,7 +727,7 @@ Read `cadence-loop-build/SKILL.md`, find the procedure step where the spec docum
 - [ ] **Step 3: Verify and commit (in the cadence repo)**
 
 ```bash
-cd /Users/dannyharding/Development/Code/Project/cadence
+cd /Users/you/Development/Code/Project/cadence
 grep -n "handoff" skills/cadence-loop-spec/SKILL.md skills/cadence-loop-build/SKILL.md
 git add skills/cadence-loop-spec/SKILL.md skills/cadence-loop-build/SKILL.md
 git commit -m "docs(loops): pull Clio handoff brief during spec/build and tag memories ticket:<id>"
@@ -744,7 +744,7 @@ Expected: grep shows the new paragraphs in both files. Check the cadence repo's 
 - [ ] **Step 1: Full verification in the clio repo**
 
 ```bash
-cd /Users/dannyharding/Development/Code/Project/clio
+cd /Users/you/Development/Code/Project/clio
 cargo test && cargo clippy && cargo fmt --check
 ./build.sh
 ```

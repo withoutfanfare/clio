@@ -1,57 +1,14 @@
 # Clio
 
+[![CI](https://github.com/withoutfanfare/clio/actions/workflows/ci.yml/badge.svg)](https://github.com/withoutfanfare/clio/actions/workflows/ci.yml)
+
 <p align="center">
   <img src="crates/clio-tauri/icons/128x128@2x.png" alt="Clio app icon" width="144" height="144">
 </p>
 
 **Local-first shared memory for AI tooling.** One Rust core, one SQLite database, every AI agent you use.
 
-```text
-┌─────────────┐    ┌─────────────┐    ┌─────────────┐    ┌─────────────┐
-│ Claude Code │    │   Codex     │    │   Cursor    │    │  Windsurf   │
-└──────┬──────┘    └──────┬──────┘    └──────┬──────┘    └──────┬──────┘
-       │                  │                  │                  │
-       └──────────────────┴──────────────────┴──────────────────┘
-                                  │
-                          MCP (stdio)
-                                  │
-                          ┌───────▼───────┐
-                          │   clio-mcp    │
-                          │  MCP server   │
-                          └───────┬───────┘
-                                  │
-                          ┌───────▼───────┐
-                          │  clio-core    │
-                          │ (Rust logic)  │
-                          └───────┬───────┘
-                                  │
-                          ┌───────▼───────┐
-                          │    SQLite     │
-                          │  memory.db    │
-                          └───────────────┘
-```
-
-## Why Clio?
-
-AI coding assistants forget everything between sessions. You re-explain your project, preferences, and decisions every time. Clio fixes this by giving every agent you use access to the same persistent memory:
-
-- **One memory, every agent** — Claude Code, Codex, Cursor, Windsurf, Gemini, Copilot, OpenCode, Kilo, Kimi all share the same knowledge over MCP. Automatic lifecycle capture (session-start context briefs + session-end distillation, including a per-session `receipt` of what was done) runs for Claude Code and Codex; other tools read and write via MCP.
-- **Zero cloud dependency** — SQLite on your machine, embeddings run locally by default
-- **Automatic scoping** — memories are scoped to projects via directory detection, with desktop workspace management when manual cleanup is needed
-- **Semantic search** — find conceptually related context even when keywords don't match
-- **Knowledge graph** — link related memories to build a navigable web of context
-
-## Features
-
-- **Full-text search** — FTS5 with BM25 ranking and temporal relevance scoring
-- **Semantic search** — vector embeddings via local fastembed or OpenAI
-- **Namespaces** — automatic project scoping from working directory
-- **Knowledge graph** — typed directional links between memories with auto-link inference
-- **Capture pipeline** — LLM-based classification of unstructured text
-- **Handoff briefs** — `clio brief --preset handoff --query <ticket-id>` assembles everything needed to pick up a ticket: relevant memories (including any tagged `ticket:<id>`), active constraints, and recent session receipts
-- **Always-on daemon** — inbox watcher, background linking, health checks
-- **10+ agent integrations** — Claude Code, Codex, Cursor, Windsurf, Gemini, Copilot, OpenCode, Kilo, Kimi, and any MCP-compatible client
-- **Desktop UI** — Tauri-based paginated browsing, recoverable editing, Archive/Restore, attention and capture review, workspace shortcuts and durable context briefs; workspace deletion retains backup safeguards
+It is for developers who use more than one AI coding agent and want them all to remember the same project decisions, on their own machine, without a cloud service.
 
 ## Quick Start
 
@@ -102,6 +59,28 @@ clio remember \
 clio recall --query "storage"
 ```
 
+## Why Clio?
+
+AI coding assistants forget everything between sessions. You re-explain your project, preferences, and decisions every time. Clio fixes this by giving every agent you use access to the same persistent memory:
+
+- **One memory, every agent** — Claude Code, Codex, Cursor, Windsurf, Gemini, Copilot, OpenCode, Kilo, Kimi all share the same knowledge over MCP. Automatic lifecycle capture (session-start context briefs + session-end distillation, including a per-session `receipt` of what was done) runs for Claude Code and Codex; other tools read and write via MCP.
+- **Zero cloud dependency** — SQLite on your machine, embeddings run locally by default
+- **Automatic scoping** — memories are scoped to projects via directory detection, with desktop workspace management when manual cleanup is needed
+- **Semantic search** — find conceptually related context even when keywords don't match
+- **Knowledge graph** — link related memories to build a navigable web of context
+
+## Features
+
+- **Full-text search** — FTS5 with BM25 ranking and temporal relevance scoring
+- **Semantic search** — vector embeddings via local fastembed or OpenAI
+- **Namespaces** — automatic project scoping from working directory
+- **Knowledge graph** — typed directional links between memories with auto-link inference
+- **Capture pipeline** — LLM-based classification of unstructured text
+- **Handoff briefs** — `clio brief --preset handoff --query <ticket-id>` assembles everything needed to pick up a ticket: relevant memories (including any tagged `ticket:<id>`), active constraints, and recent session receipts
+- **Always-on daemon** — inbox watcher, background linking, health checks
+- **10+ agent integrations** — Claude Code, Codex, Cursor, Windsurf, Gemini, Copilot, OpenCode, Kilo, Kimi, and any MCP-compatible client
+- **Desktop UI** — Tauri-based paginated browsing, recoverable editing, Archive/Restore, attention and capture review, workspace shortcuts and durable context briefs; workspace deletion retains backup safeguards
+
 ## Documentation
 
 | Document | Description |
@@ -120,6 +99,31 @@ clio recall --query "storage"
 
 ## Architecture
 
+```text
+┌─────────────┐    ┌─────────────┐    ┌─────────────┐    ┌─────────────┐
+│ Claude Code │    │   Codex     │    │   Cursor    │    │  Windsurf   │
+└──────┬──────┘    └──────┬──────┘    └──────┬──────┘    └──────┬──────┘
+       │                  │                  │                  │
+       └──────────────────┴──────────────────┴──────────────────┘
+                                  │
+                          MCP (stdio)
+                                  │
+                          ┌───────▼───────┐
+                          │   clio-mcp    │
+                          │  MCP server   │
+                          └───────┬───────┘
+                                  │
+                          ┌───────▼───────┐
+                          │  clio-core    │
+                          │ (Rust logic)  │
+                          └───────┬───────┘
+                                  │
+                          ┌───────▼───────┐
+                          │    SQLite     │
+                          │  memory.db    │
+                          └───────────────┘
+```
+
 Rust core library (`clio-core`) owns all business logic. CLI, MCP server, daemon, and desktop UI are thin adapters over the core.
 
 ```text
@@ -131,6 +135,10 @@ crates/
 └── clio-tauri/    # Desktop UI (Vue 3 + Tauri 2)
 ```
 
+## How this was built
+
+Clio was built with the help of AI coding agents, mainly Claude Code and Codex. Every change was reviewed and tested by Danny Harding before it was merged.
+
 ## Licence
 
-See repository root.
+MIT. See [LICENSE](LICENSE).

@@ -200,7 +200,7 @@ override the persisted route for development:
 CLIO_REMOTE_HOST=atlas \
 CLIO_REMOTE_DB_PATH=/home/ubuntu/.local/share/clio/memory.db \
 CLIO_REMOTE_BINARY=/home/ubuntu/.local/bin/clio-mcp \
-CLIO_REMOTE_COMMAND=/Users/dannyharding/.cargo/bin/clio \
+CLIO_REMOTE_COMMAND=/Users/you/.cargo/bin/clio \
 ./dev.sh
 ```
 

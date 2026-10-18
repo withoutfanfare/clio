@@ -130,12 +130,12 @@ Example Claude Desktop style config:
       "command": "uv",
       "args": [
         "--directory",
-        "/Users/dannyharding/Databases/AI",
+        "/Users/you/Databases/AI",
         "run",
         "ai-memory-mcp"
       ],
       "env": {
-        "AI_SHARED_MEMORY_DB_PATH": "/Users/dannyharding/.ai-memory/shared.db"
+        "AI_SHARED_MEMORY_DB_PATH": "/Users/you/.ai-memory/shared.db"
       }
     }
   }

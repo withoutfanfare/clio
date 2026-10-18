@@ -198,8 +198,8 @@ Safe parallelism after contracts are fixed:
 
 **Files:**
 
-- Create: `/Users/dannyharding/.claude/personal-skills/clio-hooks/scripts/capture_queue.py`; `/Users/dannyharding/.claude/personal-skills/clio-hooks/tests/test_capture_queue.py`; representative Claude/Codex fixtures under `/Users/dannyharding/.claude/personal-skills/clio-hooks/tests/fixtures/`.
-- Modify: `/Users/dannyharding/.claude/personal-skills/clio-hooks/SKILL.md`.
+- Create: `/Users/you/.claude/personal-skills/clio-hooks/scripts/capture_queue.py`; `/Users/you/.claude/personal-skills/clio-hooks/tests/test_capture_queue.py`; representative Claude/Codex fixtures under `/Users/you/.claude/personal-skills/clio-hooks/tests/fixtures/`.
+- Modify: `/Users/you/.claude/personal-skills/clio-hooks/SKILL.md`.
 - Tests: Python `unittest` files above, using a fake `CLIO_BIN`.
 - External: client state under `~/Library/Application Support/clio/capture-spool/` on macOS; no repository database and no Atlas-side queue table.
 
@@ -214,7 +214,7 @@ Safe parallelism after contracts are fixed:
 - [ ] **GATE:** confirm that strictly permissioned, redacted plaintext may remain until success/manual purge. If not, design and approve Keychain-backed encryption before writing any spool payload.
 - [ ] Write failing standard-library tests for atomic enqueue, file permissions, shared secret redaction, ordered cursor jobs, a forced 429, timeout, malformed response, crash replay and successful deletion.
 - [ ] Include a fixture where the Codex rollout appears after the initial event; the durable discovery state must remain retryable rather than becoming an empty success.
-- [ ] Run `python3 -m unittest discover -s /Users/dannyharding/.claude/personal-skills/clio-hooks/tests -p 'test_*.py'` and record the expected missing-module failure.
+- [ ] Run `python3 -m unittest discover -s /Users/you/.claude/personal-skills/clio-hooks/tests -p 'test_*.py'` and record the expected missing-module failure.
 - [ ] Implement the smallest shared queue module. Claude and Codex remain transcript-format adapters; retry/redaction/cursor rules exist once.
 - [ ] Track both last durably enqueued cursor and last remotely confirmed cursor so a pending earlier job does not cause duplicate overlapping deltas.
 - [ ] Keep jobs serial per session; later cursors wait behind an earlier failed cursor.
@@ -236,7 +236,7 @@ Safe parallelism after contracts are fixed:
 **Files:**
 
 - Create: none unless client hook payload contracts require a tiny wrapper fixture.
-- Modify: `/Users/dannyharding/.claude/personal-skills/clio-hooks/scripts/session_stop.py`, `codex_stop.py`, `session_start.py`, `clio_report.py`, `docs/metrics.md`, `docs/roadmap.md`, `SKILL.md`; `/Users/dannyharding/.claude/settings.json`; `/Users/dannyharding/.codex/hooks.json`.
+- Modify: `/Users/you/.claude/personal-skills/clio-hooks/scripts/session_stop.py`, `codex_stop.py`, `session_start.py`, `clio_report.py`, `docs/metrics.md`, `docs/roadmap.md`, `SKILL.md`; `/Users/you/.claude/settings.json`; `/Users/you/.codex/hooks.json`.
 - Tests: hook-package unit tests and fixtures from Task 2.
 - External: active Claude and Codex hook registrations and their local state/metrics files.
 
@@ -384,7 +384,7 @@ Safe parallelism after contracts are fixed:
 
 **Files:**
 
-- Create: `/Users/dannyharding/.claude/personal-skills/clio-hooks/scripts/prompt_recall.py` only if one shared payload/output adapter can satisfy both client fixtures; otherwise create two thin wrappers over the same `clio resume` contract.
+- Create: `/Users/you/.claude/personal-skills/clio-hooks/scripts/prompt_recall.py` only if one shared payload/output adapter can satisfy both client fixtures; otherwise create two thin wrappers over the same `clio resume` contract.
 - Modify: hook-package `session_start.py`, tests, docs and metrics; `~/.claude/settings.json`; `~/.codex/hooks.json`; `~/.claude/hooks/clio-session-recall.sh` or its registration; `~/.codex/hooks/session-start.sh` only where required to preserve existing behaviour.
 - Tests: Claude/Codex SessionStart and UserPromptSubmit payload/output fixtures.
 - External: live hook registrations and small per-session dedup state containing IDs/topic hashes, not memory content.

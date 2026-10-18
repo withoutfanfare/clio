@@ -516,4 +516,4 @@ Initial release of Clio — a local-first shared memory system for AI tooling, w
 - Actionable error messages formatted for agent usability
 - Connection-per-request pattern with `spawn_blocking` for database calls
 
-[0.1.0]: https://github.com/dannyharding/clio/releases/tag/v0.1.0
+[0.1.0]: https://github.com/withoutfanfare/clio/releases/tag/v0.1.0

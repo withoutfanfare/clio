@@ -47,7 +47,7 @@ _None for Clio_ (history and working tree clean).
 
 ## P3 — Polish & privacy presentation
 - [ ] **Bundle-ID decision** — `com.clio.desktop` → unified scheme (default `co.stuntrocket.clio`). ⚠️ decide **before** notarisation. (report §6.5, §8.3, §9 P3.1)
-- [ ] **Scrub `/Users/dannyharding/.clio/shared.db`** from example JSON in docs. (report §6.6, §7 clio)
+- [ ] **Scrub `/Users/you/.clio/shared.db`** from example JSON in docs. (report §6.6, §7 clio)
 - [ ] **Add privacy statement** to README (report Appendix F). (report §9 P3.5)
 - [ ] **Add `SECURITY.md`** (report Appendix G). (report §9 P3.6)
 
@@ -60,7 +60,7 @@ Maps **every Clio mention in the main report** to a row above (all copied ✅).
 | §6.1 | no LICENSE | P1 | ✅ |
 | §6.2 | `ui/.npmrc` → Verdaccio (no token) — unbuildable for cloners | P1 | ✅ |
 | §6.5 | bundle id `com.clio.desktop` | P3 | ✅ |
-| §6.6 | `/Users/dannyharding/.clio/shared.db` in docs example | P3 | ✅ |
+| §6.6 | `/Users/you/.clio/shared.db` in docs example | P3 | ✅ |
 | §6.7 | no secret-scanning CI | P2 | ✅ |
 | §7 Clio | history/tree clean; stale CHANGELOG URL; osascript/pbcopy safe; npm audit 0 | scorecard + P1/P2 | ✅ |
 | §8.1/§8.2/§8.3 | licence / UI / bundle-id decisions | P1/P3 | ✅ |
