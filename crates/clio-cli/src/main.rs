@@ -1318,6 +1318,24 @@ fn run_with_routing(cli: Cli, raw_args: &[OsString]) -> Result<(), Box<dyn std::
                         .into(),
                 );
             }
+            // The command runs on the shared host, so a path would name a
+            // file there: `clio export backup.jsonl` reported success and left
+            // the backup on Atlas.
+            let remote_path = match &cli.command {
+                Command::Export(args) => Some(("export --output - > local.jsonl", &args.output)),
+                Command::Import(args) => Some(("import --input - < local.jsonl", &args.input)),
+                _ => None,
+            };
+            if let Some((usage, path)) = remote_path {
+                if path != "-" {
+                    return Err(format!(
+                        "shared storage reads and writes files on {}, not this computer; \
+                         use `clio {usage}`, or --local for the local database",
+                        remote.host
+                    )
+                    .into());
+                }
+            }
             remote.validate()?;
             let namespace = current_namespace();
             let cwd = current_context_cwd();

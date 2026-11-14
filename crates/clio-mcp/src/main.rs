@@ -161,7 +161,7 @@ struct RememberParams {
     #[serde(default)]
     valid_until: Option<String>,
 
-    /// Upsert by source+source_ref.
+    /// Replace the record with the same source+source_ref instead of inserting.
     #[serde(default)]
     upsert: bool,
 }
@@ -1759,8 +1759,9 @@ impl ClioServer {
 
     /// Store a memory record.
     #[tool(
-        description = "Store a memory. Upsert (replace-in-place) requires BOTH `source` and \
-                       `source_ref`; without both, a new record is always inserted."
+        description = "Store a memory. To replace one in place pass `upsert: true` with BOTH \
+                       `source` and `source_ref`; otherwise a new record is inserted, and a \
+                       repeated `source` + `source_ref` is rejected as a duplicate."
     )]
     async fn memory_remember(
         &self,
@@ -3070,8 +3071,9 @@ impl ServerHandler for ClioServer {
                  - memory_recall: keyword/FTS search. Omit `query` for a recent-style listing.\n\
                  - memory_search: semantic (vector) search; requires a configured embedding \
                  backend and returns a configuration error if none is set.\n\
-                 - memory_remember: deliberate store. Upsert needs BOTH `source` and \
-                 `source_ref`, else a new record is inserted.\n\
+                 - memory_remember: deliberate store. To update in place pass \
+                 `upsert: true` with BOTH `source` and `source_ref`; otherwise a new record \
+                 is inserted.\n\
                  - memory_capture: LLM-classified store; low-confidence items queue to the \
                  inbox for review instead of storing immediately.\n\
                  - memory_context: assemble a scoped brief. Presets: project-brief, \

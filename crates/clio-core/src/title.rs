@@ -30,7 +30,12 @@ pub fn generate_title(content: &str) -> String {
         return cleaned.to_string();
     }
 
-    let truncated = &cleaned[..AUTO_TITLE_MAX_LEN];
+    // The limit is in bytes; slicing inside a multi-byte character panics.
+    let mut end = AUTO_TITLE_MAX_LEN;
+    while !cleaned.is_char_boundary(end) {
+        end -= 1;
+    }
+    let truncated = &cleaned[..end];
     match truncated.rfind(' ') {
         Some(pos) => format!("{}…", &truncated[..pos]),
         None => format!("{truncated}…"),
@@ -91,7 +96,7 @@ async fn generate_title_ai_async(
 
     let body = title_request_body(model, &truncated_content);
 
-    let client = reqwest::Client::new();
+    let client = crate::capture::http_client();
     let response = client
         .post(&url)
         .header("Authorization", format!("Bearer {api_key}"))
@@ -186,6 +191,13 @@ mod tests {
         assert!(reasoning.get("max_tokens").is_none());
         assert_eq!(reasoning["reasoning_effort"], "none");
         assert_eq!(reasoning["max_completion_tokens"], 60);
+    }
+
+    #[test]
+    fn generate_title_cuts_long_lines_between_characters() {
+        // Byte 80 falls inside the three-byte dash; slicing there panicked.
+        let line = format!("{}—and the rest of a long first line", "a".repeat(79));
+        assert_eq!(generate_title(&line), format!("{}…", "a".repeat(79)));
     }
 
     #[test]

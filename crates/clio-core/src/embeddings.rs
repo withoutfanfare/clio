@@ -209,7 +209,13 @@ impl OpenAiBackend {
             _ => 1536, // Reasonable default
         };
 
-        let client = reqwest::Client::new();
+        // reqwest has no timeout by default; a stalled connection would
+        // otherwise hold an embedding call (and whatever awaits it) forever.
+        let client = reqwest::Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(10))
+            .timeout(std::time::Duration::from_secs(60))
+            .build()
+            .map_err(|e| ClioError::Storage(format!("HTTP client setup failed: {e}")))?;
 
         Ok(Self {
             api_key,

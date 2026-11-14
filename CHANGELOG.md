@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+**Review fixes (2026-11-14)**
+- Storing a memory without a title no longer crashes when a multi-byte
+  character (a dash, a curly quote, a pound sign) sits at the 80-byte cut.
+- Old open follow-ups stay eligible for resume however many resolved or
+  cancelled items a namespace has accumulated since.
+- Default (project plus global) recall counts an access only for the memories
+  it returns, not for every row in its internal window.
+- Calls to the capture, title and embedding providers time out (10 s to
+  connect, 180 s in total; 60 s for embeddings) instead of waiting forever.
+- With shared storage, `clio export` and `clio import` refuse a file path
+  rather than silently using the shared host's disk; `-` streams locally.
+- `memory_remember` now says plainly that updating in place needs
+  `upsert: true` as well as `source` and `source_ref`.
+
 ### Added
 
 - Direct concurrent work reports through CLI and MCP, with immutable receipts,

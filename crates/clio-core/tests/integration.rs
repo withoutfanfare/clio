@@ -1966,6 +1966,32 @@ fn recall_scoped_total_counts_each_namespace_once() {
     );
 }
 
+#[test]
+fn recall_scoped_counts_access_only_for_returned_rows() {
+    let conn = test_db();
+    let shown = remember_in(&conn, "project:proj", "alpha project note");
+    let unseen = remember_in(&conn, "global", "alpha global note");
+
+    let q = RecallQuery {
+        query: Some("alpha".into()),
+        limit: 1,
+        ..Default::default()
+    };
+    let res = repository::recall_scoped(&conn, &q, "project:proj").unwrap();
+    assert_eq!(res.items[0].memory.id, shown.id);
+
+    let count = |id: &str| -> i64 {
+        conn.query_row(
+            "SELECT access_count FROM memories WHERE id = ?1",
+            [id],
+            |row| row.get(0),
+        )
+        .unwrap()
+    };
+    assert_eq!(count(&shown.id), 1);
+    assert_eq!(count(&unseen.id), 0, "never returned, so never accessed");
+}
+
 // ---------------------------------------------------------------------------
 // Expiry filtering (valid_until)
 // ---------------------------------------------------------------------------

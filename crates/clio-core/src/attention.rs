@@ -617,7 +617,17 @@ pub fn eligible(conn: &Connection, ctx: &EligibilityContext) -> Result<Vec<Eligi
         ));
     }
 
-    let candidates = list_attention(conn, ctx.namespace.as_deref(), None, 500)?;
+    // Only open and snoozed items can surface. Fetching them by status keeps
+    // a namespace's resolved and cancelled history from crowding old open
+    // work out of the window.
+    let mut candidates = list_attention(conn, ctx.namespace.as_deref(), Some(STATUS_OPEN), 500)?;
+    candidates.extend(list_attention(
+        conn,
+        ctx.namespace.as_deref(),
+        Some(STATUS_SNOOZED),
+        500,
+    )?);
+    candidates.sort_by(|a, b| b.created_at.cmp(&a.created_at));
     let stale_before = stale_before(&ctx.now, ctx.max_age_days);
     let mut eligible_items = Vec::new();
 
@@ -790,6 +800,31 @@ mod tests {
             0,
             "failed creation must not leak events"
         );
+    }
+
+    #[test]
+    fn closed_history_does_not_crowd_out_old_open_work() {
+        let conn = test_conn();
+        let old = remember(&conn, "Old overdue item");
+        create_attention(
+            &conn,
+            &AttentionInput {
+                memory_id: old.id.clone(),
+                due_at: Some("2026-07-28T00:00:00Z".into()),
+                ..AttentionInput::default()
+            },
+        )
+        .unwrap();
+        // More newer, closed items than the candidate window holds.
+        for n in 0..501 {
+            let done = remember(&conn, &format!("Finished item {n}"));
+            let item = open_attention(&conn, &done.id);
+            cancel(&conn, &item.id, None, None).unwrap();
+        }
+
+        let found = eligible(&conn, &ctx(None, None)).unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].item.memory_id, old.id);
     }
 
     #[test]

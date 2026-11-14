@@ -295,6 +295,18 @@ fn get_or_create_runtime() -> &'static tokio::runtime::Runtime {
 }
 
 #[cfg(feature = "capture")]
+/// HTTP client for provider calls. reqwest sets no timeout by default, so a
+/// stalled connection hung a checkpoint until the hook killed it at 240 s;
+/// this fails cleanly first.
+pub(crate) fn http_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .timeout(std::time::Duration::from_secs(180))
+        .build()
+        .unwrap_or_default()
+}
+
+#[cfg(feature = "capture")]
 async fn chat_async(
     system: &str,
     user: &str,
@@ -307,7 +319,7 @@ async fn chat_async(
 
     let body = chat_request_body(system, user, config, json_mode);
 
-    let client = reqwest::Client::new();
+    let client = http_client();
     let response = client
         .post(&url)
         .header("Authorization", format!("Bearer {api_key}"))

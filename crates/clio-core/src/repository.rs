@@ -1223,12 +1223,16 @@ pub fn recall_scoped(
     // to line up with the merged ordering.
     let window = query.offset.saturating_add(query.limit);
 
+    // Access is tracked once below, for the page actually returned: tracking
+    // inside each window counted memories the caller never saw, and access
+    // count feeds ranking.
     let scoped = recall(
         conn,
         &RecallQuery {
             namespace: Some(detected_namespace.to_string()),
             limit: window,
             offset: 0,
+            skip_access_tracking: true,
             ..query.clone()
         },
     )?;
@@ -1238,6 +1242,7 @@ pub fn recall_scoped(
             namespace: Some("global".to_string()),
             limit: window,
             offset: 0,
+            skip_access_tracking: true,
             ..query.clone()
         },
     )?;
@@ -1260,6 +1265,13 @@ pub fn recall_scoped(
         .skip(query.offset as usize)
         .take(query.limit as usize)
         .collect();
+
+    if !query.skip_access_tracking {
+        let ids: Vec<&str> = paged.iter().map(|i| i.memory.id.as_str()).collect();
+        if let Err(e) = touch_accessed(conn, &ids) {
+            tracing::warn!("access tracking failed in scoped recall: {e}");
+        }
+    }
 
     Ok(RecallResult {
         archived_only: query.archived_only,

@@ -531,6 +531,11 @@ clio export --output memories.jsonl --namespace project:clio
 # Import
 clio import --input memories.jsonl
 
+# With shared storage (Atlas) the command runs there, so a file path is
+# refused; stream through this computer instead, or add --local.
+clio export --output - > memories.jsonl
+clio import --input - < memories.jsonl
+
 # Migrate from AI assistants
 clio migrate --source claude --file conversations.json
 clio migrate --source chatgpt --file export.json
