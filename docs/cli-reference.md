@@ -282,20 +282,52 @@ replays its stored result rather than creating duplicates.
 
 ## Resume (pick up where you left off)
 
-`clio resume` builds a deterministic brief of what deserves attention now:
-eligible open work first (each with the reason it surfaced — overdue, reminder
-due, project-session trigger, dormant), then blocked items, active constraints
-(project plus a modest global prior), recent decisions, prompt-relevant
-knowledge (only with `--query`) and recent activity. All reads are untracked —
-an automatic resume never changes recall ranking. With `--session`, items
-surface once per session and are suppressed on repeats until their state
-changes.
+`clio resume` builds an untracked brief. Prompt requests prioritise task-matched
+knowledge, reserving one slot each for constraints, due follow-ups and blockers
+when present and the item budget permits. Session start (no query) includes
+exactly one newest receipt, then attention, constraints and decisions. Follow-ups
+are capped at three: dated items first, then explicit next-session reminders,
+then dormant backlog. Items include `created_at` and `updated_at` when different.
+
+Constraints and decisions use their top candidates only; suppression never
+refills those sections. Only prompt requests suppress them, and only following
+an acknowledged delivery of the current memory revision in that session.
+Selection-time events do not qualify. Session starts always reconsider them,
+including restarts and compaction. The knowledge section refills after filtering
+receipts and stale consolidation, within one bounded window of 50 candidates.
 
 ```sh
-clio resume                                  # project-level, auto-detected namespace
-clio resume --query "checkpoint retries"     # task-aware, adds relevant knowledge
-clio resume --session <session-id>           # once-per-session surfacing
+clio resume                                  # session-start context
+clio resume --query "checkpoint retries"     # task-aware context
+clio resume --session SESSION --no-record --json > brief.json
+# After injection, acknowledge only the full IDs actually injected:
+clio resume --acknowledge --shown-id FULL-ID --shown-id FULL-ID --json < brief.json
 ```
+
+`--no-record` requires `--session` and returns additive `pending_delivery`
+receipts. `--acknowledge` reads that JSON from stdin; repeat `--shown-id` for each
+injected item. Acknowledgement is atomic and retry-safe; deleted memories are
+skipped, and other valid IDs still succeed. It records every applicable attention
+reason. The input JSON is trusted local caller data, including its session ID;
+it is not a signed delivery proof. Keep the brief unchanged between selection
+and acknowledgement. Ordinary resume still records at selection time. Today's
+hooks remain compatible; core constraint suppression activates only after they
+adopt acknowledgement. Both CLI bridge ends must support the new flags; flags
+and stdin pass through unchanged.
+
+Any-term search considers 1,000 Unicode characters and at most 12 terms. Tokens
+containing `/` are excluded, including paths and URLs. Ticket/code identifiers
+take priority; dates and times are not identifiers. Remaining terms use document
+counts through FTS MATCH, including the index's stemming and accent folding.
+Counts cover the whole index, including archived memories. Short queries retain
+their matching behaviour apart from path exclusion.
+
+Administrative exports and query-less recall (including kind/tag-only filters
+and scoped browsing) do not update access counts or last-accessed dates.
+Non-empty query recall remains tracked; existing access history is preserved.
+Effectiveness attributes events to the memory's current namespace, falling back
+to the event namespace only when the memory is absent. A global constraint shown
+in a project brief counts under `global`, not the consuming project.
 
 ---
 
@@ -614,15 +646,3 @@ Default DB: `~/Library/Application Support/clio/memory.db` (macOS)
 - [Settings Reference](reference/settings.md) — all configuration keys and defaults
 - [Schema Reference](reference/schema.md) — database structure
 - [Documentation Index](README.md) — all available documentation
-
-## Delivery and usage semantics
-
-Administrative exports and query-less browsing do not update access counts or last-accessed dates. Deliberate recall with a non-empty query remains tracked. Existing access history is preserved.
-
-Resume gives task-matched knowledge first claim on prompt brief slots, reserving a small allowance for due follow-ups and blockers. Follow-ups are capped at three, soonest due first. Session-start briefs reserve a slot for the newest receipt. Constraints and decisions already surfaced in the session are excluded before allocation; filtered receipts and stale consolidation do not consume knowledge slots. Items include `created_at` and, when different, `updated_at`.
-
-Any-term task search considers up to 1,000 Unicode characters and selects at most 12 terms. Ticket/code identifiers take priority, followed by known corpus words with the lowest document counts. Queries with at most 12 meaningful terms retain their existing matching behaviour.
-
-Effectiveness attributes new surfaced events to the memory namespace and resolves older events with missing namespaces through their memory record, without rewriting the ledger.
-
-For confirmed injection, request `clio resume --session SESSION --no-record --json` and retain its JSON. After injection, pipe that same JSON to `clio resume --acknowledge --shown-id FULL-ID --shown-id FULL-ID --json`. Only list IDs actually injected. Acknowledgement is atomic and idempotent, including attention state versions; retrying cannot double-count or suppress a later attention state. A dropped or timed-out unacknowledged brief causes no suppression. Pending receipts are additive JSON fields; ordinary resume still records immediately. The CLI remote bridge forwards these flags and the JSON on stdin; both ends must support the flags before hooks opt in.
