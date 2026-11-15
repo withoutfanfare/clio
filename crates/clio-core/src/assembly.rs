@@ -612,10 +612,74 @@ pub struct ResumeSection {
 /// The assembled resume brief.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResumeBrief {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pending_delivery: Vec<ResumeDelivery>,
     pub namespace: String,
     pub sections: Vec<ResumeSection>,
     pub total_items: u32,
     pub generated_at: String,
+}
+
+/// Receipt retained by the caller until it has injected the selected memory.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResumeDelivery {
+    pub memory_id: String,
+    pub session_id: String,
+    pub reason: String,
+    pub attention_updated_at: Option<String>,
+}
+
+fn delivery_event(
+    conn: &Connection,
+    delivery: &ResumeDelivery,
+) -> Result<crate::events::EventInput> {
+    let memory = repository::get_raw(conn, &delivery.memory_id)?;
+    let mut key = format!(
+        "surfaced:{}:{}:{}",
+        memory.id, delivery.session_id, delivery.reason
+    );
+    if let Some(updated) = &delivery.attention_updated_at {
+        key.push(':');
+        key.push_str(updated);
+    }
+    Ok(crate::events::EventInput {
+        idempotency_key: Some(key),
+        memory_id: Some(memory.id),
+        namespace: Some(memory.namespace),
+        session_id: Some(delivery.session_id.clone()),
+        actor: Some("resume".into()),
+        event_type: crate::events::EVENT_SURFACED.into(),
+        reason: Some(delivery.reason.clone()),
+        ..Default::default()
+    })
+}
+
+/// Acknowledge only injected IDs from a deferred brief. Atomic and retry-safe.
+pub fn acknowledge_resume(conn: &Connection, brief: &ResumeBrief, ids: &[String]) -> Result<()> {
+    let mut events = Vec::new();
+    for id in ids {
+        if !brief
+            .sections
+            .iter()
+            .any(|s| s.items.iter().any(|i| &i.memory_id == id))
+        {
+            return Err(ClioError::Validation(format!(
+                "memory {id} is not in this brief"
+            )));
+        }
+        let delivery = brief
+            .pending_delivery
+            .iter()
+            .find(|d| &d.memory_id == id)
+            .ok_or_else(|| ClioError::Validation(format!("memory {id} has no pending delivery")))?;
+        events.push(delivery_event(conn, delivery)?);
+    }
+    let tx = conn.unchecked_transaction()?;
+    for event in events {
+        crate::events::record_event(&tx, &event)?;
+    }
+    tx.commit()?;
+    Ok(())
 }
 
 /// An undated task shown in this many sessions without anyone touching it
@@ -687,6 +751,27 @@ fn human_reason(item: &crate::attention::AttentionItem, reason: &str) -> String 
 /// set, included attention items record an idempotent `surfaced` event and are
 /// suppressed on repeat requests in the same scope unless their state changes.
 pub fn build_resume_brief(conn: &Connection, request: &ResumeRequest) -> Result<ResumeBrief> {
+    build_resume(conn, request, true)
+}
+
+/// Select a brief without recording delivery. A session is required for acknowledgement.
+pub fn build_resume_brief_unrecorded(
+    conn: &Connection,
+    request: &ResumeRequest,
+) -> Result<ResumeBrief> {
+    if request
+        .session_id
+        .as_deref()
+        .is_none_or(|s| s.trim().is_empty())
+    {
+        return Err(ClioError::Validation(
+            "deferred resume requires a session".into(),
+        ));
+    }
+    build_resume(conn, request, false)
+}
+
+fn build_resume(conn: &Connection, request: &ResumeRequest, record: bool) -> Result<ResumeBrief> {
     use crate::attention;
 
     let now = request.now.clone().unwrap_or_else(now_utc);
@@ -711,7 +796,13 @@ pub fn build_resume_brief(conn: &Connection, request: &ResumeRequest) -> Result<
         },
     )?;
 
-    eligible.sort_by_key(|e| e.item.due_at.clone().or(e.item.remind_at.clone()).unwrap_or_else(|| "9999".into()));
+    eligible.sort_by_key(|e| {
+        e.item
+            .due_at
+            .clone()
+            .or(e.item.remind_at.clone())
+            .unwrap_or_else(|| "9999".into())
+    });
     let mut surfaced: Vec<(crate::attention::AttentionItem, String)> = Vec::new();
     let mut needs_attention = Vec::new();
     for entry in eligible {
@@ -817,7 +908,7 @@ pub fn build_resume_brief(conn: &Connection, request: &ResumeRequest) -> Result<
     )?;
 
     // 5. Prompt-relevant knowledge — abstains without a query.
-    let knowledge = match request
+    let mut knowledge = match request
         .query
         .as_deref()
         .map(str::trim)
@@ -826,7 +917,7 @@ pub fn build_resume_brief(conn: &Connection, request: &ResumeRequest) -> Result<
         Some(query) => {
             // The query is usually a whole prompt, so match on any of its
             // meaningful terms; requiring every word would match nothing.
-            let items = resume_recall(
+            resume_recall(
                 conn,
                 RecallQuery {
                     match_any_term: true,
@@ -834,8 +925,7 @@ pub fn build_resume_brief(conn: &Connection, request: &ResumeRequest) -> Result<
                 },
                 "matches task terms",
                 request.session_id.as_deref(),
-            )?;
-            items
+            )?
         }
         None => Vec::new(),
     };
@@ -843,7 +933,10 @@ pub fn build_resume_brief(conn: &Connection, request: &ResumeRequest) -> Result<
     // 6. Recent substantive activity (receipts).
     let activity = resume_recall(
         conn,
-        RecallQuery { sort_by: Some(SortOrder::CreatedDesc), ..resume_query(Some(&namespace), Some("receipt"), None, 3, &request.scoring) },
+        RecallQuery {
+            sort_by: Some(SortOrder::CreatedDesc),
+            ..resume_query(Some(&namespace), Some("receipt"), None, 3, &request.scoring)
+        },
         "recent session receipt",
         request.session_id.as_deref(),
     )?
@@ -854,7 +947,18 @@ pub fn build_resume_brief(conn: &Connection, request: &ResumeRequest) -> Result<
     })
     .collect::<Vec<_>>();
 
-    let ordered = if request.query.as_deref().is_some_and(|q| !q.trim().is_empty()) {
+    // Keep attention reasons when the same memory also matches the task.
+    knowledge.retain(|k| {
+        !needs_attention
+            .iter()
+            .chain(waiting.iter())
+            .any(|a| a.memory_id == k.memory_id)
+    });
+    let ordered = if request
+        .query
+        .as_deref()
+        .is_some_and(|q| !q.trim().is_empty())
+    {
         vec![
             ("Relevant knowledge", knowledge),
             ("Needs attention", needs_attention),
@@ -875,25 +979,30 @@ pub fn build_resume_brief(conn: &Connection, request: &ResumeRequest) -> Result<
 
     let sections = allocate_resume_budget(ordered, request.max_items, request.char_budget);
 
-    // Record surfaced events only for attention items that made the cut.
+    let mut pending_delivery = Vec::new();
     if let Some(scope) = &request.session_id {
-        let included: std::collections::HashSet<&str> = sections
-            .iter()
-            .flat_map(|s| s.items.iter().map(|i| i.memory_id.as_str()))
-            .collect();
-        for (item, reason) in &surfaced {
-            if included.contains(item.memory_id.as_str()) {
-                attention::record_surfaced(conn, item, scope, reason, Some("resume"));
-            }
-        }
-        // Record the other shown memories too, so usefulness can be measured
-        // against everything an agent was given, not just open work.
-        let attention_ids: std::collections::HashSet<&str> =
-            surfaced.iter().map(|(i, _)| i.memory_id.as_str()).collect();
         for section in &sections {
             for item in &section.items {
-                if !attention_ids.contains(item.memory_id.as_str()) {
-                    record_shown(conn, item, &section.heading, scope);
+                let attention = surfaced.iter().find(|(a, reason)| {
+                    a.memory_id == item.memory_id
+                        && ((section.heading == "Waiting on" && reason == "waiting")
+                            || (section.heading == "Needs attention" && reason != "waiting"))
+                });
+                let delivery = ResumeDelivery {
+                    memory_id: item.memory_id.clone(),
+                    session_id: scope.clone(),
+                    reason: attention
+                        .map(|(_, r)| r.clone())
+                        .unwrap_or_else(|| section.heading.clone()),
+                    attention_updated_at: attention.map(|(a, _)| a.updated_at.clone()),
+                };
+                if record {
+                    match delivery_event(conn, &delivery) {
+                        Ok(event) => crate::events::log_event(conn, &event),
+                        Err(e) => tracing::warn!("resume event tracking failed: {e}"),
+                    }
+                } else {
+                    pending_delivery.push(delivery);
                 }
             }
         }
@@ -901,6 +1010,7 @@ pub fn build_resume_brief(conn: &Connection, request: &ResumeRequest) -> Result<
 
     let total_items: u32 = sections.iter().map(|s| s.items.len() as u32).sum();
     Ok(ResumeBrief {
+        pending_delivery,
         namespace,
         sections,
         total_items,
@@ -921,23 +1031,6 @@ fn ignored_too_long(conn: &Connection, item: &crate::attention::AttentionItem) -
         |row| row.get(0),
     )?;
     Ok(sessions >= IGNORED_SESSION_LIMIT as i64)
-}
-
-/// Log that a non-attention memory was shown in a resume brief. Idempotent
-/// per session and section; fire-and-forget.
-fn record_shown(conn: &Connection, item: &ResumeItem, section: &str, scope: &str) {
-    crate::events::log_event(
-        conn,
-        &crate::events::EventInput {
-            idempotency_key: Some(format!("surfaced:{}:{scope}:{section}", item.memory_id)),
-            memory_id: Some(item.memory_id.clone()),
-            actor: Some("resume".into()),
-            session_id: Some(scope.to_string()),
-            event_type: crate::events::EVENT_SURFACED.into(),
-            reason: Some(section.to_string()),
-            ..crate::events::EventInput::default()
-        },
-    );
 }
 
 /// Load a memory for resume inclusion, applying archive/expiry eligibility.
@@ -996,9 +1089,12 @@ fn resume_recall(
         let count = result.items.len();
         for ri in result.items {
             let m = ri.memory;
-            if knowledge && (m.kind == "receipt" ||
-                (m.source.as_deref() == Some(crate::consolidate::CONSOLIDATED_SOURCE)
-                 && crate::consolidate::consolidation_is_stale(conn, &m.namespace)?.unwrap_or(true))) {
+            if knowledge
+                && (m.kind == "receipt"
+                    || (m.source.as_deref() == Some(crate::consolidate::CONSOLIDATED_SOURCE)
+                        && crate::consolidate::consolidation_is_stale(conn, &m.namespace)?
+                            .unwrap_or(true)))
+            {
                 continue;
             }
             if let Some(scope) = session {
@@ -1007,9 +1103,13 @@ fn resume_recall(
                     rusqlite::params![m.id, scope], |r| r.get::<_, bool>(0))? { continue; }
             }
             items.push(resume_item_from_memory(&m, "knowledge", reason.to_string()));
-            if items.len() >= limit { return Ok(items); }
+            if items.len() >= limit {
+                return Ok(items);
+            }
         }
-        if count < 50 { break; }
+        if count < 50 {
+            break;
+        }
         recall_query.offset += 50;
     }
     Ok(items)
@@ -1024,8 +1124,16 @@ fn allocate_resume_budget(
     max_items: u32,
     char_budget: Option<u32>,
 ) -> Vec<ResumeSection> {
-    let critical: Vec<usize> = ordered.iter().enumerate().filter_map(|(i, (h, _))|
-        (["Needs attention", "Waiting on"].contains(h) || (ordered[0].0 == "Recent activity" && ["Recent activity", "Active constraints"].contains(h))).then_some(i)).collect();
+    let critical: Vec<usize> = ordered
+        .iter()
+        .enumerate()
+        .filter_map(|(i, (h, _))| {
+            (["Needs attention", "Waiting on"].contains(h)
+                || (ordered[0].0 == "Recent activity"
+                    && ["Recent activity", "Active constraints"].contains(h)))
+            .then_some(i)
+        })
+        .collect();
 
     // Cross-section dedup, priority order.
     let mut seen = std::collections::HashSet::new();
@@ -1045,7 +1153,11 @@ fn allocate_resume_budget(
     let max_items = max_items.max(1) as usize;
     let mut take: Vec<usize> = vec![0; pools.len()];
     let mut used = 0;
-    for (index, (_, items)) in pools.iter().enumerate().filter(|(i, _)| critical.contains(i)) {
+    for (index, (_, items)) in pools
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| critical.contains(i))
+    {
         if !items.is_empty() && used < max_items {
             take[index] = 1;
             used += 1;
@@ -1082,7 +1194,11 @@ fn allocate_resume_budget(
         first_kept = true;
         funded.insert(item.memory_id.clone());
     };
-    for (index, (_, items)) in pools.iter().enumerate().filter(|(i, _)| critical.contains(i)) {
+    for (index, (_, items)) in pools
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| critical.contains(i))
+    {
         if take[index] > 0 {
             if let Some(item) = items.first() {
                 fund(item);
@@ -1799,11 +1915,80 @@ mod tests {
     }
 
     #[test]
+    fn resume_caps_followups_orders_due_dates_and_carries_dates() {
+        let conn = test_db();
+        let ns = "project:resume";
+        for day in [4, 2, 3, 1] {
+            open_action(
+                &conn,
+                ns,
+                &format!("Task {day}"),
+                Some(&format!("2026-07-0{day}T00:00:00Z")),
+            );
+        }
+        let receipt = make_memory(&conn, ns, "receipt", "Latest session");
+        conn.execute(
+            "UPDATE memories SET created_at = '2025-01-01T00:00:00Z' WHERE id = ?1",
+            [&receipt.id],
+        )
+        .unwrap();
+        let mut request = resume_request(ns);
+        let brief = build_resume_brief(&conn, &request).unwrap();
+        let tasks = &section(&brief, "Needs attention").unwrap().items;
+        assert_eq!(tasks.len(), 3);
+        assert!(tasks[0].reason.contains("2026-07-01"));
+        request.max_items = 1;
+        let brief = build_resume_brief(&conn, &request).unwrap();
+        let item = &brief.sections[0].items[0];
+        assert_eq!(item.memory_id, receipt.id);
+        assert_eq!(item.created_at, "2025-01-01T00:00:00Z");
+        assert!(item.updated_at.is_some());
+    }
+
+    #[test]
+    fn deferred_delivery_only_suppresses_acknowledged_items() {
+        let conn = test_db();
+        let ns = "project:resume";
+        make_memory(&conn, ns, "constraint", "Keep data safe");
+        open_action(&conn, ns, "Due task", Some("2026-07-01T00:00:00Z"));
+        let mut request = resume_request(ns);
+        request.session_id = Some("delivery-test".into());
+        let brief = build_resume_brief_unrecorded(&conn, &request).unwrap();
+        let again = build_resume_brief_unrecorded(&conn, &request).unwrap();
+        assert_eq!(brief.total_items, again.total_items);
+        let id = section(&brief, "Active constraints").unwrap().items[0]
+            .memory_id
+            .clone();
+        acknowledge_resume(&conn, &brief, std::slice::from_ref(&id)).unwrap();
+        acknowledge_resume(&conn, &brief, std::slice::from_ref(&id)).unwrap();
+        assert_eq!(crate::events::list_events(&conn, &id, 10).unwrap().len(), 1);
+        let after = build_resume_brief_unrecorded(&conn, &request).unwrap();
+        assert!(section(&after, "Active constraints").is_none());
+        assert!(section(&after, "Needs attention").is_some());
+        let due = section(&brief, "Needs attention").unwrap().items[0]
+            .memory_id
+            .clone();
+        acknowledge_resume(&conn, &brief, &[due]).unwrap();
+        assert!(
+            section(
+                &build_resume_brief_unrecorded(&conn, &request).unwrap(),
+                "Needs attention"
+            )
+            .is_none()
+        );
+        assert!(acknowledge_resume(&conn, &brief, &["unknown".into()]).is_err());
+    }
+
+    #[test]
     fn resume_prioritises_task_and_refills_after_suppression() {
         let conn = test_db();
         let ns = "project:resume";
-        for i in 0..12 { make_memory(&conn, ns, "decision", &format!("Decision {i}")); }
-        for i in 0..15 { make_memory(&conn, ns, "receipt", &format!("Atomic receipt {i}")); }
+        for i in 0..12 {
+            make_memory(&conn, ns, "decision", &format!("Decision {i}"));
+        }
+        for i in 0..15 {
+            make_memory(&conn, ns, "receipt", &format!("Atomic receipt {i}"));
+        }
         make_memory(&conn, ns, "fact", "Atomic durability");
         let mut request = resume_request(ns);
         request.session_id = Some("refill".into());
@@ -1811,8 +1996,19 @@ mod tests {
         let first = build_resume_brief(&conn, &request).unwrap();
         assert!(section(&first, "Recent activity").is_some());
         let second = build_resume_brief(&conn, &request).unwrap();
-        let old: Vec<_> = section(&first, "Recent decisions").unwrap().items.iter().map(|i| &i.memory_id).collect();
-        assert!(section(&second, "Recent decisions").unwrap().items.iter().all(|i| !old.contains(&&i.memory_id)));
+        let old: Vec<_> = section(&first, "Recent decisions")
+            .unwrap()
+            .items
+            .iter()
+            .map(|i| &i.memory_id)
+            .collect();
+        assert!(
+            section(&second, "Recent decisions")
+                .unwrap()
+                .items
+                .iter()
+                .all(|i| !old.contains(&&i.memory_id))
+        );
         request.query = Some("Atomic".into());
         request.max_items = 1;
         let task = build_resume_brief(&conn, &request).unwrap();

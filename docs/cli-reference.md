@@ -615,6 +615,8 @@ Default DB: `~/Library/Application Support/clio/memory.db` (macOS)
 - [Schema Reference](reference/schema.md) — database structure
 - [Documentation Index](README.md) — all available documentation
 
+## Delivery and usage semantics
+
 Administrative exports and query-less browsing do not update access counts or last-accessed dates. Deliberate recall with a non-empty query remains tracked. Existing access history is preserved.
 
 Resume gives task-matched knowledge first claim on prompt brief slots, reserving a small allowance for due follow-ups and blockers. Follow-ups are capped at three, soonest due first. Session-start briefs reserve a slot for the newest receipt. Constraints and decisions already surfaced in the session are excluded before allocation; filtered receipts and stale consolidation do not consume knowledge slots. Items include `created_at` and, when different, `updated_at`.
@@ -622,3 +624,5 @@ Resume gives task-matched knowledge first claim on prompt brief slots, reserving
 Any-term task search considers up to 1,000 Unicode characters and selects at most 12 terms. Ticket/code identifiers take priority, followed by known corpus words with the lowest document counts. Queries with at most 12 meaningful terms retain their existing matching behaviour.
 
 Effectiveness attributes new surfaced events to the memory namespace and resolves older events with missing namespaces through their memory record, without rewriting the ledger.
+
+For confirmed injection, request `clio resume --session SESSION --no-record --json` and retain its JSON. After injection, pipe that same JSON to `clio resume --acknowledge --shown-id FULL-ID --shown-id FULL-ID --json`. Only list IDs actually injected. Acknowledgement is atomic and idempotent, including attention state versions; retrying cannot double-count or suppress a later attention state. A dropped or timed-out unacknowledged brief causes no suppression. Pending receipts are additive JSON fields; ordinary resume still records immediately. The CLI remote bridge forwards these flags and the JSON on stdin; both ends must support the flags before hooks opt in.

@@ -740,6 +740,18 @@ struct ResumeArgs {
     #[arg(long)]
     session: Option<String>,
 
+    /// Return pending delivery receipts without recording shown memories.
+    #[arg(long, requires = "session", conflicts_with = "acknowledge")]
+    no_record: bool,
+
+    /// Read a deferred resume JSON brief from stdin and acknowledge shown IDs.
+    #[arg(long, requires = "shown_id")]
+    acknowledge: bool,
+
+    /// Full memory ID actually injected; repeat for each shown item.
+    #[arg(long, requires = "acknowledge")]
+    shown_id: Vec<String>,
+
     /// Maximum items across all sections.
     #[arg(long, default_value_t = 20)]
     max_items: u32,
@@ -3738,6 +3750,14 @@ fn cmd_resume(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let path = resolve_db_path(db_path)?;
     let conn = db::open(&path)?;
+    if args.acknowledge {
+        let brief: clio_core::assembly::ResumeBrief = serde_json::from_reader(std::io::stdin())?;
+        clio_core::assembly::acknowledge_resume(&conn, &brief, &args.shown_id)?;
+        if json {
+            println!("{}", serde_json::json!({"acknowledged": args.shown_id}));
+        }
+        return Ok(());
+    }
     let stgs = settings::load(&path)?;
 
     let namespace = match &args.namespace {
@@ -3763,7 +3783,11 @@ fn cmd_resume(
         now: None,
     };
 
-    let brief = clio_core::assembly::build_resume_brief(&conn, &request)?;
+    let brief = if args.no_record {
+        clio_core::assembly::build_resume_brief_unrecorded(&conn, &request)?
+    } else {
+        clio_core::assembly::build_resume_brief(&conn, &request)?
+    };
 
     if json {
         println!("{}", serde_json::to_string_pretty(&brief)?);
@@ -5293,5 +5317,38 @@ mod tests {
         assert_eq!(changed.model, "gpt-5.6-terra");
         assert_eq!(changed.api_key, base.api_key);
         assert!(capture_config_with_model(&base, Some("  ")).is_err());
+    }
+}
+
+#[cfg(test)]
+mod resume_delivery_cli_tests {
+    use super::*;
+
+    #[test]
+    fn deferred_resume_requires_session_and_acknowledgement_requires_ids() {
+        assert!(Cli::try_parse_from(["clio", "resume", "--no-record"]).is_err());
+        assert!(Cli::try_parse_from(["clio", "resume", "--acknowledge"]).is_err());
+        assert!(
+            Cli::try_parse_from([
+                "clio",
+                "resume",
+                "--session",
+                "test",
+                "--no-record",
+                "--json"
+            ])
+            .is_ok()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "clio",
+                "resume",
+                "--acknowledge",
+                "--shown-id",
+                "full-id",
+                "--json"
+            ])
+            .is_ok()
+        );
     }
 }

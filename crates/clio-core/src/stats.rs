@@ -776,9 +776,20 @@ mod usage_by_kind_tests {
         );
         let event = crate::events::list_events(&conn, &shown.id, 10).unwrap();
         assert_eq!(event[0].namespace.as_deref(), Some("project:demo"));
-        assert_eq!(effectiveness(&conn, Some("project:demo"), 0).unwrap().surfaced_unique, 1);
-        conn.execute("UPDATE memory_events SET namespace = NULL", []).unwrap();
-        assert_eq!(effectiveness(&conn, Some("project:demo"), 0).unwrap().surfaced_unique, 1);
+        assert_eq!(
+            effectiveness(&conn, Some("project:demo"), 0)
+                .unwrap()
+                .surfaced_unique,
+            1
+        );
+        conn.execute("UPDATE memory_events SET namespace = NULL", [])
+            .unwrap();
+        assert_eq!(
+            effectiveness(&conn, Some("project:demo"), 0)
+                .unwrap()
+                .surfaced_unique,
+            1
+        );
         repository::get(&conn, &shown.id).unwrap();
         crate::events::record_feedback(&conn, &shown.id, "useful", Some("s1"), None).unwrap();
         assert!(crate::events::record_feedback(&conn, &shown.id, "great", None, None).is_err());

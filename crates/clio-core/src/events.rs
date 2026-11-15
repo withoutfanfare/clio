@@ -121,8 +121,15 @@ pub fn record_event(conn: &Connection, input: &EventInput) -> Result<Option<Memo
     }
 
     let namespace = if input.event_type == EVENT_SURFACED && input.namespace.is_none() {
-        conn.query_row("SELECT namespace FROM memories WHERE id = ?1", [&input.memory_id], |r| r.get::<_, String>(0)).optional()?
-    } else { input.namespace.clone() };
+        conn.query_row(
+            "SELECT namespace FROM memories WHERE id = ?1",
+            [&input.memory_id],
+            |r| r.get::<_, String>(0),
+        )
+        .optional()?
+    } else {
+        input.namespace.clone()
+    };
 
     let id = new_id();
     let now = now_utc();
