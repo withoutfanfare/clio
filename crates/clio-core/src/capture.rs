@@ -221,6 +221,8 @@ Each captured memory must be SELF-CONTAINED: a reader with no access to this ses
 
 CEILING, NOT A TARGET: most sessions yield 0 memories and a good one yields 1. Never emit more than 3, plus the single receipt described below. Reaching 3 should be rare; do not fill the space because it is there. If more candidates exist, keep only the most durable and drop the rest — do not merge several weak items into one to fit more in. When in doubt whether something is durable, it is not: leave it out.
 
+The digest may open with a list headed ALREADY STORED: the titles of memories saved from earlier parts of this same session. Never restate, rephrase or update any of them — emit only knowledge that is new since. If the digest adds nothing new, return an empty array. The list is context for you, not material to capture.
+
 Additionally, if (and only if) the session performed substantive work — commits made, files changed, a bug diagnosed, a document produced — emit EXACTLY ONE extra memory with "kind": "receipt": a 2–4 sentence record of what was done, what was deliberately left undone, and why the session stopped where it did. Write it so someone picking the work up cold understands the state of play. Use "importance": 2 and include the tag "receipt". Sessions with no substantive work get no receipt.
 
 Respond ONLY with a JSON object of the form {"memories": [...]} (the array possibly empty). Each element is an object with:

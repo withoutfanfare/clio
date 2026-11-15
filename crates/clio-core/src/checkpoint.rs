@@ -411,6 +411,70 @@ pub fn embed_checkpoint_memories(
     }
 }
 
+/// Most titles from earlier deltas of a session shown to the distiller.
+const PRIOR_TITLES_LIMIT: u32 = 20;
+/// Longest title shown. With the limit above, the added prompt text stays
+/// under about 1,800 characters however long the session runs.
+const PRIOR_TITLE_CHARS: usize = 80;
+
+/// Prefix `digest` with the titles already stored from earlier deltas of the
+/// same session, so the distiller does not store the same fact again in new
+/// words. A long session is distilled one slice at a time and each slice
+/// would otherwise be judged with no sight of the others.
+///
+/// Returns the digest untouched when the session has stored nothing yet, and
+/// on any lookup failure: this is a hint, never a reason to lose a capture.
+pub fn digest_with_prior_titles(
+    conn: &Connection,
+    req: &CheckpointRequest,
+    digest: &str,
+) -> String {
+    // A session's memories share the `{session_id}@` provenance prefix. The
+    // range is that prefix as an index scan: `A` is the character after `@`.
+    let titles = (|| -> Result<Vec<String>> {
+        let mut stmt = conn.prepare_cached(
+            "SELECT title FROM memories
+             WHERE source = ?1 AND source_ref >= ?2 AND source_ref < ?3
+               AND kind != 'receipt' AND title IS NOT NULL
+             ORDER BY created_at DESC LIMIT ?4",
+        )?;
+        let rows = stmt.query_map(
+            params![
+                req.source,
+                format!("{}@", req.session_id),
+                format!("{}A", req.session_id),
+                PRIOR_TITLES_LIMIT
+            ],
+            |row| row.get::<_, String>(0),
+        )?;
+        Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+    })();
+
+    let titles = match titles {
+        Ok(titles) if !titles.is_empty() => titles,
+        Ok(_) => return digest.to_string(),
+        Err(e) => {
+            tracing::warn!("could not look up this session's earlier memories: {e}");
+            return digest.to_string();
+        }
+    };
+
+    let mut text = String::from("ALREADY STORED from earlier in this session (do not restate):\n");
+    for title in titles {
+        let title: String = title
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .chars()
+            .take(PRIOR_TITLE_CHARS)
+            .collect();
+        text.push_str(&format!("- {title}\n"));
+    }
+    text.push_str("\nSESSION DIGEST:\n");
+    text.push_str(digest);
+    text
+}
+
 /// Distil one session delta and commit it as an exact-once checkpoint.
 ///
 /// Preflights the key before calling the model, rechecks it inside the write
@@ -432,7 +496,8 @@ pub fn checkpoint(
     }
 
     // Provider work strictly outside the write transaction.
-    let (memories, usage) = crate::capture::distill_with_usage(digest, config)?;
+    let digest = digest_with_prior_titles(conn, req, digest);
+    let (memories, usage) = crate::capture::distill_with_usage(&digest, config)?;
 
     let result = store_checkpoint(conn, req, &memories, settings)?;
 
@@ -725,6 +790,47 @@ mod tests {
                 .all(|m| m.memory.id != result.stored_memory_ids[1])
         );
         assert!(get(&result.stored_memory_ids[1]).archived_at.is_none());
+    }
+
+    #[test]
+    fn later_slices_are_told_what_the_session_already_stored() {
+        let conn = test_conn();
+        let settings = Settings::default();
+        let digest = "## User\nmore work";
+
+        // Nothing stored yet: the digest is passed through byte for byte.
+        assert_eq!(
+            digest_with_prior_titles(&conn, &request(10), digest),
+            digest
+        );
+
+        let receipt = DistilledMemory {
+            kind: "receipt".into(),
+            ..atom("did the work")
+        };
+        store_checkpoint(&conn, &request(10), &[atom("fact one"), receipt], &settings).unwrap();
+        let mut other = request(10);
+        other.session_id = "session-10".into();
+        store_checkpoint(&conn, &other, &[atom("another session")], &settings).unwrap();
+
+        let text = digest_with_prior_titles(&conn, &request(20), digest);
+        assert!(text.starts_with("ALREADY STORED"));
+        assert!(text.contains("- Title: fact one\n"));
+        assert!(text.ends_with(&format!("SESSION DIGEST:\n{digest}")));
+        // Receipts are per-slice records, and other sessions are not ours.
+        assert!(!text.contains("did the work"));
+        assert!(!text.contains("another session"));
+
+        // However much a session stores, the added text stays bounded.
+        let long = "x".repeat(200);
+        for cursor in 0..30 {
+            let facts: Vec<_> = (0..3)
+                .map(|n| atom(&format!("{long} {cursor} {n}")))
+                .collect();
+            store_checkpoint(&conn, &request(100 + cursor), &facts, &settings).unwrap();
+        }
+        let added = digest_with_prior_titles(&conn, &request(500), digest).len() - digest.len();
+        assert!(added < 1_800, "added {added} characters");
     }
 
     #[test]

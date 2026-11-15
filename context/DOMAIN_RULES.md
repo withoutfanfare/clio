@@ -179,7 +179,7 @@ The capture pipeline accepts unstructured text and produces a structured memory 
 A checkpoint commits the distillation of one session delta exactly once, keyed by `(source, session_id, cursor)`.
 
 1. Preflight: a completed key returns its stored result envelope (`replayed: true`) without calling the model
-2. Model extraction runs strictly outside the write transaction
+2. Model extraction runs strictly outside the write transaction. The digest is prefixed with up to 20 titles (80 characters each, receipts excluded) already stored from earlier deltas of the same session, found by the `{session_id}@` prefix of `source_ref`, and the model is told not to restate them. A session with nothing stored yet sends its digest unchanged
 3. One `BEGIN IMMEDIATE` transaction rechecks the key under the write lock, stores every extracted memory or review item through the shared capture path, and inserts the checkpoint record — all atomically
 4. Any failure rolls back every write; the key stays open and the client job stays retryable
 5. An empty extraction is a successful checkpoint and is never redistilled
