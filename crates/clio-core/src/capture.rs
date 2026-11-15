@@ -178,7 +178,7 @@ Do NOT capture:
 
 Each captured memory must be SELF-CONTAINED: a reader with no access to this session must understand it. Prefer fewer, higher-value memories. If the session produced nothing durable, return an empty array — this is the correct and expected outcome for most routine sessions.
 
-HARD LIMIT: emit at most 5 memories, plus the single receipt described below. A typical session yields 0–2. If more candidates exist, keep only the most durable and drop the rest — do not merge several weak items into one to smuggle them past the limit. When in doubt whether something is durable, it is not: leave it out.
+CEILING, NOT A TARGET: most sessions yield 0 memories and a good one yields 1. Never emit more than 3, plus the single receipt described below. Reaching 3 should be rare; do not fill the space because it is there. If more candidates exist, keep only the most durable and drop the rest — do not merge several weak items into one to fit more in. When in doubt whether something is durable, it is not: leave it out.
 
 Additionally, if (and only if) the session performed substantive work — commits made, files changed, a bug diagnosed, a document produced — emit EXACTLY ONE extra memory with "kind": "receipt": a 2–4 sentence record of what was done, what was deliberately left undone, and why the session stopped where it did. Write it so someone picking the work up cold understands the state of play. Use "importance": 2 and include the tag "receipt". Sessions with no substantive work get no receipt.
 
@@ -586,10 +586,11 @@ pub fn parse_distillation(raw: &str) -> Result<Vec<DistilledMemory>> {
 
 /// Hard ceiling on knowledge atoms accepted from one distillation call.
 /// `parse_distillation` separately keeps only the first receipt, so the two
-/// limits compose to "5 knowledge atoms plus one receipt". The prompt
+/// limits compose to "3 knowledge atoms plus one receipt". The prompt
 /// instructs the model to stay within this; the cap is the deterministic
-/// backstop for when it does not.
-pub const MAX_KNOWLEDGE_ATOMS: usize = 5;
+/// backstop for when it does not. It was 5 until the model was found
+/// returning the maximum on over half of all calls.
+pub const MAX_KNOWLEDGE_ATOMS: usize = 3;
 
 /// Total ceiling per distillation: the knowledge budget plus the receipt slot.
 pub const MAX_DISTILLED_MEMORIES: usize = MAX_KNOWLEDGE_ATOMS + 1;
@@ -630,7 +631,7 @@ fn cap_distilled_memories(memories: Vec<DistilledMemory>) -> Vec<DistilledMemory
 
     tracing::warn!(
         "distillation returned {knowledge_atoms} knowledge atoms; kept {MAX_KNOWLEDGE_ATOMS}, \
-         dropped {dropped} lowest-ranked (the prompt's hard limit was ignored)"
+         dropped {dropped} lowest-ranked (the prompt's ceiling was ignored)"
     );
 
     let mut memories = memories;
@@ -1412,9 +1413,36 @@ mod tests {
     }
 
     #[test]
+    fn cap_keeps_every_open_loop_ahead_of_more_important_facts() {
+        let mut items: Vec<String> = (1..=MAX_KNOWLEDGE_ATOMS)
+            .map(|i| {
+                format!(
+                    r#"{{"content":"Chase supplier {i}.","kind":"task","title":"Loop {i}","summary":"","tags":["t"],"namespace":"project:clio","importance":1,"confidence":0.5,"attention":{{"explicitness":"explicit"}}}}"#
+                )
+            })
+            .collect();
+        items.insert(
+            0,
+            r#"{"content":"A critical invariant.","kind":"constraint","title":"Invariant","summary":"","tags":["t"],"namespace":"project:clio","importance":5,"confidence":1.0}"#.into(),
+        );
+        let memories = parse_distillation(&format!("[{}]", items.join(","))).unwrap();
+        assert_eq!(memories.len(), MAX_KNOWLEDGE_ATOMS);
+        assert!(memories.iter().all(|m| m.attention.is_some()));
+    }
+
+    #[cfg(feature = "capture")]
+    #[test]
+    fn prompt_states_the_same_ceiling_the_parser_enforces() {
+        assert!(
+            DISTILLATION_SYSTEM_PROMPT
+                .contains(&format!("Never emit more than {MAX_KNOWLEDGE_ATOMS},"))
+        );
+    }
+
+    #[test]
     fn parse_distillation_caps_knowledge_atoms_even_without_a_receipt() {
-        // Six knowledge atoms and no receipt must still cap at five: the
-        // receipt slot is not a spare knowledge slot.
+        // Six knowledge atoms and no receipt must still cap at the knowledge
+        // ceiling: the receipt slot is not a spare knowledge slot.
         let items: Vec<String> = (1..=6)
             .map(|i| {
                 format!(

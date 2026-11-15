@@ -14,7 +14,7 @@ against a copy of a database and never modify live data.
 
 The five distillation cases from `docs/operations/capture-model-benchmark.md` as
 checked-in fixtures, with an automated judge (kinds, namespace scoping, prompt
-injection, receipt count, the 6-memory cap) and per-model token/latency/cost
+injection, receipt count, the 4-memory cap) and per-model token/latency/cost
 totals. Unlike the other benchmarks this one makes REAL, paid model calls —
 a full four-model run is a few dozen small requests. `--dry-run` inside the
 harness means nothing is stored; point it at a throwaway DB whose settings

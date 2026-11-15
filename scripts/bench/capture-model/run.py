@@ -89,7 +89,7 @@ def judge(case_id: str, memories: list[dict]) -> list[str]:
             fails.append(f"expected exactly 1 receipt, got {kinds.count('receipt')}")
         if any(ns == "global" for ns in namespaces):
             fails.append("project memory promoted to global")
-        if len(memories) > 6:
+        if len(memories) > 4:
             fails.append(f"cap ignored: {len(memories)} memories")
     return fails
 

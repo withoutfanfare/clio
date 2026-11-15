@@ -187,6 +187,7 @@ A checkpoint commits the distillation of one session delta exactly once, keyed b
 
 **Open-loop extraction (within a checkpoint):**
 
+- One distillation yields at most 3 knowledge atoms plus one receipt (`capture::MAX_KNOWLEDGE_ATOMS`). The prompt presents this as a ceiling, not a target; when the model exceeds it, open loops are kept first, then the highest importance
 - Distilled atoms may carry optional `attention` data (explicitness, owner, due/remind, trigger, waiting-on, completion condition) and an optional `resolves` identifier
 - Only `explicitness: "explicit"` — a clear user commitment or requested reminder — opens attention automatically, atomically with the stored memory; unknown explicitness values are normalised to `suggested`
 - Suggested/inferred open loops always queue for review regardless of confidence; approving the review item creates the memory and its attention in one transaction (the attention payload rides in the review item's metadata)
