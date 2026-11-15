@@ -607,7 +607,7 @@ pub fn recall(conn: &Connection, query: &RecallQuery) -> Result<RecallResult> {
 
     // Fire-and-forget access tracking for all returned items. Automatic
     // surfacing (resume briefs) opts out so it cannot train its own ranking.
-    if !query.skip_access_tracking {
+    if !query.skip_access_tracking && query.query.as_deref().is_some_and(|q| !q.trim().is_empty()) {
         let ids: Vec<&str> = result.items.iter().map(|i| i.memory.id.as_str()).collect();
         if let Err(e) = touch_accessed(conn, &ids) {
             tracing::warn!("access tracking failed in recall: {e}");
@@ -1266,7 +1266,7 @@ pub fn recall_scoped(
         .take(query.limit as usize)
         .collect();
 
-    if !query.skip_access_tracking {
+    if !query.skip_access_tracking && query.query.as_deref().is_some_and(|q| !q.trim().is_empty()) {
         let ids: Vec<&str> = paged.iter().map(|i| i.memory.id.as_str()).collect();
         if let Err(e) = touch_accessed(conn, &ids) {
             tracing::warn!("access tracking failed in scoped recall: {e}");

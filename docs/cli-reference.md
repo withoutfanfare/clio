@@ -614,3 +614,5 @@ Default DB: `~/Library/Application Support/clio/memory.db` (macOS)
 - [Settings Reference](reference/settings.md) — all configuration keys and defaults
 - [Schema Reference](reference/schema.md) — database structure
 - [Documentation Index](README.md) — all available documentation
+
+Administrative exports and query-less browsing do not update access counts or last-accessed dates. Deliberate recall with a non-empty query remains tracked. Existing access history is preserved.
