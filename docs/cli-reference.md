@@ -122,6 +122,11 @@ clio remember \
 
 ## Retrieving Memories
 
+Recall JSON adds `widened` to the CLI envelope, preserving existing fields.
+Effectiveness task-match figures cover sessions whose first surfaced event is on or after the first recorded `Relevant knowledge` event.
+Bulk namespace moves match the source name literally so legacy names can be repaired; destinations are canonicalised.
+
+
 ```sh
 # Full-text search (keyword matching)
 clio recall --query "redis caching"

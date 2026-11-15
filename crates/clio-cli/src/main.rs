@@ -2150,7 +2150,9 @@ fn cmd_recall(
     };
 
     if json {
-        println!("{}", serde_json::to_string_pretty(&result)?);
+        let mut output = serde_json::to_value(&result)?;
+        output["widened"] = serde_json::json!(widened);
+        println!("{}", serde_json::to_string_pretty(&output)?);
     } else {
         if widened {
             eprintln!("No memory contains every word; a wider search was used.");

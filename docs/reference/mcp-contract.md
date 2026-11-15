@@ -1194,7 +1194,12 @@ Stop-hook capture retries after a lost response, a provider 429 or an outage. Wi
 
 Linked recall (`memory_recall` with `include_links`) likewise returns each linked memory once with a `link_context` array preserving every edge's direction, relationship and metadata.
 
+The recent namespace resource excludes expired records. Desktop remote connections remove the inherited `CLIO_MCP_TOOLS` filter so administrative tools stay available.
+
 ## `memory_resume`
+
+The response namespace is canonicalised, including bare project names and global casing.
+
 
 Build a deterministic, evidence-backed resume brief: what deserves attention now, and why.
 

@@ -582,7 +582,7 @@ const MIGRATIONS: &[Migration] = &[
         // judge these items by when they were last really touched.
         sql: r#"
             UPDATE attention_items SET namespace = 'global'
-            WHERE lower(namespace) = 'global';
+            WHERE lower(namespace) = 'global' AND namespace != 'global';
 
             UPDATE attention_items
             SET namespace = 'project:' || trim(lower(namespace), '-')

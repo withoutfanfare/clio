@@ -731,6 +731,10 @@ pub fn effectiveness(
             WHERE e.event_type = 'surfaced' AND e.session_id IS NOT NULL
               AND (?1 IS NULL OR COALESCE(m.namespace, e.namespace) = ?1)
             GROUP BY e.session_id
+            HAVING MIN(e.created_at) >= (
+                SELECT MIN(created_at) FROM memory_events
+                WHERE event_type = 'surfaced' AND reason = 'Relevant knowledge'
+            )
         )", [namespace], |row| Ok((row.get(0)?, row.get(1)?)),
     )?;
     let active_expiry_share = conn.query_row(

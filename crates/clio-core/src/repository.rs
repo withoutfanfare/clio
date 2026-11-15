@@ -1465,7 +1465,6 @@ pub fn move_namespace(conn: &Connection, id: &str, namespace: &str) -> Result<Me
 /// Move all memories in one namespace to another. Returns the number of
 /// memories moved.
 pub fn move_namespace_bulk(conn: &Connection, from: &str, to: &str) -> Result<usize> {
-    let from = &crate::context::canonical_namespace(from);
     let to = &crate::context::canonical_namespace(to);
     if to.is_empty() || to.len() > 120 {
         return Err(ClioError::Validation(
@@ -1973,7 +1972,7 @@ mod tests {
         let (result, widened) = recall_ordinary(&conn, &query, Some("demo")).unwrap();
         assert!(widened);
         assert_eq!(result.total, 1);
-        let query = RecallQuery { query: Some("release".into()), offset: 10, ..query };
+        let query = RecallQuery { query: Some("release procedure".into()), offset: 10, ..query };
         let (result, widened) = recall_ordinary(&conn, &query, Some("demo")).unwrap();
         assert!(!widened);
         assert_eq!(result.total, 1);
