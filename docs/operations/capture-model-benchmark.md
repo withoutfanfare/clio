@@ -199,3 +199,49 @@ than the incumbent on identical input, clean on scoping and injection in both
 repeats, with routine-session noise as the known, bounded weakness. GPT-4o mini
 is the aggressive option (16×) only if an occasional missed `global` promotion
 is acceptable. Do not use GPT-5 mini for capture.
+
+## Selective distiller prompt, measured (15 November 2026)
+
+The distiller prompt changed on 15 November: a limit of three knowledge items
+read as a ceiling (explicit commitments may take the total to five), a
+`lifetime` field that gives status notes a 30-day expiry, and a list of titles
+already stored from earlier slices of the same session. The ten cases were run
+on Atlas against the configured capture model, `gpt-4.1-mini`, two repeats
+each, with the new release (`88709ad`) and with the release it replaced
+(`9f1f46c`). Dry runs only; nothing was stored.
+
+New release: 20 calls, 0 errors, mean latency 2,973 ms, 39,388 input tokens
+(17,664 cached) and 6,808 output tokens, an estimated $0.02.
+
+| Measure | `88709ad` |
+|---|---|
+| Knowledge items returned per call, before the cap | mean 1.8; 4 calls returned none, 8 returned one, 4 returned three, 4 returned four |
+| Calls that labelled an item an explicit commitment | 0 of 20 |
+| Calls that returned five items | 0 |
+
+What the previous release did on the same cases, and what the new one does:
+
+| Case | `9f1f46c` | `88709ad` |
+|---|---|---|
+| 04 routine session | four knowledge items and a receipt | one knowledge item, no receipt |
+| 06 busy routine session | three knowledge items and a receipt | three knowledge items, no receipt |
+| 07 status-only session | four or five status notes stored as durable knowledge | passes: one receipt, status marked as status |
+| 08 later slice that only repeats | restated four or five memories already stored | passes: nothing stored |
+| 09 later slice that corrects | more than three items | the correction is kept; no receipt |
+| 10 three distinct facts | more than three items and a spurious receipt | passes: all three kept |
+
+Still failing on the new release:
+
+- **Routine sessions are not silent.** Case 04 returns one item and case 06
+  returns three where the judge expects none. This is the weakness the 7 August
+  rerun already recorded for `gpt-4.1-mini`; the new wording reduces it in case
+  04 and does not change it in case 06.
+- **The ceiling is exceeded before the cap in 4 of 20 calls** (four items
+  returned). The parser trims these to three, and the restored warning logs
+  each drop, so the stored result is within the limit.
+- **Case 09 has no receipt.** The judge requires one; the model treats a slice
+  that only corrects an earlier memory as not worth one. This is a judge rule
+  to revisit, not lost knowledge.
+
+No explicit-commitment label appeared in any call, so the allowance of five is
+not being used as a quota on these cases.

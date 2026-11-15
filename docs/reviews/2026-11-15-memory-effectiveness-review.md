@@ -7,7 +7,8 @@ each built part of the changes, and each reviewed the other's code before
 anything was merged. One of the Fable cross-reviews was run by Opus 5.5 after
 the system switched models.
 
-Nothing here is deployed. The live store was not written to.
+The review and both rounds of changes did not write to the live store. The
+result was deployed the same day; see "Deployed the same day" below.
 
 ## The main finding
 
@@ -126,16 +127,36 @@ kept quiet and the same off-topic share. The partial matches it removed were
 more often useful than not, so it was reverted (`c0a1e59`). The figures in the
 table above are for the build as merged.
 
+## Deployed the same day
+
+The release (`88709ad`) went to Atlas, the MacBook Pro and the Mac mini on
+15 November, with the hook changes applied on both Macs. The checks are in the
+[roadmap](../operations/roadmap.md) under "Latest release". Three things the
+review could not test were settled afterwards:
+
+- **Atlas timing.** A prompt brief with fused retrieval on takes p50 337 ms and
+  p95 371 ms on Atlas, over twelve calls.
+- **The SSH route for the hooks.** A live prompt injected 20 items and Atlas
+  recorded exactly those 20 as acknowledged.
+- **The capture model.** The benchmark was run against `gpt-4.1-mini` with the
+  new and the previous release; results are in
+  [capture-model-benchmark.md](../operations/capture-model-benchmark.md). The
+  new prompt is clearly more selective, and routine sessions are still not
+  silent.
+
+The polluted use counts were not reset. On a copy of the snapshot with them
+cleared, results changed heavily and the labelled floor fell; see roadmap item
+`CLIO-QUAL-005`.
+
 ## Still open
 
 | Item | Detail |
 |---|---|
-| Deploy | Roadmap item `CLIO-QUAL-002`. The desktop app on each Mac should be rebuilt in the same release, because its search and browse lists changed. |
-| Hook changes | Roadmap item `CLIO-QUAL-003`. A tested patch makes the hooks acknowledge what they inject and send 1,000 characters of the prompt. It is safe to apply before or after the deploy. |
-| Capture benchmark | Roadmap item `CLIO-QUAL-004`. The new distiller wording and limits have not been run against the capture model; no key was available during this work. |
-| Polluted use counts | Roadmap item `CLIO-QUAL-005`. Access counts and last-used times in the live store are noise after the export sweeps. They were not reset. |
+| Hook acknowledgement over a working day | Roadmap item `CLIO-QUAL-003`. Applied and checked once live; the hook log should be read after a day of use. |
+| Routine sessions still produce memories | Roadmap item `CLIO-QUAL-004`. One item from a routine session and three from a busy one, where none is wanted. |
+| Decay and access boost | Roadmap item `CLIO-QUAL-001`. Clearing the access data changed 15% to 30% of what the benchmark surfaced, so these two untuned settings carry more weight than assumed. |
 | Importance weight | The benchmark cannot separate the default from a clamped multiplier for briefs; switching it off doubles stale results in `memory_search`. Left unchanged. |
-| Quiet rule | It still silences three answerable prompts in the set and lets three no-answer prompts through. Watch `clio effectiveness` after deploy. |
-| Atlas timings | The fused path loads the embedding model in a one-shot process. It costs about 45 ms on a Mac and is unmeasured on Atlas; the budget is one second, after which keywords alone are returned. |
+| Quiet rule | It still silences three answerable prompts in the set and lets three no-answer prompts through. Watch `clio effectiveness`. |
+| Sessions on older code | MCP sessions open during the deploy keep the previous build until restarted. |
 | Timed-out embeddings in the MCP server | They run to completion against the shared backend, with no cancellation. |
 | Usefulness signal | Proposed in the first review and not built: have the distiller mark each injected memory as used, contradicted or ignored. |
