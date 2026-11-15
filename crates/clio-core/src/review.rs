@@ -244,7 +244,9 @@ pub fn approve_review(
             .get("canonical_memory_id")
             .and_then(|value| value.as_str())
         {
-            if let Ok(memory) = crate::repository::get_raw(conn, canonical) {
+            if crate::repository::get_raw(conn, canonical).is_ok() {
+                crate::capture::revive_expired_twin(conn, canonical, &item.metadata)?;
+                let memory = crate::repository::get_raw(conn, canonical)?;
                 crate::occurrences::record_occurrence(
                     conn,
                     &memory.id,
@@ -264,6 +266,7 @@ pub fn approve_review(
                 &item.suggested_namespace,
                 &item.content,
             )? {
+                crate::capture::revive_expired_twin(conn, &existing_id, &item.metadata)?;
                 let memory = crate::repository::get(conn, &existing_id)?;
                 crate::occurrences::record_occurrence(
                     conn,
