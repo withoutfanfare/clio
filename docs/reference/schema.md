@@ -342,6 +342,7 @@ CREATE INDEX IF NOT EXISTS idx_review_queue_status ON review_queue(status);
 - approved memories are embedded when `auto_embed` is enabled
 - `reject` sets status to `rejected` — the item remains in the table but is not converted
 - `edit` updates suggested fields and sets status to `edited` — still requires approval
+- An item whose `metadata_json` carries `revive_memory_id` is a revival proposal: a capture met content byte-identical to that archived memory. There is at most one open proposal per archived memory, whichever capture path saw it, and a follow-up seen with a later sighting is added to that proposal's metadata. `approve` un-archives the stored memory as it is, and clears its `valid_until` if that has already passed so the approved memory is visible; `edit` is refused with a message to approve and then update the memory. `reject` is final: later sightings are recorded as occurrences and nothing more is proposed for that memory, and no follow-up is opened on it
 - `review_threshold` is an optional float in `CaptureConfig`; when `None`, all captures bypass the queue
 
 ## `session_checkpoints`

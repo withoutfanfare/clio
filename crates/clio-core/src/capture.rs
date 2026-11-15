@@ -955,6 +955,115 @@ pub fn distill_and_store(
     Ok(results)
 }
 
+/// What became of a capture whose only twin is archived.
+pub(crate) enum ArchivedTwin {
+    /// The one open review item proposing to bring the memory back.
+    Proposed(ReviewItem),
+    /// A person already rejected bringing it back, so it stays hidden.
+    Rejected(Memory),
+}
+
+/// Handle a capture whose content is byte-identical to an archived memory.
+/// The caller has already ruled out a live twin. Returns `None` when no
+/// archived twin exists.
+///
+/// Someone hid that memory on purpose. A capture carries no time for when its
+/// session took place, so a replay of an old transcript looks the same as
+/// fresh evidence and must not undo the decision. The memory stays archived,
+/// the sighting is recorded as an occurrence, and at most one open review
+/// item (keyed by `metadata.revive_memory_id`) proposes the revival;
+/// approving it un-archives the memory. A rejected proposal is final: later
+/// sightings are recorded and nothing more is proposed. Only an explicit
+/// un-archive brings the memory back after that.
+///
+/// The lookup and the insert share one transaction, so two captures arriving
+/// together cannot each queue a proposal.
+pub(crate) fn propose_revival(
+    conn: &rusqlite::Connection,
+    input: &ReviewInput,
+) -> Result<Option<ArchivedTwin>> {
+    let archived_twin = || {
+        crate::repository::find_archived_duplicate(conn, &input.suggested_namespace, &input.content)
+    };
+    // Most captures have no archived twin and need no write lock here.
+    if archived_twin()?.is_none() {
+        return Ok(None);
+    }
+
+    let owns_transaction = conn.is_autocommit();
+    conn.execute_batch(if owns_transaction {
+        "BEGIN IMMEDIATE"
+    } else {
+        "SAVEPOINT propose_revival"
+    })?;
+
+    let result = (|| -> Result<Option<ArchivedTwin>> {
+        let Some(archived_id) = archived_twin()? else {
+            return Ok(None);
+        };
+        crate::occurrences::record_occurrence(
+            conn,
+            &archived_id,
+            input.source_route.as_deref(),
+            input.source_ref.as_deref(),
+            None,
+        )?;
+
+        // Whatever already speaks for this memory: a rejection outranks an
+        // open proposal, and an approved one no longer counts.
+        let prior: Option<(String, String)> = conn
+            .query_row(
+                "SELECT id, status FROM review_queue
+                 WHERE status != 'approved'
+                   AND json_extract(metadata_json, '$.revive_memory_id') = ?1
+                 ORDER BY status = 'rejected' DESC LIMIT 1",
+                [&archived_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        match prior {
+            Some((_, status)) if status == "rejected" => Ok(Some(ArchivedTwin::Rejected(
+                crate::repository::get_raw(conn, &archived_id)?,
+            ))),
+            Some((id, _)) => {
+                // A follow-up seen with this sighting joins the open proposal
+                // when it has none, so approval still opens it.
+                if let Some(attention) = input.metadata.get("attention") {
+                    conn.execute(
+                        "UPDATE review_queue
+                         SET metadata_json = json_set(metadata_json, '$.attention', json(?1))
+                         WHERE id = ?2 AND json_extract(metadata_json, '$.attention') IS NULL",
+                        rusqlite::params![attention.to_string(), id],
+                    )?;
+                }
+                Ok(Some(ArchivedTwin::Proposed(crate::review::get_review(
+                    conn, &id,
+                )?)))
+            }
+            None => {
+                let mut input = input.clone();
+                if let Some(object) = input.metadata.as_object_mut() {
+                    object.insert("revive_memory_id".into(), serde_json::json!(archived_id));
+                }
+                Ok(Some(ArchivedTwin::Proposed(
+                    crate::review::queue_for_review(conn, &input)?,
+                )))
+            }
+        }
+    })();
+
+    match result {
+        Ok(twin) => {
+            crate::db::finish_transaction(conn, owns_transaction, "propose_revival")?;
+            Ok(twin)
+        }
+        Err(e) => {
+            crate::db::rollback_transaction(conn, owns_transaction, "propose_revival");
+            Err(e)
+        }
+    }
+}
+
 /// Store a classified memory, or route it to the review queue when its
 /// confidence falls below the configured threshold. Shared by the single-item
 /// capture path, the multi-item distillation path and the checkpoint path so
@@ -982,7 +1091,10 @@ pub(crate) fn store_or_queue(
     {
         let memory = crate::repository::get_raw(conn, &existing_id)?;
         // Repeated exact evidence strengthens the canonical memory: keep one
-        // row, record this sighting's provenance as an occurrence.
+        // row, record this sighting's provenance as an occurrence. The stored
+        // record keeps its own `valid_until` whatever lifetime this sighting
+        // carries: seeing a durable fact in a status note must not expire it,
+        // and a replayed old session must not renew a status note.
         crate::occurrences::record_occurrence(conn, &existing_id, Some(source), source_ref, None)?;
         tracing::debug!(
             "capture deduplicated against existing memory {} in {}",
@@ -992,55 +1104,34 @@ pub(crate) fn store_or_queue(
         return Ok(CaptureResult::Stored(memory));
     }
 
+    let review_input = |metadata: serde_json::Value| ReviewInput {
+        content: content.to_string(),
+        suggested_namespace: namespace.to_string(),
+        suggested_kind: classification.kind.clone(),
+        suggested_title: Some(classification.title.clone()),
+        suggested_summary: if classification.summary.is_empty() {
+            None
+        } else {
+            Some(classification.summary.clone())
+        },
+        suggested_tags: classification.tags.clone(),
+        suggested_importance: classification.importance,
+        suggested_confidence: Some(classification.confidence),
+        source_route: Some(source.to_string()),
+        source_ref: source_ref.map(String::from),
+        metadata,
+    };
     let queue = |metadata: serde_json::Value| -> Result<CaptureResult> {
-        let review_input = ReviewInput {
-            content: content.to_string(),
-            suggested_namespace: namespace.to_string(),
-            suggested_kind: classification.kind.clone(),
-            suggested_title: Some(classification.title.clone()),
-            suggested_summary: if classification.summary.is_empty() {
-                None
-            } else {
-                Some(classification.summary.clone())
-            },
-            suggested_tags: classification.tags.clone(),
-            suggested_importance: classification.importance,
-            suggested_confidence: Some(classification.confidence),
-            source_route: Some(source.to_string()),
-            source_ref: source_ref.map(String::from),
-            metadata,
-        };
-        let review_item = crate::review::queue_for_review(conn, &review_input)?;
+        let review_item = crate::review::queue_for_review(conn, &review_input(metadata))?;
         Ok(CaptureResult::Queued(review_item))
     };
 
-    // The only twin is archived: someone hid it on purpose. A capture carries
-    // no time for when its session took place, so a replay of an old
-    // transcript looks the same as fresh evidence and must not undo that
-    // decision. Keep the memory hidden, record the sighting, and propose the
-    // revival for review; approving the proposal un-archives it.
-    if let Some(archived_id) = crate::repository::find_archived_duplicate(conn, namespace, content)?
-    {
-        crate::occurrences::record_occurrence(conn, &archived_id, Some(source), source_ref, None)?;
-        // One open proposal per hidden memory, however often it is seen.
-        let pending: Option<String> = conn
-            .query_row(
-                "SELECT id FROM review_queue
-                 WHERE status IN ('pending', 'edited')
-                   AND json_extract(metadata_json, '$.revive_memory_id') = ?1
-                 LIMIT 1",
-                [&archived_id],
-                |row| row.get(0),
-            )
-            .optional()?;
-        if let Some(id) = pending {
-            return Ok(CaptureResult::Queued(crate::review::get_review(conn, &id)?));
-        }
-        let mut metadata = metadata.clone();
-        if let Some(object) = metadata.as_object_mut() {
-            object.insert("revive_memory_id".into(), serde_json::json!(archived_id));
-        }
-        return queue(metadata);
+    // The only twin is archived: it stays hidden (see `propose_revival`).
+    if let Some(twin) = propose_revival(conn, &review_input(metadata.clone()))? {
+        return Ok(match twin {
+            ArchivedTwin::Proposed(item) => CaptureResult::Queued(item),
+            ArchivedTwin::Rejected(memory) => CaptureResult::Stored(memory),
+        });
     }
 
     // A live memory of the same kind and title is probably the same fact in
@@ -1214,6 +1305,150 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM memories", [], |r| r.get(0))
             .unwrap();
         assert_eq!(rows, 1, "no second row was made");
+    }
+
+    /// One stored-then-archived memory and a way to capture its content again.
+    fn archived_fact(conn: &rusqlite::Connection) -> (Memory, impl Fn(&str) -> CaptureResult + '_) {
+        let capture = move |source_ref: &str| {
+            store_or_queue(
+                conn,
+                "The spool uses atomic renames.",
+                &fact("Spool durability"),
+                "project:demo",
+                "claude-session",
+                Some(source_ref),
+                &serde_json::json!({}),
+                &crate::settings::Settings::default(),
+                false,
+            )
+            .unwrap()
+        };
+        let CaptureResult::Stored(original) = capture("old@1-0") else {
+            panic!("first capture should be stored");
+        };
+        crate::repository::archive(conn, &original.id).unwrap();
+        (original, capture)
+    }
+
+    #[test]
+    fn a_rejected_revival_is_final_and_later_sightings_propose_nothing() {
+        let conn = crate::db::open_in_memory().unwrap();
+        let (original, capture) = archived_fact(&conn);
+        let CaptureResult::Queued(proposal) = capture("replay@1-0") else {
+            panic!("an archived twin should be proposed");
+        };
+        crate::review::reject_review(&conn, &proposal.id).unwrap();
+
+        // Seen again after the rejection: recorded, still hidden, not queued.
+        let CaptureResult::Stored(same) = capture("replay@2-0") else {
+            panic!("a rejected revival must not be proposed again");
+        };
+        assert_eq!(same.id, original.id);
+        assert!(same.archived_at.is_some());
+        let proposals: i64 = conn
+            .query_row("SELECT COUNT(*) FROM review_queue", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(proposals, 1);
+        assert_eq!(
+            crate::occurrences::count_occurrences(&conn, &original.id).unwrap(),
+            3
+        );
+    }
+
+    #[test]
+    fn a_revival_proposal_cannot_be_edited() {
+        let conn = crate::db::open_in_memory().unwrap();
+        let (_, capture) = archived_fact(&conn);
+        let CaptureResult::Queued(proposal) = capture("replay@1-0") else {
+            panic!("an archived twin should be proposed");
+        };
+
+        let error = crate::review::edit_review(
+            &conn,
+            &proposal.id,
+            &crate::review::ReviewEdits {
+                namespace: Some("project:elsewhere".into()),
+                kind: None,
+                title: None,
+                summary: None,
+                tags: None,
+                importance: None,
+                confidence: None,
+            },
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            error.contains("approve it, then update that memory"),
+            "{error}"
+        );
+
+        let unchanged = crate::review::get_review(&conn, &proposal.id).unwrap();
+        assert_eq!(unchanged.status, "pending");
+        assert_eq!(unchanged.suggested_namespace, "project:demo");
+    }
+
+    #[test]
+    fn approving_a_revival_clears_an_expiry_that_has_passed_but_keeps_a_future_one() {
+        let settings = crate::settings::Settings::default();
+        let revive_with_expiry = |valid_until: &str| {
+            let conn = crate::db::open_in_memory().unwrap();
+            let (original, capture) = archived_fact(&conn);
+            conn.execute(
+                "UPDATE memories SET valid_until = ?1 WHERE id = ?2",
+                rusqlite::params![valid_until, original.id],
+            )
+            .unwrap();
+            let CaptureResult::Queued(proposal) = capture("replay@1-0") else {
+                panic!("an archived twin should be proposed");
+            };
+            drop(capture);
+            crate::review::approve_review(&conn, &proposal.id, &settings).unwrap()
+        };
+
+        let was_expired = revive_with_expiry("2000-01-01T00:00:00Z");
+        assert!(was_expired.archived_at.is_none());
+        assert_eq!(was_expired.valid_until, None, "approved means visible");
+
+        let not_yet = revive_with_expiry("2999-01-01T00:00:00Z");
+        assert_eq!(not_yet.valid_until.as_deref(), Some("2999-01-01T00:00:00Z"));
+    }
+
+    #[test]
+    fn an_exact_live_twin_keeps_its_own_validity_whatever_the_new_sighting_says() {
+        let conn = crate::db::open_in_memory().unwrap();
+        let settings = crate::settings::Settings::default();
+        let capture = |content: &str, metadata: serde_json::Value| {
+            let CaptureResult::Stored(memory) = store_or_queue(
+                &conn,
+                content,
+                &fact(content),
+                "project:demo",
+                "claude-session",
+                None,
+                &metadata,
+                &settings,
+                false,
+            )
+            .unwrap() else {
+                panic!("should be stored or deduplicated");
+            };
+            memory
+        };
+        let status = || serde_json::json!({ "valid_until": "2999-01-01T00:00:00Z" });
+        let durable = || serde_json::json!({});
+
+        // A durable fact seen again inside a status note does not start expiring.
+        let first = capture("The queue is a spool directory.", durable());
+        let again = capture("The queue is a spool directory.", status());
+        assert_eq!(again.id, first.id);
+        assert_eq!(again.valid_until, None);
+
+        // A status note seen again as durable keeps the expiry it was given.
+        let first = capture("PR 12 passed review.", status());
+        let again = capture("PR 12 passed review.", durable());
+        assert_eq!(again.id, first.id);
+        assert_eq!(again.valid_until.as_deref(), Some("2999-01-01T00:00:00Z"));
     }
 
     #[test]

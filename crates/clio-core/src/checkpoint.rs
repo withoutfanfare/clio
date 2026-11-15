@@ -217,36 +217,47 @@ pub fn store_checkpoint(
                 // Even when the content matches an existing memory, the
                 // suggested open loop itself still needs review. Stamp the
                 // canonical memory into the metadata so approval attaches
-                // attention to it instead of storing a duplicate row — the
-                // follow-up is never silently dropped either way.
-                if let Some(existing_id) =
-                    crate::repository::find_content_duplicate(conn, &namespace, &memory.content)?
-                {
+                // attention to it instead of storing a duplicate row.
+                let live_twin =
+                    crate::repository::find_content_duplicate(conn, &namespace, &memory.content)?;
+                if let Some(existing_id) = &live_twin {
                     if let Some(object) = metadata.as_object_mut() {
                         object.insert("canonical_memory_id".into(), serde_json::json!(existing_id));
                     }
                 }
-                let review_item = crate::review::queue_for_review(
-                    conn,
-                    &crate::review::ReviewInput {
-                        content: memory.content.clone(),
-                        suggested_namespace: namespace,
-                        suggested_kind: classification.kind,
-                        suggested_title: Some(classification.title),
-                        suggested_summary: if classification.summary.is_empty() {
-                            None
-                        } else {
-                            Some(classification.summary)
-                        },
-                        suggested_tags: classification.tags,
-                        suggested_importance: classification.importance,
-                        suggested_confidence: Some(classification.confidence),
-                        source_route: Some(req.source.clone()),
-                        source_ref: Some(item_ref),
-                        metadata,
+                let input = crate::review::ReviewInput {
+                    content: memory.content.clone(),
+                    suggested_namespace: namespace,
+                    suggested_kind: classification.kind,
+                    suggested_title: Some(classification.title),
+                    suggested_summary: if classification.summary.is_empty() {
+                        None
+                    } else {
+                        Some(classification.summary)
                     },
-                )?;
-                queued_review_ids.push(review_item.id);
+                    suggested_tags: classification.tags,
+                    suggested_importance: classification.importance,
+                    suggested_confidence: Some(classification.confidence),
+                    source_route: Some(req.source.clone()),
+                    source_ref: Some(item_ref),
+                    metadata,
+                };
+                // With no live twin, an archived one makes this a revival
+                // proposal like any other capture: one open item per hidden
+                // memory, and none once a person has rejected it.
+                let archived_twin = match live_twin {
+                    Some(_) => None,
+                    None => crate::capture::propose_revival(conn, &input)?,
+                };
+                match archived_twin {
+                    Some(crate::capture::ArchivedTwin::Proposed(item)) => {
+                        queued_review_ids.push(item.id)
+                    }
+                    Some(crate::capture::ArchivedTwin::Rejected(_)) => {}
+                    None => {
+                        queued_review_ids.push(crate::review::queue_for_review(conn, &input)?.id)
+                    }
+                }
                 continue;
             }
 
@@ -262,6 +273,9 @@ pub fn store_checkpoint(
                 false, // embed after commit, never inside the transaction
             )?;
             match outcome {
+                // Content of an archived memory whose revival a person
+                // rejected: the sighting was recorded and nothing else is.
+                CaptureResult::Stored(m) if m.archived_at.is_some() => {}
                 CaptureResult::Stored(m) => {
                     // Explicit user commitments open attention atomically.
                     if let Some(attention) = &memory.attention {
@@ -891,6 +905,100 @@ mod tests {
                 .unwrap()
                 .is_some(),
             "the follow-up lives on the canonical memory"
+        );
+    }
+
+    #[test]
+    fn a_suggested_follow_up_on_archived_content_shares_the_one_revival_proposal() {
+        let conn = test_conn();
+        let settings = Settings::default();
+        let suggested = || DistilledMemory {
+            attention: Some(crate::capture::DistilledAttention {
+                explicitness: "suggested".into(),
+                owner: Some("user".into()),
+                ..crate::capture::DistilledAttention::default()
+            }),
+            ..atom("chase the vendor")
+        };
+        let review_rows = || -> i64 {
+            conn.query_row("SELECT COUNT(*) FROM review_queue", [], |r| r.get(0))
+                .unwrap()
+        };
+
+        let stored =
+            store_checkpoint(&conn, &request(10), &[atom("chase the vendor")], &settings).unwrap();
+        let archived = stored.stored_memory_ids[0].clone();
+        crate::repository::archive(&conn, &archived).unwrap();
+
+        // An ordinary sighting opens the proposal; it carries no follow-up.
+        let plain =
+            store_checkpoint(&conn, &request(20), &[atom("chase the vendor")], &settings).unwrap();
+        let proposal = plain.queued_review_ids[0].clone();
+
+        // Suggested follow-ups on the same content, in two later deltas, join
+        // that proposal instead of queueing one item per checkpoint.
+        for cursor in [30, 40] {
+            let result =
+                store_checkpoint(&conn, &request(cursor), &[suggested()], &settings).unwrap();
+            assert_eq!(result.queued_review_ids, [proposal.clone()]);
+        }
+        assert_eq!(review_rows(), 1);
+        let item = crate::review::get_review(&conn, &proposal).unwrap();
+        assert_eq!(item.metadata["revive_memory_id"], archived.as_str());
+        assert_eq!(item.metadata["attention"]["owner"], "user");
+
+        // Approval revives the one memory and opens the follow-up on it.
+        let memory = crate::review::approve_review(&conn, &proposal, &settings).unwrap();
+        assert_eq!(memory.id, archived);
+        assert!(memory.archived_at.is_none());
+        assert!(
+            crate::attention::get_by_memory(&conn, &archived)
+                .unwrap()
+                .is_some()
+        );
+        assert_eq!(memory_count(&conn), 1);
+    }
+
+    #[test]
+    fn content_whose_revival_was_rejected_opens_nothing_on_later_sightings() {
+        let conn = test_conn();
+        let settings = Settings::default();
+        let stored =
+            store_checkpoint(&conn, &request(10), &[atom("chase the vendor")], &settings).unwrap();
+        let archived = stored.stored_memory_ids[0].clone();
+        crate::repository::archive(&conn, &archived).unwrap();
+        let proposed =
+            store_checkpoint(&conn, &request(20), &[atom("chase the vendor")], &settings).unwrap();
+        crate::review::reject_review(&conn, &proposed.queued_review_ids[0]).unwrap();
+
+        let with_attention = |explicitness: &str| DistilledMemory {
+            attention: Some(crate::capture::DistilledAttention {
+                explicitness: explicitness.into(),
+                ..crate::capture::DistilledAttention::default()
+            }),
+            ..atom("chase the vendor")
+        };
+        let later = store_checkpoint(
+            &conn,
+            &request(30),
+            &[with_attention("explicit"), with_attention("suggested")],
+            &settings,
+        )
+        .unwrap();
+
+        assert!(later.stored_memory_ids.is_empty());
+        assert!(later.queued_review_ids.is_empty());
+        assert!(
+            crate::attention::get_by_memory(&conn, &archived)
+                .unwrap()
+                .is_none(),
+            "no follow-up is opened on a memory a person chose to keep hidden"
+        );
+        assert!(
+            crate::repository::get_raw(&conn, &archived)
+                .unwrap()
+                .archived_at
+                .is_some()
         );
     }
 
