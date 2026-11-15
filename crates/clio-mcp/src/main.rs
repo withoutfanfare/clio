@@ -2756,8 +2756,12 @@ impl ClioServer {
                     .map_err(|e| format!("Serialisation error: {e}"));
             }
 
+            let digest = {
+                let conn = conn.lock().map_err(|e| format!("lock error: {e}"))?;
+                clio_core::checkpoint::digest_with_prior_titles(&conn, &request, &params.text)
+            };
             let (memories, usage) =
-                clio_core::capture::distill_with_usage(&params.text, &settings.capture)
+                clio_core::capture::distill_with_usage(&digest, &settings.capture)
                     .map_err(|e| format_clio_error(&e))?;
             let (result, stored_memories) = {
                 let conn = conn.lock().map_err(|e| format!("lock error: {e}"))?;

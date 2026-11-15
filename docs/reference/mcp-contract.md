@@ -1965,3 +1965,6 @@ Ordinary recall, recent lists, semantic search and context briefs exclude expire
 memories (including linked expansion). CLI recall/search/recent accept
 `--include-expired`; MCP equivalents accept `include_expired: true` for history.
 Direct ID reads, audit/history and export/import preserve expired records.
+
+Session checkpoint distillation includes the earlier-title digest used by CLI
+checkpoints, preserving corrections while avoiding repeated knowledge.
