@@ -1,0 +1,41 @@
+{
+  "namespace": "smoke:fused",
+  "model": "fixture",
+  "memories": [
+    {
+      "title": "Lease expiry",
+      "content": "Leases expire after thirty minutes without a turn.",
+      "vector": [0.0, 1.0]
+    },
+    {
+      "title": "Token lifetime",
+      "content": "Tokens time out after an hour.",
+      "vector": [1.0, 0.0]
+    },
+    {
+      "title": "Garden plan",
+      "content": "Plant the tomatoes in May.",
+      "vector": [-1.0, 0.0]
+    }
+  ],
+  "cases": [
+    {
+      "name": "no backend: keyword matches alone",
+      "query": "when do leases expire",
+      "vector": null,
+      "titles": ["Lease expiry"]
+    },
+    {
+      "name": "semantic-only match",
+      "query": "how long do sessions last",
+      "vector": [1.0, 0.0],
+      "titles": ["Token lifetime"]
+    },
+    {
+      "name": "keyword and semantic matches merged",
+      "query": "when do leases expire",
+      "vector": [1.0, 0.0],
+      "titles": ["Lease expiry", "Token lifetime"]
+    }
+  ]
+}

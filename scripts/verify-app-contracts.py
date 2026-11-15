@@ -179,6 +179,23 @@ def run(cli_binary, mcp_binary):
                           f"Sentence parity: {case['query']}: {result}")
                 passed_check("CLI/MCP sentence agreement: " + case["query"])
 
+            # Search with no embedding backend (this script disables them)
+            # answers with the keyword matches, the same in both adapters.
+            # The cases that need a vector run in the adapters' own tests.
+            fused = json.loads((ROOT / "scripts/fixtures/fused-search.json").read_text())
+            for memory in fused["memories"]:
+                cli("remember", "--namespace", fused["namespace"], "--title", memory["title"],
+                    "--content", memory["content"])
+            for case in fused["cases"]:
+                if case["vector"] is not None:
+                    continue
+                for result in (cli("search", case["query"], "--namespace", fused["namespace"]),
+                               mcp.tool("memory_search", query=case["query"],
+                                        namespace=fused["namespace"], response_format="json")):
+                    check(sorted(item["title"] for item in result["items"]) == case["titles"],
+                          f"Fused search parity: {case['name']}: {result}")
+                passed_check("CLI/MCP search agreement: " + case["name"])
+
             with sqlite3.connect(db) as conn:
                 conn.execute("UPDATE memories SET valid_until = '2000-01-01T00:00:00Z' WHERE id = ?", (second,))
             for result in (cli("recall", "--namespace", alpha), recall(namespace=alpha)):

@@ -59,6 +59,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   only within one embedding model. Receipts are left out before candidates
   are cut, and one wider fetch (100 candidates) follows when filtering leaves
   slots empty.
+- The desktop app's local search uses the same fused search as `memory_search`
+  and `clio search`, including keyword matches while the embedding backend is
+  absent or still loading.
 - `scoring.importance_clamp` bounds how far importance moves a ranking score,
   so its weight can be measured. The default (3.0) leaves ranking as it was.
 - Keyword search in a large namespace no longer spends over a second counting

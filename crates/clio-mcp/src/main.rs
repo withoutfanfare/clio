@@ -4904,6 +4904,91 @@ mod surface_tests {
         assert!(nothing.contains("memory_recall"), "{nothing}");
     }
 
+    /// Answers each fixture query with the vector the fixture gives it.
+    struct FixtureBackend(Vec<(String, Vec<f32>)>);
+
+    impl clio_core::embeddings::EmbeddingBackend for FixtureBackend {
+        fn model_name(&self) -> &str {
+            "fixture"
+        }
+
+        fn dimensions(&self) -> usize {
+            2
+        }
+
+        fn embed_one(&self, text: &str) -> clio_core::error::Result<Vec<f32>> {
+            self.0
+                .iter()
+                .find(|(query, _)| query == text)
+                .map(|(_, vector)| vector.clone())
+                .ok_or_else(|| clio_core::error::ClioError::Config("no fixture vector".into()))
+        }
+
+        fn embed_batch(&self, texts: &[String]) -> clio_core::error::Result<Vec<Vec<f32>>> {
+            texts.iter().map(|text| self.embed_one(text)).collect()
+        }
+    }
+
+    #[tokio::test]
+    async fn fused_search_matrix_matches_the_other_adapters() {
+        let fixture: serde_json::Value =
+            serde_json::from_str(include_str!("../../../scripts/fixtures/fused-search.json"))
+                .unwrap();
+        let namespace = fixture["namespace"].as_str().unwrap();
+        let vector = |value: &serde_json::Value| -> Vec<f32> {
+            serde_json::from_value(value.clone()).unwrap()
+        };
+        for case in fixture["cases"].as_array().unwrap() {
+            let query = case["query"].as_str().unwrap();
+            let conn = clio_core::db::open_in_memory().unwrap();
+            for memory in fixture["memories"].as_array().unwrap() {
+                let input = serde_json::from_value(json!({
+                    "namespace": namespace, "title": memory["title"], "content": memory["content"]
+                }))
+                .unwrap();
+                let stored =
+                    clio_core::repository::remember(&conn, &input, &Default::default()).unwrap();
+                let stored_vector = vector(&memory["vector"]);
+                clio_core::embeddings::store_embedding(
+                    &conn,
+                    &stored.id,
+                    fixture["model"].as_str().unwrap(),
+                    stored_vector.len(),
+                    &stored_vector,
+                )
+                .unwrap();
+            }
+            // No vector in the fixture means no backend is loaded.
+            let backend: Option<Box<dyn clio_core::embeddings::EmbeddingBackend>> =
+                (!case["vector"].is_null()).then(|| {
+                    Box::new(FixtureBackend(vec![(
+                        query.to_string(),
+                        vector(&case["vector"]),
+                    )])) as Box<dyn clio_core::embeddings::EmbeddingBackend>
+                });
+            let server = ClioServer::new(
+                PathBuf::from("unused-surface.db"),
+                conn,
+                clio_core::settings::Settings::default(),
+                backend,
+            );
+            let reply = server
+                .memory_search(params(json!({
+                    "query": query, "namespace": namespace, "response_format": "json"
+                })))
+                .await
+                .unwrap();
+            let result: RecallResult = serde_json::from_str(&reply).unwrap();
+            let mut titles: Vec<_> = result
+                .items
+                .iter()
+                .map(|i| i.memory.title.as_deref().unwrap())
+                .collect();
+            titles.sort();
+            assert_eq!(json!(titles), case["titles"], "{}", case["name"]);
+        }
+    }
+
     #[tokio::test]
     async fn search_and_resume_answer_with_keywords_when_no_backend_is_loaded() {
         let server = server_with(&[(
