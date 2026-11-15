@@ -1312,14 +1312,15 @@ fn main() {
     let raw_args: Vec<OsString> = std::env::args_os().collect();
     let cli = Cli::parse_from(&raw_args);
 
+    // A query embedding that overran its budget is still running; ending the
+    // process the ordinary way under it can crash and replace the exit code.
     if let Err(err) = run_with_routing(cli, &raw_args[1..]) {
         error!("{err}");
         eprintln!("Error: {err}");
+        clio_core::fusion::finish_one_shot(1);
         process::exit(1);
     }
-    // A query embedding that overran its budget must not take the exit code
-    // down with it.
-    clio_core::fusion::finish_one_shot();
+    clio_core::fusion::finish_one_shot(0);
 }
 
 fn run_with_routing(cli: Cli, raw_args: &[OsString]) -> Result<(), Box<dyn std::error::Error>> {

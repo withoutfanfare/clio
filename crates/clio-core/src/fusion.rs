@@ -45,12 +45,13 @@ impl Drop for Embedding {
 /// End a one-shot process that may have left an embedding behind.
 ///
 /// A query embedding that overran its budget is still loading or running the
-/// model on its own thread. Returning from `main` then tears the embedding
-/// runtime down underneath it, and the process dies with a segmentation fault
-/// after printing a perfectly good answer (9 of 30 runs when forced). With
-/// such a thread alive this flushes standard output and exits successfully at
-/// once, skipping that teardown. Otherwise it does nothing.
-pub fn finish_one_shot() {
+/// model on its own thread. Returning from `main`, or calling
+/// `std::process::exit`, then tears the embedding runtime down underneath it,
+/// and the process dies with a segmentation fault after printing a perfectly
+/// good answer (9 of 30 runs when forced). With such a thread alive this
+/// flushes standard output and exits with `code` at once, skipping that
+/// teardown. Otherwise it does nothing and the caller ends as usual.
+pub fn finish_one_shot(code: i32) {
     if EMBEDDING.load(std::sync::atomic::Ordering::SeqCst) == 0 {
         return;
     }
@@ -61,8 +62,10 @@ pub fn finish_one_shot() {
     // SAFETY: `_exit` only ends the process. Every command value has been
     // dropped by the time a caller reaches the end of `main`.
     unsafe {
-        libc::_exit(0)
+        libc::_exit(code)
     }
+    #[cfg(not(unix))]
+    let _ = code;
 }
 
 /// A query vector, the model that produced it, and when the semantic leg must
