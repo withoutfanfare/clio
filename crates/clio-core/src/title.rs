@@ -102,6 +102,9 @@ async fn generate_title_ai_async(
         .header("Authorization", format!("Bearer {api_key}"))
         .header("Content-Type", "application/json")
         .json(&body)
+        // A 60-token title does not get the client's 180 s; on a stall the
+        // caller falls back to the derived title.
+        .timeout(std::time::Duration::from_secs(15))
         .send()
         .await
         .map_err(|e| ClioError::Storage(format!("title API request failed: {e}")))?;
