@@ -1,8 +1,9 @@
 # clio-mcp
 
 Thin MCP (Model Context Protocol) adapter over `clio-core`. Runs on stdio and
-exposes 23 tools for reading, writing, searching, capture, attention, review,
-and cache control.
+exposes 29 tools for reading, writing, searching, capture, attention, review,
+work reports and cache control. Set `CLIO_MCP_TOOLS=core` to offer only the eleven
+everyday tools (see [MCP Agent Setup](../../docs/mcp-agent-setup.md)).
 
 See [MCP Contract](../../docs/reference/mcp-contract.md) for the full tool and resource definitions.
 
@@ -14,7 +15,8 @@ See [MCP Contract](../../docs/reference/mcp-contract.md) for the full tool and r
 `memory_get_links`, `memory_capture`, `memory_session_checkpoint`,
 `memory_search`, `memory_stats`, `memory_activity`, `memory_suggest_links`,
 `memory_context`, `memory_inbox`, `memory_resume`, `memory_action`,
-`memory_cache_clear`
+`memory_feedback`, `memory_namespace_details`, `memory_namespace_delete`,
+`memory_cache_clear`, `work_report`, `work_overview`, `work_history`
 
 The process opens one SQLite connection and creates its embedding backend once.
 It reloads non-embedding settings at most every 30 seconds; embedding changes

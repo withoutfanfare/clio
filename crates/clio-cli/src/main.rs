@@ -298,6 +298,10 @@ struct RecallArgs {
     #[arg(long)]
     query: Option<String>,
 
+    /// Include expired memories for historical retrieval.
+    #[arg(long)]
+    include_expired: bool,
+
     /// Filter by namespace.
     #[arg(long)]
     namespace: Option<String>,
@@ -349,6 +353,10 @@ struct RecallArgs {
 
 #[derive(Parser)]
 struct RecentArgs {
+    /// Include expired memories for historical retrieval.
+    #[arg(long)]
+    include_expired: bool,
+
     /// Filter by namespace.
     #[arg(long)]
     namespace: Option<String>,
@@ -586,6 +594,10 @@ struct SearchArgs {
     /// The natural language query to search for.
     query: String,
 
+    /// Include expired memories for historical retrieval.
+    #[arg(long)]
+    include_expired: bool,
+
     /// Filter by namespace.
     #[arg(long)]
     namespace: Option<String>,
@@ -739,6 +751,18 @@ struct ResumeArgs {
     /// Session or topic scope for once-per-scope surfacing suppression.
     #[arg(long)]
     session: Option<String>,
+
+    /// Return pending delivery receipts without recording shown memories.
+    #[arg(long, requires = "session", conflicts_with = "acknowledge")]
+    no_record: bool,
+
+    /// Read a deferred resume JSON brief from stdin and acknowledge shown IDs.
+    #[arg(long, requires = "shown_id")]
+    acknowledge: bool,
+
+    /// Full memory ID actually injected; repeat for each shown item.
+    #[arg(long, requires = "acknowledge")]
+    shown_id: Vec<String>,
 
     /// Maximum items across all sections.
     #[arg(long, default_value_t = 20)]
@@ -2060,7 +2084,7 @@ fn cmd_recall(
     // --namespace: search only that exact namespace.
     // Neither: use scoped-then-global recall (project namespace + global fallback).
     let scoring = Some(s.scoring.clone());
-    let result = if args.global {
+    let (result, widened) = if args.global {
         let query = RecallQuery {
             query: args.query,
             namespace: None,
@@ -2070,7 +2094,7 @@ fn cmd_recall(
             include_archived: args.include_archived,
             archived_only: args.archived_only,
             include_links: false,
-            exclude_expired: false,
+            exclude_expired: !args.include_expired,
             importance_min: args.importance_min,
             importance_max: args.importance_max,
             sort_by: sort_by.clone(),
@@ -2080,7 +2104,7 @@ fn cmd_recall(
             skip_access_tracking: false,
             match_any_term: false,
         };
-        repository::recall(&conn, &query)?
+        repository::recall_ordinary(&conn, &query, None)?
     } else if args.namespace.is_some() {
         let query = RecallQuery {
             query: args.query,
@@ -2091,7 +2115,7 @@ fn cmd_recall(
             include_archived: args.include_archived,
             archived_only: args.archived_only,
             include_links: false,
-            exclude_expired: false,
+            exclude_expired: !args.include_expired,
             importance_min: args.importance_min,
             importance_max: args.importance_max,
             sort_by: sort_by.clone(),
@@ -2101,7 +2125,7 @@ fn cmd_recall(
             skip_access_tracking: false,
             match_any_term: false,
         };
-        repository::recall(&conn, &query)?
+        repository::recall_ordinary(&conn, &query, None)?
     } else {
         let query = RecallQuery {
             query: args.query,
@@ -2112,7 +2136,7 @@ fn cmd_recall(
             include_archived: args.include_archived,
             archived_only: args.archived_only,
             include_links: false,
-            exclude_expired: false,
+            exclude_expired: !args.include_expired,
             importance_min: args.importance_min,
             importance_max: args.importance_max,
             sort_by,
@@ -2122,12 +2146,15 @@ fn cmd_recall(
             skip_access_tracking: false,
             match_any_term: false,
         };
-        repository::recall_scoped(&conn, &query, &detected_ns)?
+        repository::recall_ordinary(&conn, &query, Some(&detected_ns))?
     };
 
     if json {
         println!("{}", serde_json::to_string_pretty(&result)?);
     } else {
+        if widened {
+            eprintln!("No memory contains every word; a wider search was used.");
+        }
         print_recall_result(&result);
     }
 
@@ -2164,6 +2191,7 @@ fn cmd_recent(
     let sort_by = args.sort.as_deref().and_then(SortOrder::from_str_opt);
 
     let query = RecallQuery {
+        exclude_expired: !args.include_expired,
         namespace: args.namespace,
         kind: args.kind,
         tags,
@@ -2626,7 +2654,7 @@ fn cmd_search(
             backend.model_name(),
             None,
             args.include_archived,
-            false,
+            !args.include_expired,
             Some(&s.scoring),
             args.limit,
         )?
@@ -2638,7 +2666,7 @@ fn cmd_search(
             backend.model_name(),
             Some(namespace),
             args.include_archived,
-            false,
+            !args.include_expired,
             Some(&s.scoring),
             args.limit,
         )?
@@ -2651,7 +2679,7 @@ fn cmd_search(
             backend.model_name(),
             &namespace,
             args.include_archived,
-            false,
+            !args.include_expired,
             Some(&s.scoring),
             args.limit,
         )?
@@ -2884,7 +2912,8 @@ fn cmd_distill(
 
     if args.dry_run {
         let started = std::time::Instant::now();
-        let (mut memories, usage) = clio_core::capture::distill_with_usage(&text, &capture_config)?;
+        let (mut memories, usage, returned) =
+            clio_core::capture::distill_measured(&text, &capture_config)?;
         let elapsed_ms = started.elapsed().as_millis();
 
         // Report the namespace each memory would actually be stored under, not the
@@ -2905,6 +2934,8 @@ fn cmd_distill(
                     "model": capture_config.model,
                     "elapsed_ms": elapsed_ms,
                     "usage": usage,
+                    // Before the cap: what the model itself returned.
+                    "knowledge_items_returned": returned,
                     "result": memories,
                 })
             } else {
@@ -3633,6 +3664,9 @@ fn cmd_effectiveness(
             eprintln!("  attention {status}: {count}");
         }
         eprintln!("  stale open items: {}", report.attention_stale);
+        eprintln!("  sessions without task match: {}", report.sessions_without_task_match);
+        eprintln!("  mean task matches/session: {:.2}", report.mean_task_matches_per_session);
+        eprintln!("  active memories with expiry: {:.1}%", report.active_expiry_share * 100.0);
         eprintln!("  auto-surfaced:    {} unique", report.surfaced_unique);
         eprintln!("  deliberate reads: {}", report.deliberate_accesses);
         eprintln!("  contradictions:   {}", report.unresolved_contradictions);
@@ -3738,6 +3772,14 @@ fn cmd_resume(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let path = resolve_db_path(db_path)?;
     let conn = db::open(&path)?;
+    if args.acknowledge {
+        let brief: clio_core::assembly::ResumeBrief = serde_json::from_reader(std::io::stdin())?;
+        clio_core::assembly::acknowledge_resume(&conn, &brief, &args.shown_id)?;
+        if json {
+            println!("{}", serde_json::json!({"acknowledged": args.shown_id}));
+        }
+        return Ok(());
+    }
     let stgs = settings::load(&path)?;
 
     let namespace = match &args.namespace {
@@ -3763,7 +3805,11 @@ fn cmd_resume(
         now: None,
     };
 
-    let brief = clio_core::assembly::build_resume_brief(&conn, &request)?;
+    let brief = if args.no_record {
+        clio_core::assembly::build_resume_brief_unrecorded(&conn, &request)?
+    } else {
+        clio_core::assembly::build_resume_brief(&conn, &request)?
+    };
 
     if json {
         println!("{}", serde_json::to_string_pretty(&brief)?);
@@ -5293,5 +5339,38 @@ mod tests {
         assert_eq!(changed.model, "gpt-5.6-terra");
         assert_eq!(changed.api_key, base.api_key);
         assert!(capture_config_with_model(&base, Some("  ")).is_err());
+    }
+}
+
+#[cfg(test)]
+mod resume_delivery_cli_tests {
+    use super::*;
+
+    #[test]
+    fn deferred_resume_requires_session_and_acknowledgement_requires_ids() {
+        assert!(Cli::try_parse_from(["clio", "resume", "--no-record"]).is_err());
+        assert!(Cli::try_parse_from(["clio", "resume", "--acknowledge"]).is_err());
+        assert!(
+            Cli::try_parse_from([
+                "clio",
+                "resume",
+                "--session",
+                "test",
+                "--no-record",
+                "--json"
+            ])
+            .is_ok()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "clio",
+                "resume",
+                "--acknowledge",
+                "--shown-id",
+                "full-id",
+                "--json"
+            ])
+            .is_ok()
+        );
     }
 }

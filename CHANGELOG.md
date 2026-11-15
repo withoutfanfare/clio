@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+**Memory quality and delivery (2026-11-15)**
+- Prompt briefs prioritise task-matched knowledge; session starts include one
+  recent receipt. Follow-ups are bounded and explicit reminders take priority.
+  Confirmed delivery can be acknowledged separately; constraints and decisions
+  are suppressed only after acknowledgement, until edited, and only on prompts.
+- Sentence recall now retries empty strict results with any-word matching across
+  MCP, CLI and desktop local mode. Informative term selection handles stemming
+  and avoids promoting paths and dates. Administrative reads do not train ranking.
+- Ordinary retrieval hides expired status notes; historical recall/search can
+  explicitly include them. Export and ID reads retain expired records.
+- Capture keeps three knowledge items, allowing explicit commitments up to five
+  items plus a receipt. Checkpoints include prior titles but preserve corrections.
+  Archived duplicates stay hidden pending review; finished follow-ups archive
+  their task memories. Status knowledge expires after 30 days.
+- MCP offers an optional core tool profile, forwarded through the SSH bridge.
+  Markdown and compact replies are concise; JSON retains complete records for
+  existing desktop clients. Validation rejects unsupported values explicitly.
+- Bare project names resolve consistently in retrieval and reports. Migration 018
+  repairs supported bare attention namespaces and normalises global casing.
+- Effectiveness reports task-matching and expiry coverage; capture and resume
+  benchmarks exercise selectivity and retrieval relevance.
+
+**Deployment notes:** deploy compatible server and CLI binaries before using new
+flags or tool profiles. Existing hooks and desktop JSON envelopes are preserved.
+Delivery acknowledgement needs caller adoption; current hooks remain supported.
+Migration 018 changes attention namespace labels, not memory content. Back up
+before deployment. Review expired-note visibility and namespace repairs on a copy.
+Raw model cap-hit and empty-response rates are unavailable in stored accounting.
+
 ### Fixed
 
 **Review fixes (2026-11-14)**

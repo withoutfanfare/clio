@@ -140,7 +140,8 @@ CREATE TABLE memories (
 - `content` is the only mandatory human payload field.
 - `title` and `summary` are optional because some clients will store raw findings or notes.
 - `metadata_json` must always decode to an object. Arrays and scalars are invalid.
-- `valid_from` and `valid_until` are advisory fields for future filtering. Phase one may store them without heavily using them.
+- `valid_from` is advisory. `valid_until` is an expiry: once it has passed, the memory is left out of any read that asks to exclude expired rows. Resume briefs, the attention overview and link suggestions ask; ordinary recall, search, recent listings and context briefs do not yet, so an expired memory still appears there. Expiry hides a memory; it never archives or deletes it, and clearing the field brings the memory back.
+- Session distillation sets `valid_until` to 30 days ahead (`capture::STATUS_LIFETIME_DAYS`) on memories the model marks `"lifetime": "status"`: point-in-time notes such as a PR having passed or a release having gone out. Durable knowledge, receipts and open loops never get an expiry, and a missing `lifetime` means durable. The same timestamp is kept in `metadata_json.valid_until` so that an item held in the review queue keeps its expiry when approved.
 - `source` and `source_ref` are optional individually, but only meaningful for upsert when both are set.
 
 ### Recommended `kind` values
@@ -341,6 +342,7 @@ CREATE INDEX IF NOT EXISTS idx_review_queue_status ON review_queue(status);
 - approved memories are embedded when `auto_embed` is enabled
 - `reject` sets status to `rejected` — the item remains in the table but is not converted
 - `edit` updates suggested fields and sets status to `edited` — still requires approval
+- An item whose `metadata_json` carries `revive_memory_id` is a revival proposal: a capture met content byte-identical to that archived memory. There is at most one open proposal per archived memory, whichever capture path saw it, and a follow-up seen with a later sighting is added to that proposal's metadata. `approve` un-archives the stored memory as it is, and clears its `valid_until` if that has already passed so the approved memory is visible; `edit` is refused with a message to approve and then update the memory. `reject` is final: later sightings are recorded as occurrences and nothing more is proposed for that memory, and no follow-up is opened on it
 - `review_threshold` is an optional float in `CaptureConfig`; when `None`, all captures bypass the queue
 
 ## `session_checkpoints`
@@ -429,7 +431,9 @@ CREATE INDEX idx_attention_status ON attention_items(status, namespace);
 
 - Statuses are only `open`, `snoozed`, `resolved`, `cancelled`. Invalid transitions are validation errors, not no-ops; `resolved` and `cancelled` are terminal.
 - Creation is idempotent per memory and commits atomically with its `attention_opened` event.
+- New rows store `namespace` in canonical form (a bare `clio` becomes `project:clio`), and listing, eligibility and the overview accept a bare project name and treat it the same way. The overview also canonicalises a memory's namespace before matching it to the requested one, so a follow-up keeps its title when its memory still has the bare spelling. A pre-existing bare value that migration 018 did not rewrite keeps its spelling and is reached only by an unscoped listing.
 - Completion never deletes or rewrites the source memory; it records a `resolved` event and, when evidence is supplied, a `resolved_by` link from the followed-up memory to the evidence memory.
+- Resolving or cancelling a follow-up archives its memory in the same transaction when that memory's `kind` is `task`, so finished work stops ranking in recall. The attention row, its events and the `resolved_by` link are untouched and the memory is still fetched by ID. Memories of any other kind stay live.
 - Eligibility (`overdue`, `reminder_due`, `project_session`, `dormant`) is a pure read returning a machine-readable reason; it mutates nothing, including access ranking.
 - Existing `task`-kind memories remain valid without attention rows.
 
@@ -490,7 +494,7 @@ CREATE UNIQUE INDEX idx_memory_occurrences_provenance
 
 ### Occurrence rules
 
-- The capture path records an occurrence for the first sighting and for every dedup/revival hit; the partial unique index makes checkpoint replays and duplicate deliveries no-ops.
+- The capture path records an occurrence for the first sighting and for every dedup hit, including a sighting of an archived memory; the partial unique index makes checkpoint replays and duplicate deliveries no-ops.
 - Occurrence writes share their caller's capture/review transaction.
 - `merge_memories` transfers occurrences to the kept memory before archiving the duplicate row; provenance collisions are dropped as duplicates.
 
@@ -984,6 +988,7 @@ The export format should be easy for:
 | `015_memory_repair_journal` | immutable repair transaction/journal tables, rollback linkage and database-wide generation triggers |
 | `016_work_reporting_proof` | isolated `work_runs` identities and `work_reports` receipts for direct reporting |
 | `017_work_guidance` | receipt-scoped human acceptance and separately stored next-task recommendations |
+| `018_canonical_attention_namespaces` | data only: rewrites a bare `attention_items.namespace` (`Scooda`) to `project:<slug>` when memories already exist under that project namespace, without changing `updated_at`; any other bare name is left as it is |
 
 ## Invariants For Implementers
 
@@ -1041,3 +1046,19 @@ The schema is ready for coding agents when:
 ### Work guidance (migration 017)
 
 `work_acceptances` stores one immutable JSON decision per implementation `receipt_id` (foreign key to `work_reports.id`). `work_recommendations` stores one JSON recommendation per `(project, parent_task)`, with `checked_at` guarding replacement order. Neither table rewrites agent receipts or registers a run. The local CLI owns these explicit writes; the core overview joins acceptance and filters recommendations whose proposed task already reports. See [work reporting](../work-reporting.md#human-acceptance-and-next-task-guidance-local-pilot).
+
+Ordinary recall, recent lists, semantic search and context briefs exclude expired
+memories (including linked expansion). CLI recall/search/recent accept
+`--include-expired`; MCP equivalents accept `include_expired: true` for history.
+Direct ID reads, audit/history and export/import preserve expired records.
+
+Core semantic retrieval, namespace moves, statistics and activity filters accept
+bare project names. The reserved `global` namespace is case-insensitive; names
+with a colon retain their spelling. Migration 018 also normalises global casing.
+
+Effectiveness reports sessions with no task-matched item and mean distinct
+task-matched memories per session, using surfaced events labelled `Relevant
+knowledge`. Only sessions with surfaced events are measurable. It also reports
+the fraction of unarchived memories carrying `valid_until` (including expired
+rows). Raw distillation cap-hit and empty-response rates are not available:
+checkpoint envelopes record stored/review IDs, not raw model output counts.

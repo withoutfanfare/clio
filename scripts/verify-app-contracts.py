@@ -172,6 +172,24 @@ def run(cli_binary, mcp_binary):
             def recall(**arguments):
                 return mcp.tool("memory_recall", response_format="json", **arguments)
 
+            for case in json.loads((ROOT / "scripts/fixtures/sentence-recall.json").read_text()):
+                for result in (cli("recall", "--namespace", alpha, "--query", case["query"]),
+                               recall(namespace=alpha, query=case["query"])):
+                    check(sorted(item["title"] for item in result["items"]) == case["titles"],
+                          f"Sentence parity: {case['query']}: {result}")
+                passed_check("CLI/MCP sentence agreement: " + case["query"])
+
+            with sqlite3.connect(db) as conn:
+                conn.execute("UPDATE memories SET valid_until = '2000-01-01T00:00:00Z' WHERE id = ?", (second,))
+            for result in (cli("recall", "--namespace", alpha), recall(namespace=alpha)):
+                check(ids(result) == [first], "Expired memory absent from ordinary recall")
+            for result in (cli("recall", "--namespace", alpha, "--include-expired"),
+                           recall(namespace=alpha, include_expired=True)):
+                check(set(ids(result)) == {first, second}, "Historical recall retains expired memory")
+            passed_check("CLI/MCP expiry and explicit history")
+            with sqlite3.connect(db) as conn:
+                conn.execute("UPDATE memories SET valid_until = NULL WHERE id = ?", (second,))
+
             for result in (cli("recall", "--namespace", alpha), recall(namespace=alpha)):
                 check(set(ids(result)) == {first, second} and result["total"] == 2,
                       "Default recall must exclude archived records")

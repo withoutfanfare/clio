@@ -7,7 +7,7 @@
 //! Event writes that accompany a state change share the caller's transaction;
 //! purely observational writes are fire-and-forget via [`log_event`].
 
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::error::{ClioError, Result};
 use crate::models::{new_id, now_utc};
@@ -120,6 +120,17 @@ pub fn record_event(conn: &Connection, input: &EventInput) -> Result<Option<Memo
         )));
     }
 
+    let namespace = if input.event_type == EVENT_SURFACED && input.namespace.is_none() {
+        conn.query_row(
+            "SELECT namespace FROM memories WHERE id = ?1",
+            [&input.memory_id],
+            |r| r.get::<_, String>(0),
+        )
+        .optional()?
+    } else {
+        input.namespace.clone()
+    };
+
     let id = new_id();
     let now = now_utc();
     let metadata = if input.metadata.is_null() {
@@ -137,7 +148,7 @@ pub fn record_event(conn: &Connection, input: &EventInput) -> Result<Option<Memo
             id,
             input.idempotency_key,
             input.memory_id,
-            input.namespace,
+            namespace,
             input.actor,
             input.session_id,
             input.topic,
@@ -156,7 +167,7 @@ pub fn record_event(conn: &Connection, input: &EventInput) -> Result<Option<Memo
         id,
         idempotency_key: input.idempotency_key.clone(),
         memory_id: input.memory_id.clone(),
-        namespace: input.namespace.clone(),
+        namespace,
         actor: input.actor.clone(),
         session_id: input.session_id.clone(),
         topic: input.topic.clone(),

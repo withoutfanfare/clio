@@ -640,6 +640,8 @@ pub fn semantic_recall(
     scoring: Option<&crate::settings::ScoringConfig>,
     limit: u32,
 ) -> Result<Vec<RecallItem>> {
+    let canonical = namespace.map(crate::context::canonical_namespace);
+    let namespace = canonical.as_deref();
     // Over-fetch semantically so the keyword boost can re-rank within a wider pool.
     let fetch_limit = limit.saturating_mul(2).max(20);
     let mut results = semantic_search(
@@ -755,6 +757,8 @@ pub fn semantic_recall_scoped(
     scoring: Option<&crate::settings::ScoringConfig>,
     limit: u32,
 ) -> Result<Vec<RecallItem>> {
+    let canonical = crate::context::canonical_namespace(detected_namespace);
+    let detected_namespace = canonical.as_str();
     if detected_namespace == "global" {
         return semantic_recall(
             conn,

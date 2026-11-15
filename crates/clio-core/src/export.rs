@@ -14,6 +14,8 @@ pub fn export_jsonl(
     let query = crate::models::RecallQuery {
         namespace: namespace.map(String::from),
         include_archived,
+        exclude_expired: false,
+        skip_access_tracking: true,
         limit: u32::MAX,
         ..Default::default()
     };
@@ -97,4 +99,30 @@ pub struct ImportResult {
     pub imported: u32,
     pub skipped: u32,
     pub errors: Vec<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn export_preserves_access_and_events() {
+        let conn = crate::db::open_in_memory().unwrap();
+        let input =
+            serde_json::from_value(serde_json::json!({"content":"export fixture"})).unwrap();
+        let memory =
+            crate::repository::remember(&conn, &input, &crate::settings::Settings::default())
+                .unwrap();
+        let before = crate::repository::get_raw(&conn, &memory.id).unwrap();
+        let events = || {
+            conn.query_row("SELECT COUNT(*) FROM memory_events", [], |r| {
+                r.get::<_, i64>(0)
+            })
+            .unwrap()
+        };
+        let count = events();
+        super::export_jsonl(&conn, &mut Vec::new(), None, false).unwrap();
+        let after = crate::repository::get_raw(&conn, &memory.id).unwrap();
+        assert_eq!(before.access_count, after.access_count);
+        assert_eq!(before.last_accessed_at, after.last_accessed_at);
+        assert_eq!(count, events());
+    }
 }

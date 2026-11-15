@@ -1,0 +1,65 @@
+[
+  {
+    "query": "Where is the first evidence documented",
+    "titles": [
+      "First evidence",
+      "Second evidence"
+    ]
+  },
+  {
+    "query": "Tell me about the second evidence please",
+    "titles": [
+      "First evidence",
+      "Second evidence"
+    ]
+  },
+  {
+    "query": "What happened in the contract orchard",
+    "titles": [
+      "First evidence",
+      "Second evidence"
+    ]
+  },
+  {
+    "query": "Can you find evidence for this decision",
+    "titles": [
+      "First evidence",
+      "Second evidence"
+    ]
+  },
+  {
+    "query": "Explain the first result to me",
+    "titles": [
+      "First evidence"
+    ]
+  },
+  {
+    "query": "Explain the second result to me",
+    "titles": [
+      "Second evidence"
+    ]
+  },
+  {
+    "query": "Which orchard records should I read",
+    "titles": [
+      "First evidence",
+      "Second evidence"
+    ]
+  },
+  {
+    "query": "Where is the missing quantum experiment",
+    "titles": []
+  },
+  {
+    "query": "Where is the first record",
+    "titles": [
+      "First evidence"
+    ]
+  },
+  {
+    "query": "Where is the second record",
+    "titles": [
+      "Second evidence"
+    ]
+  }
+]

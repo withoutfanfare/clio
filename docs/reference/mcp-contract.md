@@ -59,6 +59,23 @@ Default assumption:
 - same user account as the SQLite file owner
 - database path resolved by env var or platform default in the core
 
+## Tool Profiles
+
+The environment variable `CLIO_MCP_TOOLS`, read once at startup, chooses which
+tools the process offers:
+
+| Value | Tools |
+|---|---|
+| unset, empty, `full` | every tool in this document (the default) |
+| `core` | `memory_recall`, `memory_search`, `memory_get`, `memory_remember`, `memory_update`, `memory_resume`, `memory_context`, `memory_action`, `memory_feedback`, `memory_archive`, `memory_unarchive` |
+| any other value | startup error naming the valid values; never a silent fallback |
+
+Under `core` the other tools are absent from `tools/list` and calling one is an
+unknown-tool error. Tool behaviour is identical in both profiles. The server
+instructions describe only the tools on offer. Resources are unaffected. The
+full list measures about 28,200 characters of definitions and the core list
+about 14,800.
+
 ## Tool Design Rules
 
 Every tool must:
@@ -93,6 +110,13 @@ Auto-detection is controlled by `context.auto_detect` in settings (default `true
 Tools that accept `cwd`: `memory_remember`, `memory_recall`, `memory_capture`,
 `memory_session_checkpoint`, `memory_search`, `memory_context`, `memory_resume`,
 and `memory_action`.
+
+A bare project name is the same namespace as its `project:` form in every
+tool that takes `namespace` or `cwd` from the list above: `clio` and
+`project:clio` both mean `project:clio` (core's `canonical_namespace`).
+`global` and any name that already has a `kind:` prefix are used as written.
+`memory_stats`, `memory_activity`, `memory_move` and `memory_namespace_delete`
+take the namespace exactly as given.
 
 **Exception — classified storage** (`memory_capture`, and distillation via
 `memory_session_checkpoint`): the model's classification may promote a memory to
@@ -156,21 +180,75 @@ Canonical structured response for search/list operations:
   "count": 1,
   "offset": 0,
   "limit": 10,
+  "archived_only": false,
   "items": []
 }
 ```
 
+This is the shape of `response_format: "json"`, unchanged since it was first
+published: programs decode it into core's `RecallResult`. The `compact` format
+uses the same envelope with [compact items](#compact-item), and adds a `note`
+string when the reply needs explaining (a widened or empty `memory_recall`, an
+empty `memory_search`).
+
+### Compact item
+
+What each entry of `items` holds in a list reply with
+`response_format: "compact"`:
+
+```json
+{
+  "id": "01954d70-cf20-7d42-bb3b-ff2f0f0de123",
+  "namespace": "project:ai",
+  "kind": "decision",
+  "title": "Use SQLite",
+  "excerpt": "SQLite is the default shared local store.",
+  "created": "2026-03-02",
+  "score": 7.813
+}
+```
+
+- `excerpt`: the summary when the memory has one, otherwise the first 200
+  characters of its content followed by `...`
+- `created`: the creation date, so an old status note is not read as current
+- `score`: omitted when the listing is unranked. Higher is always a better
+  match: it is the magnitude of the core `rank` (BM25 for `memory_recall`,
+  similarity for `memory_search`), rounded to three places. Items are already
+  ordered best first
+- `title` is omitted when the memory has none
+
 ### Response formats
 
-Allowed values:
+Allowed values on read and list tools:
 
-- `json`
-- `markdown`
+| Value | Use it for | What it returns |
+|---|---|---|
+| `markdown` (default) | reading | cards: id, namespace, kind, creation date, tags, title and a short excerpt |
+| `compact` | structured processing by a model | the same fields as one-line JSON ([compact items](#compact-item)), about the size of the Markdown reply |
+| `json` | a program that needs whole records | the complete memory records, several times larger |
 
-Semantics:
+Rules:
 
-- `json` for machine consumption
-- `markdown` for readable summaries inside AI chat surfaces
+- `json` is a compatibility contract. It returns exactly the field set it
+  always has, for every tool, because existing programs decode it into core
+  types: the desktop app's remote mode reads `memory_recall`, `memory_search`
+  and `memory_get` replies as `RecallResult` and `Memory`. Fields may be added
+  to core records; none may be removed or renamed, and the default shape of a
+  tool's `json` reply never changes. A new, smaller shape gets a new format
+  value, as `compact` did
+- `compact` has its own shape on the list tools (`memory_recall`,
+  `memory_recent`, `memory_search`, `memory_context`). On a tool with only one
+  JSON shape (`memory_get`, `memory_resume`, `memory_stats`, `memory_activity`,
+  `memory_suggest_links`, `memory_inbox`) it returns that shape
+- the write tools `memory_remember` and `memory_update` take `json` (default:
+  the whole stored record, which the desktop app decodes as `Memory`) or
+  `compact` (a short receipt). They have no Markdown reply
+- no JSON reply is pretty-printed; every one is a single line
+- for one complete record, use `memory_get`
+
+Measured on a 27,000-memory store, the same ten `memory_recall` results were
+3,388 characters as `markdown`, 3,616 as `compact` and 14,004 as `json`
+(16,283 while `json` was still pretty-printed).
 
 ## Tool Definitions
 
@@ -288,6 +366,7 @@ This is the primary write path for AI clients. It should support both one-off wr
 - `importance`: `3`
 - `metadata`: `{}`
 - `upsert`: `false`
+- `response_format`: `json`
 
 ### Validation rules
 
@@ -307,7 +386,20 @@ This is the primary write path for AI clients. It should support both one-off wr
 
 ### Response
 
-Returns the stored memory record in structured form.
+`response_format: "json"` (the default) returns the complete stored memory
+record, on one line. The desktop app decodes it as `Memory`, so this default
+must not change.
+
+`response_format: "compact"` returns a receipt instead, because the caller
+already holds the content it sent:
+
+```json
+{"id":"01954d70-cf20-7d42-bb3b-ff2f0f0de123","namespace":"project:ai","title":"Use SQLite","updated_at":"2026-03-02T19:15:00Z"}
+```
+
+`updated_at` is the value a later `memory_update` needs as
+`expected_updated_at`. `title` is `null` when the memory has none. Any other
+`response_format` is rejected before anything is stored.
 
 ### Failure cases
 
@@ -363,7 +455,13 @@ Patchable fields are `namespace`, `kind`, `title`, `summary`, `content`,
 
 ### Response
 
-Returns the updated memory record in structured form.
+`response_format: "json"` (the default) returns the complete updated memory
+record. `response_format: "compact"` returns the same receipt as
+`memory_remember` (`id`, `namespace`, `title`, `updated_at`), with the new
+`updated_at` ready for the next patch. `response_format: "markdown"` is
+accepted on both write tools and answered with the same receipt, so a model
+that passes the reading default does not have its write refused. Any other
+value is rejected before the patch is applied.
 
 ### Failure cases
 
@@ -411,7 +509,7 @@ This is the primary retrieval tool for AI clients. It must handle both semantic-
 - `match_all_tags`: `true`
 - `importance_min`: null (no lower bound)
 - `importance_max`: null (no upper bound)
-- `sort_by`: null (default: `updated_at DESC`; only applied when no FTS query and no scoring config)
+- `sort_by`: null (default: `updated_at DESC`). It orders a listing; with `query` it has no effect, because keyword results are ordered by relevance
 - `include_archived`: `false`
 - `archived_only`: `false`
 - `limit`: `10`
@@ -431,7 +529,18 @@ This is the primary retrieval tool for AI clients. It must handle both semantic-
 
 ### Behaviour
 
-- if `query` is present, use FTS recall
+- if `query` is present, use FTS recall: a memory must contain every word
+- if that strict search finds nothing and `query` has more than one word, retry
+  once with core's any-word search (`RecallQuery.match_any_term`, the search
+  resume briefs use) under the same filters. The reply then opens with a note
+  saying a wider search was used (the first line in `markdown`, a `note` field
+  in `compact`), so a sentence such as "how do we deploy a new release to
+  Atlas" is never answered with a bare zero. `json` returns the widened items
+  in its usual envelope, with no extra field
+- if a query still matches nothing, the reply is a one-line note that suggests
+  `memory_search` and fewer or different keywords (`markdown`), an empty
+  envelope carrying that `note` (`compact`), or the plain empty envelope
+  (`json`)
 - if `query` is absent, return recent records subject to filters
 - by default, archived records are excluded
 - support namespace, kind, and tags filters
@@ -444,12 +553,25 @@ This is the primary retrieval tool for AI clients. It must handle both semantic-
 
 ### Structured response
 
+`response_format: "compact"` returns the recall envelope with
+[compact items](#compact-item), on one line:
+
+```json
+{"total":1,"count":1,"offset":0,"limit":10,"archived_only":false,"items":[{"id":"01954d70-cf20-7d42-bb3b-ff2f0f0de123","namespace":"project:ai","kind":"decision","title":"Use SQLite","excerpt":"SQLite is the default shared local store.","created":"2026-03-02","score":7.813}]}
+```
+
+`response_format: "json"` returns the same envelope with each item the complete
+memory record plus the core `rank` (BM25 for a keyword query: negative, lower
+is better; `null` for a listing). This is what `RecallResult` decodes. Shown
+indented here; the reply itself is one line:
+
 ```json
 {
   "total": 1,
   "count": 1,
   "offset": 0,
   "limit": 10,
+  "archived_only": false,
   "items": [
     {
       "id": "01954d70-cf20-7d42-bb3b-ff2f0f0de123",
@@ -477,19 +599,25 @@ This is the primary retrieval tool for AI clients. It must handle both semantic-
 
 ### Markdown response
 
-Should include for each item:
+A count line, then one card per item:
 
-- title or id
-- id
-- namespace
-- kind
-- tags
-- updated timestamp
-- relevance rank when available
-- summary or short excerpt
+```text
+### Use SQLite
+`01954d70-cf20-7d42-bb3b-ff2f0f0de123` · project:ai/decision · 2026-03-02 · sqlite, memory
+> SQLite is the default shared local store.
+```
+
+- heading: the title, or the id when there is none
+- id, namespace/kind, creation date (so an old status note is not read as
+  current) and tags
+- the summary, or the first 200 characters of the content
+
+Rank and full timestamps are left out; they are in the `json` reply.
 
 ### Failure cases
 
+- unknown `sort_by` → `Invalid sort_by '<value>'. Must be one of: updated_desc, updated_asc, importance_desc, importance_asc, created_desc, created_asc.` (it is never silently ignored; an empty value counts as not given)
+- an importance bound that can match nothing (`importance_min` above 5, `importance_max` below 1) → `<field> must be between 1 and 5.`
 - invalid pagination values
 - invalid response format
 - storage failure
@@ -550,7 +678,9 @@ Return recent memories with optional filtering and sorting.
 ### Behaviour
 
 - recall without a full-text query
-- sorted by `updated_at DESC` by default, or by `sort_by` when specified
+- sorted by `updated_at DESC` by default, or by `sort_by` when specified; an
+  unknown `sort_by` and an importance bound outside 1–5 are rejected as in
+  `memory_recall`
 - supports all filter parameters (kind, tags, importance range)
 - active-only by default
 
@@ -568,6 +698,8 @@ Return recent memories with optional filtering and sorting.
 - `offset`: `0`
 - `limit`: `10`
 - `response_format`: `markdown`
+
+`compact` and `json` behave as in `memory_recall`.
 
 ## `memory_link`
 
@@ -1084,17 +1216,17 @@ Handoff and context briefs answer "what is this project?"; resume answers "what 
 
 ### Behaviour
 
-1. Sections in priority order: Needs attention (eligible open work with machine-readable reasons: `overdue`, `reminder_due`, `project_session`, `dormant`), Waiting on, Active constraints (project first plus up to two global), Recent decisions, Relevant knowledge (query only), Recent activity (receipts)
-2. Empty sections are omitted and release their capacity; each non-empty critical section (attention, waiting, constraints) keeps one guaranteed slot at small budgets
+1. Prompt briefs prioritise Relevant knowledge, then Needs attention, Waiting on, Active constraints, Recent decisions and Recent activity. Session starts put one recent receipt first, followed by attention, waiting, constraints and decisions.
+2. Empty sections release capacity. Attention and waiting reserve slots; constraints also reserve a slot at session start. Small prompt budgets can omit constraints.
 3. Items are deduplicated across sections by memory ID; archived, expired, resolved and cancelled records never appear
-4. Every read is untracked: automatic delivery leaves `access_count` and `last_accessed_at` unchanged
-5. With `session_id`, each included attention item records one idempotent `surfaced` event and is suppressed on repeat requests in the same scope until its state changes
+4. A resume never counts as use for ranking: `access_count` and `last_accessed_at` stay unchanged. It is not write-free, though (see 5)
+5. With `session_id`, default selection records idempotent surfaced events. Attention is suppressed until its state changes. Constraints and decisions are suppressed only on query-bearing requests after acknowledged delivery, and edits make them eligible again. Session starts never suppress these sections. Deferred selection records nothing until acknowledgement; without a session nothing is written.
 6. The character budget counts the serialised representation (title + bounded content + reason); at least one item is always kept
 7. Event-write failure logs a warning and still returns the brief
 
 ### Response
 
-Markdown by default; `response_format: "json"` returns `{ namespace, sections: [{ heading, items: [{ memory_id, kind, title, content, source, created_at, state, reason }] }], total_items, generated_at }`.
+Markdown by default, one line per item with its kind, title, id and creation date, then why it is shown and its bounded content. `response_format: "json"` returns `{ namespace, sections: [{ heading, items: [{ memory_id, kind, title, content, source, created_at, state, reason }] }], total_items, generated_at }`.
 
 ## `memory_action`
 
@@ -1121,6 +1253,8 @@ One merged tool with an `action` discriminator, mirroring `memory_inbox`:
 ```
 
 `id` accepts either the attention item ID or the underlying memory ID.
+`namespace` accepts a bare project name (`clio` means `project:clio`), as
+`memory_recall` does.
 
 ### Behaviour
 
@@ -1137,6 +1271,7 @@ The `overview` response includes `memory_titles`, keyed by full memory ID, for e
 
 - missing required fields per action → validation error naming the field
 - unknown action → validation error listing the valid actions
+- unknown `status` filter on `list` → validation error listing the four statuses (it is never treated as "no matches")
 - id resolving to no attention item → not-found error
 - invalid transition (e.g. completing a cancelled item) → validation error stating both states
 
@@ -1349,22 +1484,24 @@ Find memories by semantic meaning using vector embeddings.
 
 - `query` is required and must not be empty
 - `limit` must be a positive integer
-- `response_format` must be `json` or `markdown`
+- `response_format` must be `markdown`, `compact` or `json`
 
 ### Behaviour
 
 - embed the query text using the active embedding backend
 - compute cosine similarity only against stored embeddings with the active model name and matching vector dimensions
-- when `namespace` is explicitly provided, filter to that namespace
+- when `namespace` is explicitly provided, filter to that namespace; a bare project name is canonicalised first, as in `memory_recall`
 - when `cwd` is provided and `namespace` is omitted, use scoped recall: search detected namespace first, then fill remaining slots from `global`; project-scoped results appear before global results
 - when detection falls back to `global`, search only `global` unless `global: true` requests all namespaces
 - exclude archived memories by default
 - return results sorted by similarity descending
-- similarity score is returned in the `rank` field (range 0.0–1.0; higher is more similar)
+- the ranking value is returned as `score` in a compact item and as `rank` in a `json` record; higher is a better match. It is the cosine similarity adjusted by the keyword boost and the configured scoring, so it is not confined to 0.0–1.0
 
 ### Response
 
-Returns a recall envelope identical in shape to `memory_recall`. The `rank` field contains the cosine similarity score rather than a BM25 rank:
+Returns a recall envelope identical in shape to `memory_recall`:
+[compact items](#compact-item) with `compact`, complete records with `json`.
+The `json` shape, shown indented:
 
 ```json
 {
@@ -1372,6 +1509,7 @@ Returns a recall envelope identical in shape to `memory_recall`. The `rank` fiel
   "count": 1,
   "offset": 0,
   "limit": 10,
+  "archived_only": false,
   "items": [
     {
       "id": "01954d70-cf20-7d42-bb3b-ff2f0f0de123",
@@ -1402,7 +1540,8 @@ Returns a recall envelope identical in shape to `memory_recall`. The `rank` fiel
 - embeddings disabled in settings → `Configuration error: embeddings are disabled`
 - embedding backend not available at compile time → configuration error
 - embedding backend unreachable (e.g. OpenAI API key missing) → configuration error
-- no memories have been embedded yet → returns empty results without error
+- no embedding backend in this process → `Embedding backend not available. Ensure embeddings are configured in settings. Use memory_recall (keyword search) meanwhile.`
+- nothing similar enough, or no memories embedded yet → no error; the reply is a one-line note suggesting `memory_recall` with exact keywords (`markdown`), an empty envelope carrying that `note` (`compact`), or the plain empty envelope (`json`)
 - memories embedded with another model or dimensionality are ignored until `clio embed backfill` replaces them
 - storage failure
 
@@ -1558,6 +1697,9 @@ The `handoff` preset requires `query` (a ticket id or topic) and assembles a pic
 }
 ```
 
+With `json` each entry of `items` is a complete memory record; with `compact`
+it is a [compact item](#compact-item) without `score`. The reply is one line.
+
 ### Failure cases
 
 - invalid preset name → validation error
@@ -1692,7 +1834,10 @@ Rules:
 - honour `limit`
 - do not dump large datasets by default
 - for Markdown responses, prefer concise summaries to full raw content lists
-- full content is appropriate for `memory_get` and the item resource
+- `compact` list responses follow the same rule; never pretty-print JSON
+- full content is appropriate for `memory_get`, the item resource, and any call
+  that asks for `json`
+- never shrink what `json` returns; add a format value instead
 
 ## Compatibility Rules
 
@@ -1773,6 +1918,10 @@ The MCP implementation should be validated for:
 - embedding disabled error from `memory_search` and `memory_suggest_links`
 - embedding model/dimension isolation and stale-vector backfill
 - cross-connection freshness for individual memory reads
+- non-empty `json` replies from `memory_recall`, `memory_search`,
+  `memory_recent`, `memory_remember`, `memory_update` and `memory_get` decoding
+  into the core `RecallResult` and `Memory` types, from the requests the desktop
+  app sends (`json_replies_decode_into_the_core_types_programs_use`)
 
 ## Invariants For Implementers
 
@@ -1783,6 +1932,13 @@ The MCP implementation is incorrect if:
 - its defaults differ from the CLI/core semantics
 - archived records appear unexpectedly in default recall
 - error messages are opaque enough that an agent cannot recover
+
+Two adapter behaviours are deliberate presentation choices, not different
+semantics: the retry of an empty multi-word `memory_recall` (it calls core's
+any-word search and labels the result), and the `compact` projection of list
+and write replies (`json` still returns the complete core records). The CLI
+does neither yet; the retry is due to move into core so that every adapter
+shares it.
 
 ## Acceptance Criteria
 
@@ -1802,3 +1958,22 @@ The MCP contract is ready for implementation when:
 - [Settings Reference](settings.md) — configuration keys and defaults
 - [Architecture](../../context/ARCHITECTURE.md) — system overview and crate boundaries
 - [Documentation Index](../README.md) — all available documentation
+
+Ordinary keyword recall retries an empty multi-word query using any-word matching.
+Scoped recall widens only when both project and global strict results are empty.
+Pagination beyond an existing result set does not widen. JSON envelopes are unchanged.
+
+Ordinary recall, recent lists, semantic search and context briefs exclude expired
+memories (including linked expansion). CLI recall/search/recent accept
+`--include-expired`; MCP equivalents accept `include_expired: true` for history.
+Direct ID reads, audit/history and export/import preserve expired records.
+
+Session checkpoint distillation includes the earlier-title digest used by CLI
+checkpoints, preserving corrections while avoiding repeated knowledge.
+
+Core semantic retrieval, namespace moves, statistics and activity filters accept
+bare project names. The reserved `global` namespace is case-insensitive; names
+with a colon retain their spelling. Migration 018 also normalises global casing.
+
+Distillation keeps at most three knowledge items. Explicit commitments take
+priority and may extend this to five non-receipt items, plus one receipt.

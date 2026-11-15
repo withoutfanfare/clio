@@ -29,7 +29,7 @@ pub(crate) fn run(
         "starting SSH bridge"
     );
     let mut child = ssh_command(host, false)
-        .arg(remote_command(remote_binary, remote_db))
+        .arg(remote_command(remote_binary, remote_db, std::env::var("CLIO_MCP_TOOLS").ok().as_deref())?)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
@@ -222,15 +222,23 @@ fn rewrite_request(line: &[u8]) -> Cow<'_, [u8]> {
     Cow::Owned(rewritten)
 }
 
-fn remote_command(remote_binary: &str, remote_db: Option<&str>) -> String {
-    match remote_db {
-        Some(remote_db) => format!(
-            "env CLIO_DB_PATH={} {}",
-            shell_quote(remote_db),
-            shell_quote(remote_binary)
-        ),
-        None => shell_quote(remote_binary),
+fn remote_command(remote_binary: &str, remote_db: Option<&str>, profile: Option<&str>) -> Result<String, String> {
+    let profile = profile.map(str::trim);
+    if !matches!(profile, None | Some("" | "core" | "full")) {
+        return Err("CLIO_MCP_TOOLS must be 'core' or 'full'".into());
     }
+    let mut parts = Vec::new();
+    if remote_db.is_some() || profile.is_some() {
+        parts.push("env".to_string());
+    }
+    if let Some(db) = remote_db {
+        parts.push(format!("CLIO_DB_PATH={}", shell_quote(db)));
+    }
+    if let Some(profile) = profile {
+        parts.push(format!("CLIO_MCP_TOOLS={}", shell_quote(profile)));
+    }
+    parts.push(shell_quote(remote_binary));
+    Ok(parts.join(" "))
 }
 
 fn remote_cli_command(
@@ -279,6 +287,13 @@ mod tests {
         fs::create_dir(&path).unwrap();
         fs::write(path.join(".clio-namespace"), "project:bridge-test\n").unwrap();
         path
+    }
+
+    #[test]
+    fn remote_profile_is_forwarded_and_validated() {
+        assert_eq!(remote_command("clio-mcp", None, Some("core")).unwrap(), "env CLIO_MCP_TOOLS='core' 'clio-mcp'");
+        assert!(remote_command("clio-mcp", None, Some("core; touch /tmp/no")).is_err());
+        assert!(remote_command("clio-mcp", None, Some("full")).is_ok());
     }
 
     #[test]
@@ -401,10 +416,10 @@ mod tests {
         assert_eq!(shell_quote(""), "''");
         assert_eq!(shell_quote("/srv/clio's bin"), "'/srv/clio'\\''s bin'");
         assert_eq!(
-            remote_command("/srv/clio's bin", Some("/srv/memory db")),
+            remote_command("/srv/clio's bin", Some("/srv/memory db"), None).unwrap(),
             "env CLIO_DB_PATH='/srv/memory db' '/srv/clio'\\''s bin'"
         );
-        assert_eq!(remote_command("/srv/clio-mcp", None), "'/srv/clio-mcp'");
+        assert_eq!(remote_command("/srv/clio-mcp", None, None).unwrap(), "'/srv/clio-mcp'");
     }
 
     #[test]

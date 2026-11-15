@@ -1,0 +1,31 @@
+ALREADY STORED from earlier in this session (titles only):
+- Tracking poller runs on the default queue, not media
+- Royal Mail tracking API rejects batches over 30 numbers
+- Royal Mail 429 responses must honour Retry-After
+
+SESSION DIGEST:
+Project: scooda | Branch: feat/royal-mail-tracking
+Commits made this session:
+- fix(shipping): chunk Royal Mail tracking batches at 20, not 30
+
+---
+
+## User
+The poller started failing on staging about an hour ago. Every batch comes back as a 400.
+
+## Tool result
+GET /track/v2/batch?numbers=30 -> 400 {"error":"batch size exceeds maximum of 20"}
+GET /track/v2/batch?numbers=21 -> 400 {"error":"batch size exceeds maximum of 20"}
+GET /track/v2/batch?numbers=20 -> 200 OK
+
+## Assistant
+The limit I recorded earlier is wrong now. Royal Mail's tracking API accepts at most 20 tracking numbers per batch, not 30: a batch of 21 is rejected with HTTP 400 and a batch of 20 succeeds. Their changelog shows the maximum was lowered from 30 to 20 in today's release, and their documentation still says 100. Our chunk size of 30 is why every batch fails.
+
+## User
+Right, so 30 was true this morning and isn't any more. Fix it.
+
+## Assistant
+Fixed and committed. The poller now chunks at 20, and the chunk size is a named constant with a comment pointing at the 400 response, since the documented figure cannot be trusted. All nine poller tests pass with the new size. I have not added automatic detection of future limit changes; if Royal Mail lowers it again the poller will fail loudly with the same 400.
+
+## User
+Good. That's the one to remember.

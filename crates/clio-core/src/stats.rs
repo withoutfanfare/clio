@@ -13,6 +13,8 @@ use crate::models::{MemoryStats, RecentEntry, WeekSummary};
 ///
 /// If `namespace` is provided, counts are scoped to that namespace only.
 pub fn memory_stats(conn: &Connection, namespace: Option<&str>) -> Result<MemoryStats> {
+    let canonical = namespace.map(crate::context::canonical_namespace);
+    let namespace = canonical.as_deref();
     // Single query to get both total and active counts.
     let (total_memories, active_memories, archived_memories) = if let Some(ns) = namespace {
         let (total, active): (u32, u32) = conn.query_row(
@@ -157,6 +159,8 @@ pub fn timeline(
     namespace: Option<&str>,
     weeks: u32,
 ) -> Result<Vec<WeekSummary>> {
+    let canonical = namespace.map(crate::context::canonical_namespace);
+    let namespace = canonical.as_deref();
     let sql = if namespace.is_some() {
         "SELECT strftime('%Y-W%W', created_at) AS week, COUNT(*)
          FROM memories
@@ -208,6 +212,8 @@ pub fn recent_activity(
     namespace: Option<&str>,
     limit: u32,
 ) -> Result<Vec<RecentEntry>> {
+    let canonical = namespace.map(crate::context::canonical_namespace);
+    let namespace = canonical.as_deref();
     // We use a UNION ALL approach to capture distinct events:
     // - created_at = updated_at and archived_at IS NULL => "created"
     // - archived_at IS NOT NULL => "archived" (at archived_at time)
@@ -471,6 +477,11 @@ mod tests {
 /// counted and reported, never silently dropped from denominators.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct EffectivenessReport {
+    /// Sessions represented in surfaced events only; silent sessions are unknown.
+    pub sessions_without_task_match: i64,
+    pub mean_task_matches_per_session: f64,
+    /// Fraction of unarchived memories with an expiry, including expired rows.
+    pub active_expiry_share: f64,
     pub namespace: Option<String>,
     /// Server-confirmed capture attempts.
     pub checkpoints_total: i64,
@@ -518,6 +529,8 @@ pub fn effectiveness(
     namespace: Option<&str>,
     dormant_days: u32,
 ) -> Result<EffectivenessReport> {
+    let canonical = namespace.map(crate::context::canonical_namespace);
+    let namespace = canonical.as_deref();
     let ns_clause = |column: &str| match namespace {
         Some(_) => format!(" AND {column} = ?1"),
         None => String::new(),
@@ -576,8 +589,8 @@ pub fn effectiveness(
     let mut events = std::collections::BTreeMap::new();
     {
         let mut stmt = conn.prepare(&format!(
-            "SELECT event_type, COUNT(*) FROM memory_events WHERE 1=1{} GROUP BY event_type",
-            ns_clause("namespace")
+            "SELECT event_type, COUNT(*) FROM memory_events e LEFT JOIN memories m ON m.id = e.memory_id WHERE 1=1{} GROUP BY event_type",
+            ns_clause("COALESCE(m.namespace, e.namespace)")
         ))?;
         let rows = stmt.query_map(refs.as_slice(), |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
@@ -590,9 +603,10 @@ pub fn effectiveness(
 
     let surfaced_unique: i64 = conn.query_row(
         &format!(
-            "SELECT COUNT(DISTINCT idempotency_key) FROM memory_events
+            "SELECT COUNT(DISTINCT e.idempotency_key) FROM memory_events e
+             LEFT JOIN memories m ON m.id = e.memory_id
              WHERE event_type = 'surfaced' AND idempotency_key IS NOT NULL{}",
-            ns_clause("namespace")
+            ns_clause("COALESCE(m.namespace, e.namespace)")
         ),
         refs.as_slice(),
         |row| row.get(0),
@@ -710,7 +724,25 @@ pub fn effectiveness(
         }
     }
 
+    let (sessions_without_task_match, mean_task_matches_per_session) = conn.query_row(
+        "SELECT COALESCE(SUM(matches = 0), 0), COALESCE(AVG(matches), 0.0) FROM (
+            SELECT e.session_id, COUNT(DISTINCT CASE WHEN e.reason = 'Relevant knowledge' THEN e.memory_id END) AS matches
+            FROM memory_events e LEFT JOIN memories m ON m.id = e.memory_id
+            WHERE e.event_type = 'surfaced' AND e.session_id IS NOT NULL
+              AND (?1 IS NULL OR COALESCE(m.namespace, e.namespace) = ?1)
+            GROUP BY e.session_id
+        )", [namespace], |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    let active_expiry_share = conn.query_row(
+        "SELECT COALESCE(AVG(valid_until IS NOT NULL), 0.0) FROM memories
+         WHERE archived_at IS NULL AND (?1 IS NULL OR namespace = ?1)",
+        [namespace], |row| row.get(0),
+    )?;
+
     Ok(EffectivenessReport {
+        sessions_without_task_match,
+        mean_task_matches_per_session,
+        active_expiry_share,
         namespace: namespace.map(String::from),
         checkpoints_total,
         last_checkpoint_at,
@@ -767,16 +799,43 @@ mod usage_by_kind_tests {
         crate::events::log_event(
             &conn,
             &crate::events::EventInput {
+                idempotency_key: Some("shown-test".into()),
                 memory_id: Some(shown.id.clone()),
                 event_type: crate::events::EVENT_SURFACED.into(),
                 ..Default::default()
             },
         );
+        let event = crate::events::list_events(&conn, &shown.id, 10).unwrap();
+        assert_eq!(event[0].namespace.as_deref(), Some("project:demo"));
+        assert_eq!(
+            effectiveness(&conn, Some("project:demo"), 0)
+                .unwrap()
+                .surfaced_unique,
+            1
+        );
+        conn.execute("UPDATE memory_events SET namespace = NULL", [])
+            .unwrap();
+        assert_eq!(
+            effectiveness(&conn, Some("project:demo"), 0)
+                .unwrap()
+                .surfaced_unique,
+            1
+        );
+        conn.execute("UPDATE memory_events SET namespace = 'demo'", [])
+            .unwrap();
+        let scoped = effectiveness(&conn, Some("project:demo"), 0).unwrap();
+        assert_eq!(scoped.surfaced_unique, 1);
+        assert_eq!(scoped.events.get("surfaced"), Some(&1));
         repository::get(&conn, &shown.id).unwrap();
         crate::events::record_feedback(&conn, &shown.id, "useful", Some("s1"), None).unwrap();
         assert!(crate::events::record_feedback(&conn, &shown.id, "great", None, None).is_err());
 
+        conn.execute("UPDATE memory_events SET session_id = 'session-a', reason = 'Relevant knowledge' WHERE event_type = 'surfaced'", []).unwrap();
+        conn.execute("UPDATE memories SET valid_until = '2000-01-01T00:00:00Z' WHERE id = ?1", [&shown.id]).unwrap();
         let report = effectiveness(&conn, None, 0).unwrap();
+        assert_eq!(report.sessions_without_task_match, 0);
+        assert_eq!(report.mean_task_matches_per_session, 1.0);
+        assert!((report.active_expiry_share - 1.0 / 3.0).abs() < 0.0001);
         assert_eq!(
             report.by_kind["fact"],
             KindUsage {

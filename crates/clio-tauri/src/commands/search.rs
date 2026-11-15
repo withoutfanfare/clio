@@ -62,7 +62,7 @@ pub async fn cmd_search(
             backend.model_name(),
             namespace.as_deref(),
             include_archived.unwrap_or(false),
-            false,
+            true,
             Some(&app.settings.scoring),
             limit.unwrap_or(10),
         )?;

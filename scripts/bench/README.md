@@ -1,11 +1,12 @@
 # Benchmarks
 
-Tools for tuning Clio on measured outcomes rather than intuition. All three run
+Tools for tuning Clio on measured outcomes rather than intuition. Retrieval checks run
 against a copy of a database and never modify live data.
 
 | Script | Answers |
 |---|---|
 | `link-invariants.sh` | Does auto-linking obey its design rules? |
+| [`resume-eval.py`](resume-eval.md) | Does the hook and MCP resume path surface task-relevant memories? |
 | `recall-eval.py` | Does retrieval return the *right* memories? |
 | `dial-in.sh` | Which threshold and cap maximise retrieval quality? |
 | `capture-model/run.py` | Which capture model distils correctly, and at what cost? |
@@ -13,9 +14,20 @@ against a copy of a database and never modify live data.
 ## capture-model/run.py
 
 The five distillation cases from `docs/operations/capture-model-benchmark.md` as
-checked-in fixtures, with an automated judge (kinds, namespace scoping, prompt
-injection, receipt count, the 6-memory cap) and per-model token/latency/cost
-totals. Unlike the other benchmarks this one makes REAL, paid model calls —
+checked-in fixtures, plus five that grade selectivity in both directions.
+Three must stay quiet: a busy session with nothing durable in it (expect
+nothing), a session that is all point-in-time status (exactly one receipt, and
+any other item must be marked `"lifetime": "status"`), and a later slice of a
+long session that only repeats what earlier slices stored (expect nothing).
+Two must not lose anything: a later slice that corrects an earlier memory (the
+correction must be stored) and a session with three distinct valuable facts
+(all three must be kept). An automated judge checks kinds, namespace scoping,
+prompt injection and lifetimes, and in every case where they apply the receipt
+(exactly one after a commit, none where no work was done) and the ceiling. The
+ceiling is judged on what the model returned before the parser's cap, which
+the dry run reports as `knowledge_items_returned`. Each model gets
+token/latency/cost totals and the per-call counts of knowledge items returned,
+including how many calls returned nothing, filled the ceiling or went over it. Unlike the other benchmarks this one makes REAL, paid model calls —
 a full four-model run is a few dozen small requests. `--dry-run` inside the
 harness means nothing is stored; point it at a throwaway DB whose settings
 enable capture, and run it from a non-project directory so `global` promotion

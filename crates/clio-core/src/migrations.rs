@@ -565,6 +565,38 @@ const MIGRATIONS: &[Migration] = &[
             );
         "#,
     },
+    Migration {
+        version: "018_canonical_attention_namespaces",
+        // Follow-ups filed under a bare name ("Scooda") could never surface,
+        // because resume asks for `project:scooda`. A bare name is rewritten
+        // only when the `project:` namespace it maps to already holds
+        // memories: that is the data's own evidence that the two are one
+        // project. Any other bare name is left exactly as it is, since
+        // namespaces are free-form and a similar spelling proves nothing.
+        //
+        // Where it does rewrite, the result is what
+        // `context::canonical_namespace` returns: `global` and prefixed names
+        // are untouched, and only names made of [A-Za-z0-9_-] are handled,
+        // for which lower-casing and trimming hyphens is the whole slug rule.
+        // `updated_at` is left alone so the age and dormancy limits still
+        // judge these items by when they were last really touched.
+        sql: r#"
+            UPDATE attention_items SET namespace = 'global'
+            WHERE lower(namespace) = 'global';
+
+            UPDATE attention_items
+            SET namespace = 'project:' || trim(lower(namespace), '-')
+            WHERE lower(namespace) != 'global'
+              AND instr(namespace, ':') = 0
+              AND namespace NOT GLOB '*[^A-Za-z0-9_-]*'
+              AND trim(namespace, '-') != ''
+              AND EXISTS (
+                  SELECT 1 FROM memories
+                  WHERE memories.namespace
+                      = 'project:' || trim(lower(attention_items.namespace), '-')
+              );
+        "#,
+    },
 ];
 
 /// Run all pending migrations inside a transaction.
@@ -655,4 +687,97 @@ pub fn applied_versions(conn: &Connection) -> Result<Vec<String>> {
     let mut stmt = conn.prepare("SELECT version FROM schema_migrations ORDER BY version")?;
     let rows = stmt.query_map([], |row| row.get(0))?;
     Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bare_attention_namespaces_are_rewritten_only_onto_a_project_that_exists() {
+        let conn = crate::db::open_in_memory().unwrap();
+        // (stored follow-up namespace, expected after the migration)
+        let rows = [
+            // Aliases of projects that hold memories, in several spellings.
+            ("Scooda", "project:scooda"),
+            ("scooda", "project:scooda"),
+            ("-Scooda-", "project:scooda"),
+            ("my_app-2", "project:my_app-2"),
+            // The canonical row is already there and simply stays.
+            ("project:scooda", "project:scooda"),
+            // No such project among memories: nothing proves an alias.
+            ("ReviewDemo", "ReviewDemo"),
+            ("GLOBAL", "global"),
+            // Never candidates.
+            ("global", "global"),
+            ("topic:rust", "topic:rust"),
+            ("has space", "has space"),
+            ("---", "---"),
+        ];
+        for (n, (namespace, _)) in rows.iter().enumerate() {
+            // Each follow-up's own memory lives elsewhere, so only the
+            // project namespaces below count as evidence.
+            conn.execute(
+                "INSERT INTO memories (id, namespace, kind, content, created_at, updated_at)
+                 VALUES (?1, 'topic:unrelated', 'task', 'c', '2026-01-01T00:00:00Z',
+                         '2026-01-01T00:00:00Z')",
+                rusqlite::params![format!("m{n}")],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO attention_items
+                    (id, memory_id, namespace, status, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, 'open', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+                rusqlite::params![format!("a{n}"), format!("m{n}"), namespace],
+            )
+            .unwrap();
+        }
+        for (n, project) in ["project:scooda", "project:my_app-2"].iter().enumerate() {
+            conn.execute(
+                "INSERT INTO memories (id, namespace, kind, content, created_at, updated_at)
+                 VALUES (?1, ?2, 'fact', 'c', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+                rusqlite::params![format!("p{n}"), project],
+            )
+            .unwrap();
+        }
+
+        let rerun = || {
+            conn.execute(
+                "DELETE FROM schema_migrations
+                 WHERE version = '018_canonical_attention_namespaces'",
+                [],
+            )
+            .unwrap();
+            run(&conn).unwrap();
+        };
+        let stored = || -> Vec<(String, String)> {
+            let mut stmt = conn
+                .prepare("SELECT namespace, updated_at FROM attention_items ORDER BY rowid")
+                .unwrap();
+            stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+                .unwrap()
+                .collect::<std::result::Result<_, _>>()
+                .unwrap()
+        };
+
+        rerun();
+        let after = stored();
+        assert_eq!(
+            after.len(),
+            rows.len(),
+            "no follow-up is lost or merged away"
+        );
+        for ((original, expected), (namespace, updated_at)) in rows.iter().zip(&after) {
+            assert_eq!(namespace, expected, "from {original}");
+            assert_eq!(updated_at, "2026-01-01T00:00:00Z");
+            // A rewrite is always exactly what the runtime helper returns.
+            if namespace != original {
+                assert_eq!(namespace, &crate::context::canonical_namespace(original));
+            }
+        }
+
+        // A second run changes nothing.
+        rerun();
+        assert_eq!(stored(), after);
+    }
 }
