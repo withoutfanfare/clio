@@ -565,6 +565,24 @@ const MIGRATIONS: &[Migration] = &[
             );
         "#,
     },
+    Migration {
+        version: "018_canonical_attention_namespaces",
+        // Follow-ups filed under a bare name ("Scooda") could never surface,
+        // because resume asks for `project:scooda`. This is
+        // `context::canonical_namespace` in SQL. `updated_at` is left alone on
+        // purpose, so the age and dormancy limits still judge these items by
+        // when they were last really touched.
+        // shortcut: bare names with characters outside [A-Za-z0-9_-] are
+        // skipped (SQL cannot slugify them); repair those by hand if any appear.
+        sql: r#"
+            UPDATE attention_items
+            SET namespace = 'project:' || trim(lower(namespace), '-')
+            WHERE namespace != 'global'
+              AND instr(namespace, ':') = 0
+              AND namespace NOT GLOB '*[^A-Za-z0-9_-]*'
+              AND trim(namespace, '-') != '';
+        "#,
+    },
 ];
 
 /// Run all pending migrations inside a transaction.
@@ -655,4 +673,62 @@ pub fn applied_versions(conn: &Connection) -> Result<Vec<String>> {
     let mut stmt = conn.prepare("SELECT version FROM schema_migrations ORDER BY version")?;
     let rows = stmt.query_map([], |row| row.get(0))?;
     Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bare_attention_namespaces_are_canonicalised_without_touching_their_age() {
+        let conn = crate::db::open_in_memory().unwrap();
+        let names = [
+            "Scooda",
+            "clio",
+            "-My_App-2-",
+            "global",
+            "project:Scooda",
+            "topic:rust",
+            "has space",
+        ];
+        for (n, name) in names.iter().enumerate() {
+            conn.execute(
+                "INSERT INTO memories (id, namespace, kind, content, created_at, updated_at)
+                 VALUES (?1, 'project:x', 'task', 'c', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+                rusqlite::params![format!("m{n}")],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO attention_items (id, memory_id, namespace, status, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, 'open', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+                rusqlite::params![format!("a{n}"), format!("m{n}"), name],
+            )
+            .unwrap();
+        }
+
+        conn.execute(
+            "DELETE FROM schema_migrations WHERE version = '018_canonical_attention_namespaces'",
+            [],
+        )
+        .unwrap();
+        run(&conn).unwrap();
+
+        for (n, name) in names.iter().enumerate() {
+            let (namespace, updated_at): (String, String) = conn
+                .query_row(
+                    "SELECT namespace, updated_at FROM attention_items WHERE id = ?1",
+                    rusqlite::params![format!("a{n}")],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .unwrap();
+            // The one known gap: SQL cannot slugify other characters.
+            let expected = if *name == "has space" {
+                name.to_string()
+            } else {
+                crate::context::canonical_namespace(name)
+            };
+            assert_eq!(namespace, expected, "from {name}");
+            assert_eq!(updated_at, "2026-01-01T00:00:00Z");
+        }
+    }
 }

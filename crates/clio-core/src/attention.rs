@@ -211,6 +211,9 @@ pub fn create_attention(conn: &Connection, input: &AttentionInput) -> Result<Att
         // The memory must exist and provides the namespace. Untracked read:
         // opening attention is not a recall.
         let memory = crate::repository::get_raw(conn, &input.memory_id)?;
+        // Always the `project:` form, so a follow-up is filed where resume
+        // looks for it whatever spelling the memory carries.
+        let namespace = crate::context::canonical_namespace(&memory.namespace);
 
         let id = new_id();
         let now = now_utc();
@@ -222,7 +225,7 @@ pub fn create_attention(conn: &Connection, input: &AttentionInput) -> Result<Att
             params![
                 id,
                 input.memory_id,
-                memory.namespace,
+                namespace,
                 input.owner,
                 due_at,
                 remind_at,
@@ -237,7 +240,7 @@ pub fn create_attention(conn: &Connection, input: &AttentionInput) -> Result<Att
             conn,
             &EventInput {
                 memory_id: Some(input.memory_id.clone()),
-                namespace: Some(memory.namespace.clone()),
+                namespace: Some(namespace),
                 actor: input.actor.clone(),
                 event_type: events::EVENT_ATTENTION_OPENED.into(),
                 ..EventInput::default()
@@ -268,8 +271,10 @@ pub fn list_attention(
 ) -> Result<Vec<AttentionItem>> {
     let mut sql = format!("SELECT {ITEM_COLUMNS} FROM attention_items WHERE 1=1");
     let mut args: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+    // A bare project name finds the same follow-ups as its `project:` form.
+    let namespace = namespace.map(crate::context::canonical_namespace);
     if let Some(ns) = namespace {
-        args.push(Box::new(ns.to_string()));
+        args.push(Box::new(ns));
         sql.push_str(&format!(" AND namespace = ?{}", args.len()));
     }
     if let Some(st) = status {
@@ -517,6 +522,8 @@ pub fn overview(
     dormant_days: u32,
     max_age_days: u32,
 ) -> Result<AttentionOverview> {
+    let namespace = namespace.map(crate::context::canonical_namespace);
+    let namespace = namespace.as_deref();
     let now = now_utc();
     let eligible_items = eligible(
         conn,
@@ -641,6 +648,10 @@ pub fn eligible(conn: &Connection, ctx: &EligibilityContext) -> Result<Vec<Eligi
         500,
     )?);
     candidates.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+    let namespace = ctx
+        .namespace
+        .as_deref()
+        .map(crate::context::canonical_namespace);
     let stale_before = stale_before(&ctx.now, ctx.max_age_days);
     let mut eligible_items = Vec::new();
 
@@ -673,7 +684,7 @@ pub fn eligible(conn: &Connection, ctx: &EligibilityContext) -> Result<Vec<Eligi
                 } else if stale {
                     None
                 } else if item.trigger.as_deref() == Some(TRIGGER_PROJECT_SESSION)
-                    && ctx.namespace.as_deref() == Some(item.namespace.as_str())
+                    && namespace.as_deref() == Some(item.namespace.as_str())
                 {
                     Some(EligibilityReason::ProjectSession)
                 } else if ctx.dormant_days > 0
@@ -1114,6 +1125,47 @@ mod tests {
             crate::repository::get(&conn, &done.id).unwrap().content,
             "Ship the fix"
         );
+    }
+
+    #[test]
+    fn a_bare_project_name_reaches_the_same_follow_ups() {
+        let conn = test_conn();
+        let memory = remember(&conn, "Pick this up next session");
+        create_attention(
+            &conn,
+            &AttentionInput {
+                memory_id: memory.id.clone(),
+                trigger: Some(TRIGGER_PROJECT_SESSION.into()),
+                ..AttentionInput::default()
+            },
+        )
+        .unwrap();
+
+        for spelling in ["attention-test", "Attention-Test", "project:attention-test"] {
+            assert_eq!(
+                list_attention(&conn, Some(spelling), None, 10)
+                    .unwrap()
+                    .len(),
+                1,
+                "list by {spelling}"
+            );
+            let found = eligible(&conn, &ctx(Some(spelling), None)).unwrap();
+            assert_eq!(found.len(), 1, "eligible by {spelling}");
+            assert_eq!(found[0].reason, EligibilityReason::ProjectSession);
+            let overview = overview(&conn, Some(spelling), None, 0, 0).unwrap();
+            assert_eq!(overview.open.len(), 1, "overview by {spelling}");
+            assert_eq!(overview.memory_titles.len(), 1);
+        }
+
+        // A memory still carrying a bare namespace files its follow-up under
+        // the project form.
+        let bare = remember(&conn, "Filed from a bare namespace");
+        conn.execute(
+            "UPDATE memories SET namespace = 'Scooda' WHERE id = ?1",
+            params![bare.id],
+        )
+        .unwrap();
+        assert_eq!(open_attention(&conn, &bare.id).namespace, "project:scooda");
     }
 
     #[test]
