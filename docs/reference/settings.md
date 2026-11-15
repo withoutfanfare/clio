@@ -263,9 +263,3 @@ database. `clio --local` bypasses the route. The daemon remains local-only.
 - [Resource Limits](../resource-limits.md) — sizing constraints and thresholds
 - [Schema Reference](schema.md) — database table definitions
 - [Getting Started](../getting-started.md) — setup walkthrough
-
-Distillation keeps at most three knowledge items. Explicit commitments take
-priority and may extend this to five non-receipt items, plus one receipt.
-
-`clio remote-mcp` validates and forwards `CLIO_MCP_TOOLS` to the server.
-Accepted values are `core`, `full` and empty (full). Unset leaves remote defaults intact.

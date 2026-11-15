@@ -103,8 +103,8 @@ impl DistilledAttention {
 
 /// Days until a point-in-time status note's `valid_until`. Once that has
 /// passed, reads that exclude expired rows leave the note out — today that is
-/// the resume brief, the attention overview and link suggestions; ordinary
-/// recall and search do not exclude expired rows yet. Nothing is deleted.
+/// resume and context briefs, ordinary recall, search, recent lists, the
+/// attention overview and link suggestions. Nothing is deleted.
 pub const STATUS_LIFETIME_DAYS: i64 = 30;
 
 /// How long a distilled memory stays true. Anything the model does not mark
@@ -685,9 +685,9 @@ pub const MAX_DISTILLED_MEMORIES: usize = 6;
 
 /// Enforce [`MAX_KNOWLEDGE_ATOMS`] deterministically over the non-receipt
 /// atoms (the single receipt never competes for a knowledge slot and is never
-/// dropped here). Atoms carrying an open loop (`attention`) rank first, then
+/// dropped here). Explicit commitments rank first, then
 /// highest importance with confidence as the tiebreak — so only a
-/// pathological response loses an open loop. Survivors keep their original
+/// pathological response loses an explicit commitment. Survivors keep their original
 /// order so provenance refs stay stable across a retry.
 fn cap_distilled_memories(memories: Vec<DistilledMemory>) -> Vec<DistilledMemory> {
     let knowledge_atoms = memories.iter().filter(|m| m.kind != "receipt").count();

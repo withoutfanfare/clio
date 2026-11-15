@@ -187,13 +187,13 @@ A checkpoint commits the distillation of one session delta exactly once, keyed b
 
 **Open-loop extraction (within a checkpoint):**
 
-- One distillation yields at most 3 knowledge atoms plus one receipt (`capture::MAX_KNOWLEDGE_ATOMS`). The prompt presents this as a ceiling, not a target; when the model exceeds it, open loops are kept first, then the highest importance
+- One distillation keeps at most three non-explicit knowledge atoms; explicit commitments take priority and may extend the total to five non-receipt items plus one receipt. The prompt presents this as a ceiling, not a target; remaining slots rank by importance and confidence
 - Distilled atoms may carry optional `attention` data (explicitness, owner, due/remind, trigger, waiting-on, completion condition) and an optional `resolves` identifier
 - Only `explicitness: "explicit"` — a clear user commitment or requested reminder — opens attention automatically, atomically with the stored memory; unknown explicitness values are normalised to `suggested`
 - Suggested/inferred open loops always queue for review regardless of confidence; approving the review item creates the memory and its attention in one transaction (the attention payload rides in the review item's metadata)
 - "Could", "might" and assistant suggestions are never explicit; completed routine steps and externally tracked work are not open loops
 - A `resolves` identifier NEVER auto-completes: it records a visible `resolution_candidate` event on the open/snoozed target (with the storing memory as proposed evidence) for human review — model output distilled from an untrusted transcript cannot close real work. Unknown, fuzzy or terminal targets leave state unchanged; a failed candidate never fails the checkpoint
-- Each atom carries `lifetime`: `durable` (the default, and what a missing field means) or `status` for a point-in-time note. A status atom is stored with `valid_until` 30 days ahead, so it drops out of resume briefs once stale; receipts and open loops are always durable. Expiry hides, it never deletes
+- Each atom carries `lifetime`: `durable` (the default, and what a missing field means) or `status` for a point-in-time note. A status atom is stored with `valid_until` 30 days ahead, so it drops out of ordinary recall, search, recent lists, context and resume briefs once stale; receipts and open loops are always durable. Expiry hides, it never deletes
 - Branch and ticket context is applied deterministically after model parsing: `ticket:<id>` tags (lowercase) and branch metadata come from the checkpoint request, never from the model
 - Immediate explicit capture through `memory_remember`/`memory_action` remains the primary path; checkpoint extraction is the asynchronous safety net
 
