@@ -265,3 +265,6 @@ database. `clio --local` bypasses the route. The daemon remains local-only.
 
 Distillation keeps at most three knowledge items. Explicit commitments take
 priority and may extend this to five non-receipt items, plus one receipt.
+
+`clio remote-mcp` validates and forwards `CLIO_MCP_TOOLS` to the server.
+Accepted values are `core`, `full` and empty (full). Unset leaves remote defaults intact.

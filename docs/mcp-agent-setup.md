@@ -585,7 +585,7 @@ Many clients load every tool definition into the model's context at the start of
 
 The core list leaves out housekeeping (statistics, namespaces, links, the capture inbox, hard delete, work reports). Use the CLI or the desktop app for those, or run a second server entry with the full list. The session hooks and the desktop app are unaffected: the hooks use the CLI, and the desktop app needs the full list, which is the default.
 
-The variable is read by `clio-mcp` itself. Through the SSH bridge (`clio remote-mcp`) it must be set on the remote machine, because the bridge does not forward it: point `--remote-binary` at a small wrapper script that exports `CLIO_MCP_TOOLS=core` and then runs `clio-mcp`. Keep the desktop app's remote connection on the plain binary: it calls tools outside the core list.
+The SSH bridge forwards local `CLIO_MCP_TOOLS` after validating it as `core`, `full` or empty (full). Set it in the Mac client’s MCP environment; no remote wrapper is needed. Keep the desktop connection on the full profile because it calls administrative tools.
 
 ### Write tools
 
