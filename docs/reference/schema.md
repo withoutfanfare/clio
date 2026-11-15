@@ -992,6 +992,10 @@ The export format should be easy for:
 | `017_work_guidance` | receipt-scoped human acceptance and separately stored next-task recommendations |
 | `018_canonical_attention_namespaces` | data only: rewrites a bare `attention_items.namespace` (`Scooda`) to `project:<slug>` when memories already exist under that project namespace, without changing `updated_at`; any other bare name is left as it is |
 
+### Work guidance (migration 017)
+
+`work_acceptances` stores one immutable JSON decision per implementation `receipt_id` (foreign key to `work_reports.id`). `work_recommendations` stores one JSON recommendation per `(project, parent_task)`, with `checked_at` guarding replacement order. Neither table rewrites agent receipts or registers a run. The local CLI owns these explicit writes; the core overview joins acceptance and filters recommendations whose proposed task already reports. See [work reporting](../work-reporting.md#human-acceptance-and-next-task-guidance-local-pilot).
+
 ## Invariants For Implementers
 
 Any implementation is incorrect if it violates these rules:
@@ -1026,10 +1030,6 @@ Reserved likely future tables:
 - `memory_collections` — named groupings across namespaces
 
 These should not be added until a real use case exists.
-
-### Work guidance (migration 017)
-
-`work_acceptances` stores one immutable JSON decision per implementation `receipt_id` (foreign key to `work_reports.id`). `work_recommendations` stores one JSON recommendation per `(project, parent_task)`, with `checked_at` guarding replacement order. Neither table rewrites agent receipts or registers a run. The local CLI owns these explicit writes; the core overview joins acceptance and filters recommendations whose proposed task already reports. See [work reporting](../work-reporting.md#human-acceptance-and-next-task-guidance-local-pilot).
 
 ## Acceptance Criteria
 
