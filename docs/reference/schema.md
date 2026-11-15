@@ -1055,3 +1055,10 @@ Direct ID reads, audit/history and export/import preserve expired records.
 Core semantic retrieval, namespace moves, statistics and activity filters accept
 bare project names. The reserved `global` namespace is case-insensitive; names
 with a colon retain their spelling. Migration 018 also normalises global casing.
+
+Effectiveness reports sessions with no task-matched item and mean distinct
+task-matched memories per session, using surfaced events labelled `Relevant
+knowledge`. Only sessions with surfaced events are measurable. It also reports
+the fraction of unarchived memories carrying `valid_until` (including expired
+rows). Raw distillation cap-hit and empty-response rates are not available:
+checkpoint envelopes record stored/review IDs, not raw model output counts.

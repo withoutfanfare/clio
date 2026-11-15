@@ -662,3 +662,10 @@ with a colon retain their spelling. Migration 018 also normalises global casing.
 
 Distillation keeps at most three knowledge items. Explicit commitments take
 priority and may extend this to five non-receipt items, plus one receipt.
+
+Effectiveness reports sessions with no task-matched item and mean distinct
+task-matched memories per session, using surfaced events labelled `Relevant
+knowledge`. Only sessions with surfaced events are measurable. It also reports
+the fraction of unarchived memories carrying `valid_until` (including expired
+rows). Raw distillation cap-hit and empty-response rates are not available:
+checkpoint envelopes record stored/review IDs, not raw model output counts.

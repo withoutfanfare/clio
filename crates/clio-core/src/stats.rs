@@ -477,6 +477,11 @@ mod tests {
 /// counted and reported, never silently dropped from denominators.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct EffectivenessReport {
+    /// Sessions represented in surfaced events only; silent sessions are unknown.
+    pub sessions_without_task_match: i64,
+    pub mean_task_matches_per_session: f64,
+    /// Fraction of unarchived memories with an expiry, including expired rows.
+    pub active_expiry_share: f64,
     pub namespace: Option<String>,
     /// Server-confirmed capture attempts.
     pub checkpoints_total: i64,
@@ -719,7 +724,25 @@ pub fn effectiveness(
         }
     }
 
+    let (sessions_without_task_match, mean_task_matches_per_session) = conn.query_row(
+        "SELECT COALESCE(SUM(matches = 0), 0), COALESCE(AVG(matches), 0.0) FROM (
+            SELECT e.session_id, COUNT(DISTINCT CASE WHEN e.reason = 'Relevant knowledge' THEN e.memory_id END) AS matches
+            FROM memory_events e LEFT JOIN memories m ON m.id = e.memory_id
+            WHERE e.event_type = 'surfaced' AND e.session_id IS NOT NULL
+              AND (?1 IS NULL OR COALESCE(m.namespace, e.namespace) = ?1)
+            GROUP BY e.session_id
+        )", [namespace], |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    let active_expiry_share = conn.query_row(
+        "SELECT COALESCE(AVG(valid_until IS NOT NULL), 0.0) FROM memories
+         WHERE archived_at IS NULL AND (?1 IS NULL OR namespace = ?1)",
+        [namespace], |row| row.get(0),
+    )?;
+
     Ok(EffectivenessReport {
+        sessions_without_task_match,
+        mean_task_matches_per_session,
+        active_expiry_share,
         namespace: namespace.map(String::from),
         checkpoints_total,
         last_checkpoint_at,
@@ -807,7 +830,12 @@ mod usage_by_kind_tests {
         crate::events::record_feedback(&conn, &shown.id, "useful", Some("s1"), None).unwrap();
         assert!(crate::events::record_feedback(&conn, &shown.id, "great", None, None).is_err());
 
+        conn.execute("UPDATE memory_events SET session_id = 'session-a', reason = 'Relevant knowledge' WHERE event_type = 'surfaced'", []).unwrap();
+        conn.execute("UPDATE memories SET valid_until = '2000-01-01T00:00:00Z' WHERE id = ?1", [&shown.id]).unwrap();
         let report = effectiveness(&conn, None, 0).unwrap();
+        assert_eq!(report.sessions_without_task_match, 0);
+        assert_eq!(report.mean_task_matches_per_session, 1.0);
+        assert!((report.active_expiry_share - 1.0 / 3.0).abs() < 0.0001);
         assert_eq!(
             report.by_kind["fact"],
             KindUsage {

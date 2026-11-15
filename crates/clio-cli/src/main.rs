@@ -3664,6 +3664,9 @@ fn cmd_effectiveness(
             eprintln!("  attention {status}: {count}");
         }
         eprintln!("  stale open items: {}", report.attention_stale);
+        eprintln!("  sessions without task match: {}", report.sessions_without_task_match);
+        eprintln!("  mean task matches/session: {:.2}", report.mean_task_matches_per_session);
+        eprintln!("  active memories with expiry: {:.1}%", report.active_expiry_share * 100.0);
         eprintln!("  auto-surfaced:    {} unique", report.surfaced_unique);
         eprintln!("  deliberate reads: {}", report.deliberate_accesses);
         eprintln!("  contradictions:   {}", report.unresolved_contradictions);
