@@ -2,7 +2,7 @@
 
 Thin MCP (Model Context Protocol) adapter over `clio-core`. Runs on stdio and
 exposes 29 tools for reading, writing, searching, capture, attention, review,
-work reports and cache control. Set `CLIO_MCP_TOOLS=core` to offer only the ten
+work reports and cache control. Set `CLIO_MCP_TOOLS=core` to offer only the eleven
 everyday tools (see [MCP Agent Setup](../../docs/mcp-agent-setup.md)).
 
 See [MCP Contract](../../docs/reference/mcp-contract.md) for the full tool and resource definitions.

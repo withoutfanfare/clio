@@ -559,14 +559,14 @@ Once connected, AI agents have access to Clio's MCP tools. Each read or list too
 
 ### A smaller tool list (`CLIO_MCP_TOOLS`)
 
-Many clients load every tool definition into the model's context at the start of each session. Clio's full list is 29 tools and about 7,000 tokens. Set the environment variable `CLIO_MCP_TOOLS=core` on the `clio-mcp` process to offer only the ten everyday tools, about 3,700 tokens:
+Many clients load every tool definition into the model's context at the start of each session. Clio's full list is 29 tools and about 7,000 tokens. Set the environment variable `CLIO_MCP_TOOLS=core` on the `clio-mcp` process to offer only the eleven everyday tools, about 3,900 tokens:
 
-`memory_recall`, `memory_search`, `memory_get`, `memory_remember`, `memory_update`, `memory_resume`, `memory_context`, `memory_action`, `memory_feedback`, `memory_archive`
+`memory_recall`, `memory_search`, `memory_get`, `memory_remember`, `memory_update`, `memory_resume`, `memory_context`, `memory_action`, `memory_feedback`, `memory_archive`, `memory_unarchive`
 
 | Value | Tools offered |
 |---|---|
 | unset, empty or `full` | All 29 (the default; nothing changes for existing clients) |
-| `core` | The ten above. The others are not listed, and calling one is an unknown-tool error |
+| `core` | The eleven above. The others are not listed, and calling one is an unknown-tool error |
 | anything else | The server refuses to start and names the two valid values |
 
 ```json

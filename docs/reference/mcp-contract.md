@@ -67,7 +67,7 @@ tools the process offers:
 | Value | Tools |
 |---|---|
 | unset, empty, `full` | every tool in this document (the default) |
-| `core` | `memory_recall`, `memory_search`, `memory_get`, `memory_remember`, `memory_update`, `memory_resume`, `memory_context`, `memory_action`, `memory_feedback`, `memory_archive` |
+| `core` | `memory_recall`, `memory_search`, `memory_get`, `memory_remember`, `memory_update`, `memory_resume`, `memory_context`, `memory_action`, `memory_feedback`, `memory_archive`, `memory_unarchive` |
 | any other value | startup error naming the valid values; never a silent fallback |
 
 Under `core` the other tools are absent from `tools/list` and calling one is an
@@ -458,8 +458,10 @@ Patchable fields are `namespace`, `kind`, `title`, `summary`, `content`,
 `response_format: "json"` (the default) returns the complete updated memory
 record. `response_format: "compact"` returns the same receipt as
 `memory_remember` (`id`, `namespace`, `title`, `updated_at`), with the new
-`updated_at` ready for the next patch. Any other value is rejected before the
-patch is applied.
+`updated_at` ready for the next patch. `response_format: "markdown"` is
+accepted on both write tools and answered with the same receipt, so a model
+that passes the reading default does not have its write refused. Any other
+value is rejected before the patch is applied.
 
 ### Failure cases
 
@@ -614,8 +616,8 @@ Rank and full timestamps are left out; they are in the `json` reply.
 
 ### Failure cases
 
-- unknown `sort_by` → `Invalid sort_by '<value>'. Must be one of: updated_desc, updated_asc, importance_desc, importance_asc, created_desc, created_asc.` (it is never silently ignored)
-- `importance_min` or `importance_max` outside 1–5 → `<field> must be between 1 and 5.`
+- unknown `sort_by` → `Invalid sort_by '<value>'. Must be one of: updated_desc, updated_asc, importance_desc, importance_asc, created_desc, created_asc.` (it is never silently ignored; an empty value counts as not given)
+- an importance bound that can match nothing (`importance_min` above 5, `importance_max` below 1) → `<field> must be between 1 and 5.`
 - invalid pagination values
 - invalid response format
 - storage failure

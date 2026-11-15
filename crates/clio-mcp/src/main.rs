@@ -1199,18 +1199,16 @@ fn validate_response_format(format: &str) -> Result<(), String> {
 }
 
 /// Validate the response_format of a write, before anything is stored.
+/// `markdown` is accepted because the instructions tell a model to leave it
+/// as the default elsewhere; a write answers it with the short receipt.
 fn validate_write_format(format: &str) -> Result<(), String> {
-    match format {
-        "json" | "compact" => Ok(()),
-        other => Err(format!(
-            "Invalid response_format '{other}'. Must be 'json' or 'compact'."
-        )),
-    }
+    validate_response_format(format)
 }
 
 /// Parse `sort_by`, rejecting an unknown value instead of ignoring it.
 fn parse_sort_by(value: Option<&str>) -> Result<Option<SortOrder>, String> {
     value
+        .filter(|sort| !sort.trim().is_empty()) // an empty value means "not given"
         .map(|sort| {
             SortOrder::from_str_opt(sort).ok_or_else(|| {
                 format!(
@@ -1222,12 +1220,17 @@ fn parse_sort_by(value: Option<&str>) -> Result<Option<SortOrder>, String> {
         .transpose()
 }
 
-/// Reject an importance filter outside 1–5: it could only ever match nothing.
+/// Reject an importance bound that can match nothing (a minimum above 5, a
+/// maximum below 1). A minimum of 0 or a maximum of 10 matches everything.
 fn validate_importance_filter(value: Option<i32>, field_name: &str) -> Result<(), String> {
-    match value {
-        Some(v) if !(1..=5).contains(&v) => Err(format!("{field_name} must be between 1 and 5.")),
-        _ => Ok(()),
+    let impossible = match field_name {
+        "importance_min" => value.is_some_and(|v| v > 5),
+        _ => value.is_some_and(|v| v < 1),
+    };
+    if impossible {
+        return Err(format!("{field_name} must be between 1 and 5."));
     }
+    Ok(())
 }
 
 /// Cap a limit value to prevent runaway queries.
@@ -1314,7 +1317,7 @@ const TOOLS_ENV: &str = "CLIO_MCP_TOOLS";
 /// The everyday tools: find, read, store, brief and follow up. Offered alone
 /// when `CLIO_MCP_TOOLS=core`, for clients that load every tool definition
 /// into context.
-const CORE_TOOLS: [&str; 10] = [
+const CORE_TOOLS: [&str; 11] = [
     "memory_recall",
     "memory_search",
     "memory_get",
@@ -1325,6 +1328,8 @@ const CORE_TOOLS: [&str; 10] = [
     "memory_action",
     "memory_feedback",
     "memory_archive",
+    // The undo for `memory_archive`: a profile that can hide must be able to restore.
+    "memory_unarchive",
 ];
 
 /// Whether `CLIO_MCP_TOOLS` asks for the core tools only. Unset, empty and
@@ -1773,7 +1778,7 @@ fn format_recall_response(result: &RecallResult, format: &str, note: Option<Stri
 /// that `memory_update` requires — because the caller already holds the
 /// content it sent.
 fn write_reply(memory: &Memory, format: &str) -> Result<String, String> {
-    if format == "compact" {
+    if format != "json" {
         serde_json::to_string(&serde_json::json!({
             "id": memory.id,
             "namespace": memory.namespace,
@@ -4659,15 +4664,30 @@ mod surface_tests {
             .memory_remember(params(json!({
                 "namespace": "project:demo",
                 "content": "Never stored.",
-                "response_format": "markdown"
+                "response_format": "yaml"
             })))
             .await
             .unwrap_err();
-        assert!(refused.contains("'json' or 'compact'"), "{refused}");
+        assert!(refused.contains("Invalid response_format 'yaml'"), "{refused}");
         let listed = recall(&server, json!({"namespace": "project:demo"}))
             .await
             .unwrap();
         assert!(listed.starts_with("**1 of 1 memories**"), "{listed}");
+
+        // `markdown`, which the instructions tell a model to leave as the
+        // default elsewhere, stores and answers with the short receipt.
+        let stored: serde_json::Value = serde_json::from_str(
+            &server
+                .memory_remember(params(json!({
+                    "namespace": "project:demo",
+                    "content": "Stored on a markdown request.",
+                    "response_format": "markdown"
+                })))
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(stored.get("id").is_some() && stored.get("content").is_none());
     }
 
     #[tokio::test]
