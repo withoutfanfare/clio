@@ -1008,6 +1008,9 @@ fn build_resume(conn: &Connection, request: &ResumeRequest, record: bool) -> Res
     })
     .collect::<Vec<_>>();
 
+    // A constraint that matches the task leads its section, so the section's
+    // reserved slot funds it and not whichever constraint ranks first.
+    constraints.sort_by_key(|c| !knowledge.iter().any(|k| k.memory_id == c.memory_id));
     // Keep attention reasons when the same memory also matches the task, and
     // keep a matching constraint in its own section, which has a reserved slot.
     knowledge.retain(|k| {
@@ -1203,7 +1206,6 @@ fn resume_recall(
             },
             embedding,
         )?;
-        let full = found.len() as u32 == window;
         let found = found
             .into_iter()
             .map(|f| {
@@ -1216,7 +1218,9 @@ fn resume_recall(
             })
             .collect();
         items = resume_eligible(conn, found, &recall_query, session, limit)?;
-        if items.len() >= limit || !full {
+        // A short first window does not prove there is nothing more: the
+        // semantic side is cut below the window, so always try the wider one.
+        if items.len() >= limit {
             break;
         }
     }
