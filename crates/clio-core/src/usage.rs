@@ -118,6 +118,7 @@ mod tests {
             confidence: 1.0,
             attention: None,
             resolves: None,
+            lifetime: Default::default(),
         };
         store_checkpoint(conn, &req, &[atom], &Settings::default())
             .expect("checkpoint failed")

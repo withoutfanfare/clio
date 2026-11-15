@@ -253,6 +253,7 @@ pub fn approve_review(
             }
         }
 
+        let valid_until = crate::capture::expiry_from_metadata(&item.metadata);
         let input = crate::models::RememberInput {
             namespace: item.suggested_namespace,
             kind: item.suggested_kind,
@@ -266,7 +267,7 @@ pub fn approve_review(
             importance: item.suggested_importance,
             metadata: item.metadata,
             valid_from: None,
-            valid_until: None,
+            valid_until,
             upsert,
         };
 

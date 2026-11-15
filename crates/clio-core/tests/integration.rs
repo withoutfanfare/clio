@@ -3479,6 +3479,7 @@ fn repeated_evidence_across_sessions_keeps_one_memory_with_occurrences() {
         confidence: 1.0,
         attention: None,
         resolves: None,
+        lifetime: Default::default(),
     };
     let request = |session: &str, cursor: i64| CheckpointRequest {
         source: "claude-session".into(),

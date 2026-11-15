@@ -99,6 +99,23 @@ impl DistilledAttention {
     }
 }
 
+/// Days a point-in-time status note stays in default recall. After that its
+/// `valid_until` has passed and it is hidden, never deleted.
+pub const STATUS_LIFETIME_DAYS: i64 = 30;
+
+/// How long a distilled memory stays true. Anything the model does not mark
+/// `status` — including output from before this field existed — is durable.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Lifetime {
+    /// True on the day it was written (a PR passed, a release went out) and
+    /// stale soon after, so it expires after [`STATUS_LIFETIME_DAYS`].
+    Status,
+    #[default]
+    #[serde(other)]
+    Durable,
+}
+
 /// A single durable memory extracted from a longer body of text (e.g. a
 /// session transcript). Unlike [`ClassificationResult`], which describes how to
 /// file one supplied blob, each `DistilledMemory` carries its own
@@ -129,6 +146,30 @@ pub struct DistilledMemory {
     /// (a Clio memory/attention ID). Fuzzy targets are never auto-completed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resolves: Option<String>,
+    /// Whether this is durable knowledge or a point-in-time status note.
+    /// Receipts and open loops are always durable.
+    #[serde(default)]
+    pub lifetime: Lifetime,
+}
+
+impl DistilledMemory {
+    /// Record a status note's expiry in the metadata stored with it, where
+    /// both direct storage and review approval read it — the same way an
+    /// open loop's `attention` payload travels.
+    pub(crate) fn stamp_expiry(&self, metadata: &mut serde_json::Map<String, serde_json::Value>) {
+        if self.lifetime == Lifetime::Status {
+            let until =
+                time::OffsetDateTime::now_utc() + time::Duration::days(STATUS_LIFETIME_DAYS);
+            if let Ok(until) = until.format(&time::format_description::well_known::Rfc3339) {
+                metadata.insert("valid_until".into(), serde_json::json!(until));
+            }
+        }
+    }
+}
+
+/// The expiry a capture path stamped into `metadata`, if any.
+pub(crate) fn expiry_from_metadata(metadata: &serde_json::Value) -> Option<String> {
+    metadata["valid_until"].as_str().map(String::from)
 }
 
 // ---------------------------------------------------------------------------
@@ -191,6 +232,7 @@ Respond ONLY with a JSON object of the form {"memories": [...]} (the array possi
 - "namespace": "global", or "project:<slug>", or "topic:<slug>"
 - "importance": integer 1 to 5, calibrated strictly (see scale below)
 - "confidence": float 0.0 to 1.0 — how certain you are this is durable knowledge worth keeping
+- "lifetime": "durable" or "status". Use "status" when the memory is only true on the day it was written and will be stale within weeks: something passed, was deployed, merged, confirmed or is ready; the state of a PR, ticket, branch, release or environment. Use "durable" for decisions, constraints, preferences and how things work. Status memories are hidden automatically after 30 days, so mark them honestly rather than calling them durable.
 
 Use "global" only for information explicitly intended to apply across projects. Project decisions, implementation details and receipts must use that project's namespace when the project is identifiable.
 
@@ -566,6 +608,16 @@ pub fn parse_distillation(raw: &str) -> Result<Vec<DistilledMemory>> {
                 .map(str::trim)
                 .filter(|s| !s.is_empty())
                 .map(String::from);
+            // A receipt is the session's record and an open loop must stay
+            // visible until it is closed, so neither may expire.
+            let lifetime = if item["lifetime"].as_str() == Some("status")
+                && c.kind != "receipt"
+                && attention.is_none()
+            {
+                Lifetime::Status
+            } else {
+                Lifetime::Durable
+            };
             Some(DistilledMemory {
                 content,
                 kind: c.kind,
@@ -577,6 +629,7 @@ pub fn parse_distillation(raw: &str) -> Result<Vec<DistilledMemory>> {
                 confidence: c.confidence,
                 attention,
                 resolves,
+                lifetime,
             })
         })
         .collect();
@@ -855,7 +908,6 @@ pub fn distill_and_store(
             metadata.insert("host".into(), serde_json::json!(h));
         }
     }
-    let metadata = serde_json::Value::Object(metadata);
 
     let mut results = Vec::with_capacity(memories.len());
     for (index, memory) in memories.iter().enumerate() {
@@ -880,6 +932,9 @@ pub fn distill_and_store(
         // shared prefix for provenance.
         let item_ref = source_ref.map(|r| format!("{r}-{index}"));
 
+        let mut metadata = metadata.clone();
+        memory.stamp_expiry(&mut metadata);
+
         results.push(store_or_queue(
             conn,
             &memory.content,
@@ -887,7 +942,7 @@ pub fn distill_and_store(
             &namespace,
             source,
             item_ref.as_deref(),
-            &metadata,
+            &serde_json::Value::Object(metadata),
             settings,
             true,
         )?);
@@ -1011,7 +1066,7 @@ pub(crate) fn store_or_queue(
         importance: classification.importance,
         metadata: metadata.clone(),
         valid_from: None,
-        valid_until: None,
+        valid_until: expiry_from_metadata(metadata),
         upsert: false,
     };
 
@@ -1165,6 +1220,39 @@ mod tests {
         assert_eq!(memories[2].resolves.as_deref(), Some("0195-stable-id"));
         assert!(memories[3].attention.is_none());
         assert!(memories[3].resolves.is_none());
+    }
+
+    #[test]
+    fn lifetime_defaults_to_durable_and_never_expires_receipts_or_open_loops() {
+        let item = |extra: &str| {
+            format!(
+                r#"{{"content":"c","kind":"fact","title":"t","summary":"","tags":[],"namespace":"project:x","importance":3,"confidence":0.9{extra}}}"#
+            )
+        };
+        let lifetime = |raw: &str| parse_distillation(&format!("[{raw}]")).unwrap()[0].lifetime;
+
+        assert_eq!(lifetime(&item("")), Lifetime::Durable);
+        assert_eq!(lifetime(&item(r#","lifetime":"status""#)), Lifetime::Status);
+        assert_eq!(
+            lifetime(&item(r#","lifetime":"forever""#)),
+            Lifetime::Durable
+        );
+        assert_eq!(
+            lifetime(&item(
+                r#","lifetime":"status","attention":{"explicitness":"explicit"}"#
+            )),
+            Lifetime::Durable
+        );
+        assert_eq!(
+            lifetime(
+                r#"{"content":"Did it.","kind":"receipt","title":"r","summary":"","tags":[],"namespace":"project:x","importance":2,"confidence":0.9,"lifetime":"status"}"#
+            ),
+            Lifetime::Durable
+        );
+
+        // Output stored before the field existed still deserialises.
+        let old: DistilledMemory = serde_json::from_str(&item("")).unwrap();
+        assert_eq!(old.lifetime, Lifetime::Durable);
     }
 
     #[test]

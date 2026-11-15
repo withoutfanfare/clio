@@ -199,6 +199,7 @@ pub fn store_checkpoint(
             if let Some(attention) = &memory.attention {
                 meta.insert("attention".into(), serde_json::to_value(attention)?);
             }
+            memory.stamp_expiry(&mut meta);
             let mut metadata = serde_json::Value::Object(meta);
 
             // Unique provenance per atom, sharing the checkpoint key as the
@@ -468,6 +469,7 @@ mod tests {
             confidence: 1.0,
             attention: None,
             resolves: None,
+            lifetime: crate::capture::Lifetime::Durable,
         }
     }
 
@@ -660,6 +662,69 @@ mod tests {
             store_checkpoint(&conn, &request(10), &[atom("clean retry")], &settings).unwrap();
         assert!(!retry.replayed);
         assert_eq!(memory_count(&conn), 1);
+    }
+
+    #[test]
+    fn status_notes_expire_and_durable_knowledge_does_not() {
+        let conn = test_conn();
+        let mut settings = Settings::default();
+        settings.capture.review_threshold = Some(0.5);
+
+        let status = |content: &str, confidence: f64| DistilledMemory {
+            lifetime: crate::capture::Lifetime::Status,
+            confidence,
+            ..atom(content)
+        };
+        let result = store_checkpoint(
+            &conn,
+            &request(10),
+            &[
+                atom("the queue is a spool directory"),
+                status("PR 12 passed review today", 1.0),
+                status("staging is on revision abc", 0.1),
+            ],
+            &settings,
+        )
+        .unwrap();
+
+        let get = |id: &str| crate::repository::get_raw(&conn, id).unwrap();
+        assert_eq!(get(&result.stored_memory_ids[0]).valid_until, None);
+        let until = get(&result.stored_memory_ids[1]).valid_until.unwrap();
+        let days: f64 = conn
+            .query_row("SELECT julianday(?1) - julianday('now')", [&until], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert!((29.9..=30.1).contains(&days), "expires in {days} days");
+
+        // A status note that waited in the review queue keeps its expiry.
+        let approved =
+            crate::review::approve_review(&conn, &result.queued_review_ids[0], &settings).unwrap();
+        assert!(approved.valid_until.is_some());
+
+        // Expiry hides a memory from recall that excludes expired rows; the
+        // row itself is still there.
+        conn.execute(
+            "UPDATE memories SET valid_until = '2000-01-01T00:00:00Z' WHERE id = ?1",
+            [&result.stored_memory_ids[1]],
+        )
+        .unwrap();
+        let recalled = crate::repository::recall(
+            &conn,
+            &crate::models::RecallQuery {
+                namespace: Some("project:checkpoint-test".into()),
+                exclude_expired: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(
+            recalled
+                .items
+                .iter()
+                .all(|m| m.memory.id != result.stored_memory_ids[1])
+        );
+        assert!(get(&result.stored_memory_ids[1]).archived_at.is_none());
     }
 
     #[test]

@@ -493,6 +493,7 @@ fn checkpoint_atom(content: &str) -> clio_core::capture::DistilledMemory {
         confidence: 1.0,
         attention: None,
         resolves: None,
+        lifetime: Default::default(),
     }
 }
 
