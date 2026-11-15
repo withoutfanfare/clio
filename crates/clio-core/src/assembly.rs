@@ -1299,6 +1299,7 @@ fn recall_section(
         namespace: namespace.clone(),
         kind: kind.map(String::from),
         include_links,
+        exclude_expired: true,
         limit,
         scoring: scoring.clone(),
         ..Default::default()

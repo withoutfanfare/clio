@@ -1960,3 +1960,8 @@ The MCP contract is ready for implementation when:
 Ordinary keyword recall retries an empty multi-word query using any-word matching.
 Scoped recall widens only when both project and global strict results are empty.
 Pagination beyond an existing result set does not widen. JSON envelopes are unchanged.
+
+Ordinary recall, recent lists, semantic search and context briefs exclude expired
+memories (including linked expansion). CLI recall/search/recent accept
+`--include-expired`; MCP equivalents accept `include_expired: true` for history.
+Direct ID reads, audit/history and export/import preserve expired records.

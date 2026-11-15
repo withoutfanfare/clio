@@ -298,6 +298,10 @@ struct RecallArgs {
     #[arg(long)]
     query: Option<String>,
 
+    /// Include expired memories for historical retrieval.
+    #[arg(long)]
+    include_expired: bool,
+
     /// Filter by namespace.
     #[arg(long)]
     namespace: Option<String>,
@@ -349,6 +353,10 @@ struct RecallArgs {
 
 #[derive(Parser)]
 struct RecentArgs {
+    /// Include expired memories for historical retrieval.
+    #[arg(long)]
+    include_expired: bool,
+
     /// Filter by namespace.
     #[arg(long)]
     namespace: Option<String>,
@@ -585,6 +593,10 @@ struct ImportArgs {
 struct SearchArgs {
     /// The natural language query to search for.
     query: String,
+
+    /// Include expired memories for historical retrieval.
+    #[arg(long)]
+    include_expired: bool,
 
     /// Filter by namespace.
     #[arg(long)]
@@ -2082,7 +2094,7 @@ fn cmd_recall(
             include_archived: args.include_archived,
             archived_only: args.archived_only,
             include_links: false,
-            exclude_expired: false,
+            exclude_expired: !args.include_expired,
             importance_min: args.importance_min,
             importance_max: args.importance_max,
             sort_by: sort_by.clone(),
@@ -2103,7 +2115,7 @@ fn cmd_recall(
             include_archived: args.include_archived,
             archived_only: args.archived_only,
             include_links: false,
-            exclude_expired: false,
+            exclude_expired: !args.include_expired,
             importance_min: args.importance_min,
             importance_max: args.importance_max,
             sort_by: sort_by.clone(),
@@ -2124,7 +2136,7 @@ fn cmd_recall(
             include_archived: args.include_archived,
             archived_only: args.archived_only,
             include_links: false,
-            exclude_expired: false,
+            exclude_expired: !args.include_expired,
             importance_min: args.importance_min,
             importance_max: args.importance_max,
             sort_by,
@@ -2179,6 +2191,7 @@ fn cmd_recent(
     let sort_by = args.sort.as_deref().and_then(SortOrder::from_str_opt);
 
     let query = RecallQuery {
+        exclude_expired: !args.include_expired,
         namespace: args.namespace,
         kind: args.kind,
         tags,
@@ -2641,7 +2654,7 @@ fn cmd_search(
             backend.model_name(),
             None,
             args.include_archived,
-            false,
+            !args.include_expired,
             Some(&s.scoring),
             args.limit,
         )?
@@ -2653,7 +2666,7 @@ fn cmd_search(
             backend.model_name(),
             Some(namespace),
             args.include_archived,
-            false,
+            !args.include_expired,
             Some(&s.scoring),
             args.limit,
         )?
@@ -2666,7 +2679,7 @@ fn cmd_search(
             backend.model_name(),
             &namespace,
             args.include_archived,
-            false,
+            !args.include_expired,
             Some(&s.scoring),
             args.limit,
         )?

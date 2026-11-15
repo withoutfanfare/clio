@@ -14,6 +14,7 @@ pub fn export_jsonl(
     let query = crate::models::RecallQuery {
         namespace: namespace.map(String::from),
         include_archived,
+        exclude_expired: false,
         skip_access_tracking: true,
         limit: u32::MAX,
         ..Default::default()

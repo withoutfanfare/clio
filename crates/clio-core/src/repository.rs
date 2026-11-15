@@ -1920,6 +1920,24 @@ mod tests {
     use super::*;
 
     #[test]
+    fn expired_retrieval_preserves_history_and_export() {
+        let conn = crate::db::open_in_memory().unwrap();
+        let input = serde_json::from_value::<RememberInput>(serde_json::json!({
+            "content": "expired release procedure", "valid_until": "2000-01-01T00:00:00Z"
+        })).unwrap();
+        let memory = remember(&conn, &input, &crate::settings::Settings::default()).unwrap();
+        let query = RecallQuery { query: Some("release".into()), exclude_expired: true, ..Default::default() };
+        assert_eq!(recall_ordinary(&conn, &query, None).unwrap().0.total, 0);
+        assert_eq!(recall_ordinary(&conn, &RecallQuery { exclude_expired: false, ..query }, None).unwrap().0.total, 1);
+        crate::embeddings::store_embedding(&conn, &memory.id, "test", 2, &[1.0, 0.0]).unwrap();
+        assert!(crate::embeddings::semantic_recall(&conn, "release", &[1.0, 0.0], "test", None, false, true, None, 10).unwrap().is_empty());
+        let mut exported = Vec::new();
+        assert_eq!(crate::export::export_jsonl(&conn, &mut exported, None, false).unwrap(), 1);
+        assert!(String::from_utf8(exported).unwrap().contains(&memory.id));
+        assert_eq!(get(&conn, &memory.id).unwrap().id, memory.id);
+    }
+
+    #[test]
     fn ordinary_recall_widens_only_empty_totals() {
         let conn = crate::db::open_in_memory().unwrap();
         remember(&conn, &serde_json::from_value::<RememberInput>(serde_json::json!({

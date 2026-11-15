@@ -1046,3 +1046,8 @@ The schema is ready for coding agents when:
 ### Work guidance (migration 017)
 
 `work_acceptances` stores one immutable JSON decision per implementation `receipt_id` (foreign key to `work_reports.id`). `work_recommendations` stores one JSON recommendation per `(project, parent_task)`, with `checked_at` guarding replacement order. Neither table rewrites agent receipts or registers a run. The local CLI owns these explicit writes; the core overview joins acceptance and filters recommendations whose proposed task already reports. See [work reporting](../work-reporting.md#human-acceptance-and-next-task-guidance-local-pilot).
+
+Ordinary recall, recent lists, semantic search and context briefs exclude expired
+memories (including linked expansion). CLI recall/search/recent accept
+`--include-expired`; MCP equivalents accept `include_expired: true` for history.
+Direct ID reads, audit/history and export/import preserve expired records.

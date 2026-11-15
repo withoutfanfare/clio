@@ -235,6 +235,10 @@ where
 
 #[derive(Debug, Deserialize, JsonSchema)]
 struct RecallParams {
+    /// Include expired memories for historical retrieval.
+    #[serde(default)]
+    include_expired: bool,
+
     /// Words to find. Omit to list recent memories.
     #[serde(default)]
     query: Option<String>,
@@ -315,6 +319,10 @@ struct GetParams {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 struct RecentParams {
+    /// Include expired memories for historical retrieval.
+    #[serde(default)]
+    include_expired: bool,
+
     #[serde(default)]
     namespace: Option<String>,
 
@@ -478,6 +486,10 @@ struct SessionCheckpointParams {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 struct SearchParams {
+    /// Include expired memories for historical retrieval.
+    #[serde(default)]
+    include_expired: bool,
+
     /// A question or description, in your own words.
     query: String,
 
@@ -2269,7 +2281,7 @@ impl ClioServer {
                 include_archived: params.include_archived,
                 archived_only: params.archived_only,
                 include_links: false,
-                exclude_expired: false,
+                exclude_expired: !params.include_expired,
                 importance_min: params.importance_min,
                 importance_max: params.importance_max,
                 sort_by,
@@ -2337,6 +2349,7 @@ impl ClioServer {
         tokio::task::spawn_blocking(move || {
             let conn = conn.lock().map_err(|e| format!("lock error: {e}"))?;
             let query = RecallQuery {
+                exclude_expired: !params.include_expired,
                 namespace: params.namespace,
                 kind: params.kind,
                 tags: params.tags,
@@ -2827,7 +2840,7 @@ impl ClioServer {
                     be.model_name(),
                     None,
                     params.include_archived,
-                    false,
+                    !params.include_expired,
                     Some(&settings.scoring),
                     limit,
                 )
@@ -2839,7 +2852,7 @@ impl ClioServer {
                     be.model_name(),
                     Some(&detected_ns),
                     params.include_archived,
-                    false,
+                    !params.include_expired,
                     Some(&settings.scoring),
                     limit,
                 )
@@ -2851,7 +2864,7 @@ impl ClioServer {
                     be.model_name(),
                     &detected_ns,
                     params.include_archived,
-                    false,
+                    !params.include_expired,
                     Some(&settings.scoring),
                     limit,
                 )
@@ -3964,6 +3977,7 @@ mod concurrency_tests {
         let search = tokio::spawn(async move {
             search_server
                 .memory_search(Parameters(SearchParams {
+                    include_expired: false,
                     query: "concurrency".into(),
                     namespace: None,
                     global: true,
