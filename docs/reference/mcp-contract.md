@@ -59,6 +59,23 @@ Default assumption:
 - same user account as the SQLite file owner
 - database path resolved by env var or platform default in the core
 
+## Tool Profiles
+
+The environment variable `CLIO_MCP_TOOLS`, read once at startup, chooses which
+tools the process offers:
+
+| Value | Tools |
+|---|---|
+| unset, empty, `full` | every tool in this document (the default) |
+| `core` | `memory_recall`, `memory_search`, `memory_get`, `memory_remember`, `memory_update`, `memory_resume`, `memory_context`, `memory_action`, `memory_feedback`, `memory_archive` |
+| any other value | startup error naming the valid values; never a silent fallback |
+
+Under `core` the other tools are absent from `tools/list` and calling one is an
+unknown-tool error. Tool behaviour is identical in both profiles. The server
+instructions describe only the tools on offer. Resources are unaffected. The
+full list measures about 28,200 characters of definitions and the core list
+about 14,700.
+
 ## Tool Design Rules
 
 Every tool must:
@@ -211,13 +228,14 @@ Semantics:
   (not pretty-printed). List tools (`memory_recall`, `memory_recent`,
   `memory_search`, `memory_context`) return compact items, about the size of
   the Markdown reply
-- `full: true` with `json` on those list tools returns complete memory records
-  instead of compact items, several times larger. The desktop app's remote
+- `full: true` with `json` on `memory_recall`, `memory_search` and
+  `memory_context` returns complete memory records instead of compact items,
+  several times larger. The deprecated `memory_recent` is compact only. The desktop app's remote
   mode uses it, because it deserialises whole records. `full` with `markdown`
   is rejected rather than ignored. For one complete record, use `memory_get`
 
-Measured on a 27,000-memory store, the same ten results were 3,258 characters
-as Markdown, 3,617 as compact JSON and 14,004 as full JSON (16,283 when JSON was
+Measured on a 27,000-memory store, the same ten results were 3,388 characters
+as Markdown, 3,617 as compact JSON and 14,003 as full JSON (16,283 when JSON was
 still pretty-printed and the only JSON shape).
 
 ## Tool Definitions
@@ -660,7 +678,9 @@ Return recent memories with optional filtering and sorting.
 - `offset`: `0`
 - `limit`: `10`
 - `response_format`: `markdown`
-- `full`: `false` (JSON only: complete records instead of compact items)
+
+JSON replies carry compact items only; use `memory_recall` with `full: true`
+for complete records.
 
 ## `memory_link`
 

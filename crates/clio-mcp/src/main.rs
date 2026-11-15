@@ -114,7 +114,8 @@ struct RememberParams {
     #[schemars(skip)]
     clio_namespace: Option<String>,
 
-    /// Memory kind: note, decision, snippet.
+    /// Kind. `decision` and `constraint` are what briefs surface; otherwise
+    /// fact, task, snippet or note (default).
     #[serde(default = "default_kind")]
     kind: String,
 
@@ -165,7 +166,7 @@ struct RememberParams {
     #[serde(default)]
     upsert: bool,
 
-    /// Return the whole stored record instead of a short receipt.
+    /// Return the whole record, not a receipt.
     #[serde(default)]
     full: bool,
 }
@@ -217,7 +218,7 @@ struct UpdateParams {
     #[serde(default, deserialize_with = "deserialize_nullable_patch")]
     valid_until: Option<Option<String>>,
 
-    /// Return the whole updated record instead of a short receipt.
+    /// Return the whole record, not a receipt.
     #[serde(default)]
     full: bool,
 }
@@ -234,7 +235,7 @@ where
 
 #[derive(Debug, Deserialize, JsonSchema)]
 struct RecallParams {
-    /// Search query. Omit for recent.
+    /// Words to find. Omit to list recent memories.
     #[serde(default)]
     query: Option<String>,
 
@@ -300,7 +301,7 @@ struct RecallParams {
     #[serde(default = "default_response_format")]
     response_format: String,
 
-    /// With response_format json: complete records instead of compact ones.
+    /// JSON only: whole records instead of compact ones.
     #[serde(default)]
     full: bool,
 }
@@ -317,57 +318,41 @@ struct GetParams {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 struct RecentParams {
-    /// Namespace filter.
     #[serde(default)]
     namespace: Option<String>,
 
-    /// Kind filter.
     #[serde(default)]
     kind: Option<String>,
 
-    /// Tag filter.
     #[serde(default)]
     tags: Vec<String>,
 
-    /// Require all tags to match.
     #[serde(default = "default_true")]
     match_all_tags: bool,
 
-    /// Minimum importance (1–5).
     #[serde(default)]
     importance_min: Option<i32>,
 
-    /// Maximum importance (1–5).
     #[serde(default)]
     importance_max: Option<i32>,
 
-    /// Sort order: updated_desc, updated_asc, importance_desc, importance_asc, created_desc, created_asc.
     #[serde(default)]
     sort_by: Option<String>,
 
-    /// Include archived.
     #[serde(default)]
     include_archived: bool,
 
-    /// Return only archived memories.
     #[serde(default)]
     archived_only: bool,
 
-    /// Pagination offset.
     #[serde(default)]
     offset: u32,
 
-    /// Max results.
     #[serde(default = "default_limit")]
     limit: u32,
 
-    /// Format: markdown|json.
     #[serde(default = "default_response_format")]
     response_format: String,
-
-    /// With response_format json: complete records instead of compact ones.
-    #[serde(default)]
-    full: bool,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -434,9 +419,7 @@ struct GetLinksParams {
     /// Memory ID.
     memory_id: String,
 
-    /// Edge direction: outgoing (default, compatible shape), incoming, or
-    /// both. Non-default directions return edge contexts with a `direction`
-    /// field relative to this memory.
+    /// outgoing (default), incoming or both.
     #[serde(default)]
     direction: Option<String>,
 }
@@ -498,7 +481,7 @@ struct SessionCheckpointParams {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 struct SearchParams {
-    /// Search query.
+    /// A question or description, in your own words.
     query: String,
 
     /// Namespace filter.
@@ -530,7 +513,7 @@ struct SearchParams {
     #[serde(default = "default_response_format")]
     response_format: String,
 
-    /// With response_format json: complete records instead of compact ones.
+    /// JSON only: whole records instead of compact ones.
     #[serde(default)]
     full: bool,
 }
@@ -566,8 +549,7 @@ struct SuggestLinksParams {
     /// Memory ID.
     memory_id: String,
 
-    /// Minimum cosine similarity (0.0–1.0). Only suggestions at or above this are
-    /// returned: lower = more permissive (more, looser links); 0.9+ = near-identical.
+    /// Minimum cosine similarity 0.0–1.0; lower returns more, looser suggestions.
     #[serde(default = "default_threshold")]
     threshold: f64,
 
@@ -595,11 +577,11 @@ struct ContextParams {
     #[schemars(skip)]
     clio_namespace: Option<String>,
 
-    /// Preset: project-brief, person-brief, decision-history, active-constraints, recent-activity, handoff, custom.
+    /// project-brief, person-brief, decision-history, active-constraints, recent-activity, handoff, custom.
     #[serde(default = "default_preset")]
     preset: String,
 
-    /// FTS query for the custom and handoff presets (handoff requires it — pass the ticket id or topic).
+    /// Keywords for the custom preset; required by handoff (a ticket id or topic).
     #[serde(default)]
     query: Option<String>,
 
@@ -607,7 +589,7 @@ struct ContextParams {
     #[serde(default = "default_max_items")]
     max_items: u32,
 
-    /// Character budget for the whole brief (sections truncated greedily once reached).
+    /// Character budget for the whole brief.
     #[serde(default)]
     char_budget: Option<u32>,
 
@@ -619,17 +601,17 @@ struct ContextParams {
     #[serde(default = "default_response_format")]
     response_format: String,
 
-    /// With response_format json: complete records instead of compact ones.
+    /// JSON only: whole records instead of compact ones.
     #[serde(default)]
     full: bool,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
 struct InboxParams {
-    /// Action: list | approve | reject | edit.
+    /// list | approve | reject | edit.
     action: String,
 
-    /// Review item ID. Required for approve/reject/edit; ignored for list.
+    /// Review item ID (approve/reject/edit).
     #[serde(default, alias = "id")]
     review_id: Option<String>,
 
@@ -641,7 +623,7 @@ struct InboxParams {
     #[serde(default = "default_response_format")]
     response_format: String,
 
-    /// Include confirmation that JSON list results cover pending and edited items.
+    /// JSON list: wrap items with confirmation that edited ones are included.
     #[serde(default)]
     include_status_scope: bool,
 
@@ -676,8 +658,8 @@ struct InboxParams {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 struct ResumeParams {
-    /// Prompt/task context for the relevant-knowledge section. Omit at
-    /// session start; pass the user's task on the first substantive prompt.
+    /// The task in a sentence, for the relevant-knowledge section. Omit at
+    /// session start.
     #[serde(default)]
     query: Option<String>,
 
@@ -689,8 +671,7 @@ struct ResumeParams {
     #[serde(default)]
     cwd: Option<String>,
 
-    /// Session or topic scope: suppresses repeats within the scope and
-    /// records idempotent `surfaced` events.
+    /// Session or topic scope: records what was shown and suppresses repeats.
     #[serde(default)]
     session_id: Option<String>,
 
@@ -740,11 +721,11 @@ fn resume_brief_md(brief: &clio_core::assembly::ResumeBrief) -> String {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 struct ActionParams {
-    /// Action: add | list | eligible | complete | snooze | cancel | attach_external | history.
+    /// add | list | eligible | overview | complete | snooze | cancel | attach_external | history.
     action: String,
 
-    /// Attention item ID or memory ID. Required for complete, snooze, cancel,
-    /// attach_external and history.
+    /// Attention item or memory ID (complete, snooze, cancel, attach_external,
+    /// history).
     #[serde(default, alias = "id")]
     action_id: Option<String>,
 
@@ -1300,6 +1281,155 @@ impl ClioServer {
                 Ok(cache.settings.clone())
             }
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tool profile
+// ---------------------------------------------------------------------------
+
+/// Environment variable choosing which tools the server offers.
+const TOOLS_ENV: &str = "CLIO_MCP_TOOLS";
+
+/// The everyday tools: find, read, store, brief and follow up. Offered alone
+/// when `CLIO_MCP_TOOLS=core`, for clients that load every tool definition
+/// into context.
+const CORE_TOOLS: [&str; 10] = [
+    "memory_recall",
+    "memory_search",
+    "memory_get",
+    "memory_remember",
+    "memory_update",
+    "memory_resume",
+    "memory_context",
+    "memory_action",
+    "memory_feedback",
+    "memory_archive",
+];
+
+/// Whether `CLIO_MCP_TOOLS` asks for the core tools only. Unset, empty and
+/// `full` all mean every tool; anything else is a startup error rather than a
+/// silent fallback.
+fn core_tools_requested(value: Option<&str>) -> Result<bool, String> {
+    match value.map(str::trim) {
+        None | Some("") | Some("full") => Ok(false),
+        Some("core") => Ok(true),
+        Some(other) => Err(format!(
+            "Invalid {TOOLS_ENV} '{other}'. Must be 'core' or 'full'."
+        )),
+    }
+}
+
+impl ClioServer {
+    /// Drop every tool outside [`CORE_TOOLS`]: they are no longer listed and
+    /// calling one is an unknown-tool error.
+    fn core_tools_only(mut self) -> Self {
+        for tool in self.tool_router.list_all() {
+            if !CORE_TOOLS.contains(&tool.name.as_ref()) {
+                self.tool_router.remove_route(&tool.name);
+            }
+        }
+        self
+    }
+
+    /// Server instructions: how to scope a call and which tool to pick. Only
+    /// tools this process offers are described.
+    fn instructions(&self) -> String {
+        const TOOL_NOTES: [(&str, &str); 13] = [
+            (
+                "memory_resume",
+                "start here when beginning or resuming work: open follow-ups, blockers, \
+                 constraints, recent decisions and, with `query`, knowledge relevant to the \
+                 task, each with why it is shown. Not counted as use for ranking; pass \
+                 `session_id` and it records what it showed, so repeats are suppressed.",
+            ),
+            (
+                "memory_recall",
+                "find by exact words (a name, identifier, ticket id, short phrase). A \
+                 sentence that matches nothing is retried on any key word. Omit `query` to \
+                 list recent memories.",
+            ),
+            (
+                "memory_search",
+                "find by meaning (a question or description in your own words). Needs an \
+                 embedding backend; if it reports none, use memory_recall.",
+            ),
+            (
+                "memory_get",
+                "read one whole memory by id; list replies carry only an excerpt.",
+            ),
+            (
+                "memory_context",
+                "one themed brief. Presets: project-brief, person-brief, decision-history, \
+                 active-constraints, recent-activity, handoff, custom. handoff requires \
+                 `query` (a ticket id or topic) and returns a pickup brief.",
+            ),
+            (
+                "memory_remember",
+                "store one memory you have worded yourself. To update in place pass \
+                 `upsert: true` with BOTH `source` and `source_ref`; otherwise a new record \
+                 is inserted.",
+            ),
+            (
+                "memory_update",
+                "edit a memory by id; needs the `updated_at` you last saw.",
+            ),
+            (
+                "memory_capture",
+                "LLM-classified store; low-confidence items queue to the inbox for review \
+                 instead of storing immediately.",
+            ),
+            (
+                "memory_inbox",
+                "review queued captures (list/approve/reject/edit via `action`).",
+            ),
+            (
+                "memory_session_checkpoint",
+                "distil a session delta exactly once, keyed by source + session_id + \
+                 cursor. Requires a configured capture model.",
+            ),
+            (
+                "memory_action",
+                "follow-ups (open loops). When the user states an explicit decision or \
+                 commitment, store it IMMEDIATELY with memory_remember or \
+                 memory_action(add) — do not wait for end-of-session distillation, which is \
+                 only the safety net. Complete with evidence when done. action:eligible \
+                 reports what needs attention now and why.",
+            ),
+            (
+                "memory_feedback",
+                "say when a memory helped (useful) or misled you (wrong, stale).",
+            ),
+            (
+                "memory_archive",
+                "hide a wrong or outdated memory (soft delete; archived records are \
+                 excluded from recall by default).",
+            ),
+        ];
+
+        let mut text = String::from(
+            "Clio: local shared-memory store for AI tools (SQLite-backed).\n\n\
+             NAMESPACE: memories are scoped per project. Resolution order is \
+             explicit `namespace` -> auto-detect from `cwd` -> `global`. Always pass \
+             `cwd` so recall and storage land in the right project.\n\n\
+             CHOOSING A TOOL:\n",
+        );
+        for (tool, note) in TOOL_NOTES {
+            if self.tool_router.has_route(tool) {
+                text.push_str(&format!("- {tool}: {note}\n"));
+            }
+        }
+        text.push_str(
+            "\nTICKET CONVENTION: when working a tracked issue, tag stored memories \
+             `ticket:<issue-id>` (lowercase). Tags are FTS-indexed, so a later handoff \
+             brief for that id finds them.\n\n\
+             REPLY SIZE: list replies default to markdown cards (id, namespace, kind, \
+             date, title, excerpt). `response_format:\"json\"` returns the same fields as \
+             compact JSON, about the same size, for parsing. Read a whole record with \
+             memory_get; `full: true` on a JSON list returns complete records and is \
+             several times larger.",
+        );
+        text
     }
 }
 
@@ -2014,9 +2144,7 @@ impl ClioServer {
 
     /// Store a memory record.
     #[tool(
-        description = "Store a memory. To replace one in place pass `upsert: true` with BOTH \
-                       `source` and `source_ref`; otherwise a new record is inserted, and a \
-                       repeated `source` + `source_ref` is rejected as a duplicate."
+        description = "Store one memory you have worded yourself; returns a short receipt. To replace a record in place pass `upsert: true` with BOTH `source` and `source_ref`; without upsert a repeated pair is rejected as a duplicate. To edit a memory by ID, use memory_update."
     )]
     async fn memory_remember(
         &self,
@@ -2063,7 +2191,7 @@ impl ClioServer {
 
     /// Patch a memory in place by ID.
     #[tool(
-        description = "Patch only the supplied fields of a memory without creating a duplicate. expected_updated_at is required and rejects stale writes."
+        description = "Change fields of an existing memory by ID; only the fields you supply change. Requires `expected_updated_at` (the `updated_at` you last saw) and rejects a stale write."
     )]
     async fn memory_update(
         &self,
@@ -2117,10 +2245,7 @@ impl ClioServer {
 
     /// Full-text search and filter memories.
     #[tool(
-        description = "Keyword/full-text (FTS) search and filter memories. A memory must \
-                       contain every word of `query`; when none does, a multi-word query is \
-                       retried matching any key word and the reply says so. Omit `query` for a \
-                       recent-style listing. Pass `cwd` for namespace auto-detection."
+        description = "Find memories by exact words: names, identifiers, ticket ids, short phrases. Every word of `query` must match; if nothing does, a multi-word query is retried on any key word and the reply says so. Omit `query` to list recent memories. To search by meaning, use memory_search."
     )]
     async fn memory_recall(
         &self,
@@ -2213,7 +2338,7 @@ impl ClioServer {
     }
 
     /// Get a memory by ID.
-    #[tool(description = "Get a memory by ID.")]
+    #[tool(description = "Read one whole memory by ID. List replies carry only an excerpt.")]
     async fn memory_get(
         &self,
         Parameters(params): Parameters<GetParams>,
@@ -2234,15 +2359,12 @@ impl ClioServer {
     }
 
     /// List recent memories.
-    #[tool(
-        description = "Deprecated: use memory_recall with no `query` instead. Lists recent memories."
-    )]
+    #[tool(description = "Deprecated: use memory_recall with no `query` (same parameters).")]
     async fn memory_recent(
         &self,
         Parameters(params): Parameters<RecentParams>,
     ) -> Result<String, String> {
         validate_response_format(&params.response_format)?;
-        validate_full(params.full, &params.response_format)?;
         let sort_by = parse_sort_by(params.sort_by.as_deref())?;
         validate_importance_filter(params.importance_min, "importance_min")?;
         validate_importance_filter(params.importance_max, "importance_max")?;
@@ -2273,7 +2395,7 @@ impl ClioServer {
             Ok(format_recall_response(
                 &result,
                 &params.response_format,
-                params.full,
+                false,
                 None,
             ))
         })
@@ -2315,7 +2437,9 @@ impl ClioServer {
     }
 
     /// Archive a memory.
-    #[tool(description = "Archive a memory by ID.")]
+    #[tool(
+        description = "Hide a memory that is wrong or out of date. Reversible (memory_unarchive); prefer it to memory_delete."
+    )]
     async fn memory_archive(
         &self,
         Parameters(params): Parameters<ArchiveParams>,
@@ -2381,7 +2505,9 @@ impl ClioServer {
     }
 
     /// Permanently delete a memory.
-    #[tool(description = "Permanently delete a memory by ID. Cascades to links and embeddings.")]
+    #[tool(
+        description = "Permanently delete a memory by ID, with its links and embeddings. Cannot be undone; prefer memory_archive."
+    )]
     async fn memory_delete(
         &self,
         Parameters(params): Parameters<DeleteParams>,
@@ -2424,7 +2550,7 @@ impl ClioServer {
     }
 
     /// List namespaces.
-    #[tool(description = "List all namespaces.")]
+    #[tool(description = "List all namespace names.")]
     async fn memory_namespaces(&self) -> Result<String, String> {
         let conn = self.conn.clone();
         let cache = self.cache.clone();
@@ -2531,7 +2657,7 @@ impl ClioServer {
 
     /// LLM-classify text into a memory (or queue for review if below threshold).
     #[tool(
-        description = "LLM-classify unstructured text into a structured memory. May queue for review if confidence is low."
+        description = "LLM-classify raw text into a memory; a low-confidence result is queued in the inbox instead. Prefer memory_remember when you can write the title and kind yourself."
     )]
     async fn memory_capture(
         &self,
@@ -2589,11 +2715,7 @@ impl ClioServer {
     }
 
     #[tool(
-        description = "Distil a session delta and commit it as an exact-once checkpoint keyed by \
-                       source + session_id + cursor. Safe to retry: a completed key replays the \
-                       stored result (memory and review IDs) instead of creating duplicates. An \
-                       empty extraction is a successful checkpoint. Requires a configured capture \
-                       model; returns a configuration error otherwise."
+        description = "Distil a session delta into memories exactly once, keyed by source + session_id + cursor; a retry replays the stored result and an empty extraction is a success. Needs a configured capture model. For session-end hooks; to store one fact use memory_remember."
     )]
     async fn memory_session_checkpoint(
         &self,
@@ -2701,9 +2823,7 @@ impl ClioServer {
 
     /// Semantic vector search.
     #[tool(
-        description = "Semantic (vector) search for similar memories. Requires a configured \
-                       embedding backend; returns a configuration error otherwise (use \
-                       memory_recall for keyword search when embeddings are unavailable)."
+        description = "Find memories by meaning: ask a question or describe the topic in your own words. For exact names and identifiers use memory_recall. Needs an embedding backend; without one it returns an error and memory_recall still works."
     )]
     async fn memory_search(
         &self,
@@ -2811,7 +2931,9 @@ impl ClioServer {
     }
 
     /// Memory statistics.
-    #[tool(description = "Memory statistics: counts, breakdowns, coverage.")]
+    #[tool(
+        description = "Store statistics: counts by namespace, kind and tag, and embedding coverage."
+    )]
     async fn memory_stats(
         &self,
         Parameters(params): Parameters<StatsParams>,
@@ -2834,7 +2956,9 @@ impl ClioServer {
     }
 
     /// Recent activity feed.
-    #[tool(description = "Recent activity feed.")]
+    #[tool(
+        description = "Feed of recent creates, updates and archives. To browse recent memories, use memory_recall without `query`."
+    )]
     async fn memory_activity(
         &self,
         Parameters(params): Parameters<ActivityParams>,
@@ -2860,8 +2984,7 @@ impl ClioServer {
 
     /// Suggest links by similarity.
     #[tool(
-        description = "Suggest links based on embedding similarity. Requires a configured \
-                       embedding backend; returns a configuration error otherwise."
+        description = "Suggest links for a memory by embedding similarity. Needs an embedding backend."
     )]
     async fn memory_suggest_links(
         &self,
@@ -2910,7 +3033,7 @@ impl ClioServer {
 
     /// Build a context brief.
     #[tool(
-        description = "Build a scoped context brief combining recent, important, and filtered memories."
+        description = "One themed brief chosen by `preset`: decisions, constraints, recent activity, a person, a ticket handoff or a keyword query. For 'what should I know before this task', use memory_resume."
     )]
     async fn memory_context(
         &self,
@@ -2963,10 +3086,7 @@ impl ClioServer {
 
     /// Review the capture inbox: list / approve / reject / edit.
     #[tool(
-        description = "Review the capture inbox (low-confidence memories awaiting review). \
-                       action=\"list\" returns pending items; \"approve\" stores an item; \
-                       \"reject\" discards it; \"edit\" adjusts suggested fields before approval. \
-                       approve/reject/edit require review_id."
+        description = "Review captures queued for approval: list, approve (stores it), reject (discards it) or edit (adjust the suggested fields first). approve/reject/edit require `review_id`."
     )]
     async fn memory_inbox(
         &self,
@@ -3055,12 +3175,7 @@ impl ClioServer {
     }
 
     #[tool(
-        description = "Build a resume brief: eligible open work, blocked items, constraints, \
-                       recent decisions, prompt-relevant knowledge and recent activity — each \
-                       with the reason it appears now. Call at session start (no query), and \
-                       again with `query` on the first substantive task prompt. It does not \
-                       count as use for ranking; with `session_id` it records what it showed, \
-                       so repeats are suppressed in that session."
+        description = "Start here when beginning or resuming work: one brief of open follow-ups, blockers, constraints, recent decisions and, with `query` (the task in a sentence), relevant knowledge, each with why it is shown. Not counted as use for ranking; with `session_id` it records what it showed, so repeats are suppressed in that session."
     )]
     async fn memory_resume(
         &self,
@@ -3104,15 +3219,7 @@ impl ClioServer {
     }
 
     #[tool(
-        description = "Manage follow-up attention on memories (open loops). Actions: add (open \
-                       attention on new or existing memory), list, eligible (what needs attention \
-                       now, with a machine-readable reason per item), complete (with optional \
-                       evidence memory), snooze (until a time), cancel, attach_external (record a \
-                       verified Things/Linear reference), history (event audit for an item), \
-                       overview (eligible + open items, review depth and consolidation \
-                       freshness in one call). \
-                       Statuses: open, snoozed, resolved, cancelled. Completion never rewrites \
-                       the source memory."
+        description = "Follow-ups (open loops) on memories. Actions: add (new `content` or an existing `memory_id`), list, eligible (what needs attention now, and why), overview (eligible and open items plus review depth), complete (optional `evidence` memory), snooze (`until`), cancel, attach_external (a verified Things/Linear reference), history. Completing never rewrites the source memory."
     )]
     async fn memory_action(
         &self,
@@ -3327,7 +3434,7 @@ impl ClioServer {
 
     /// Clear all in-memory caches. Individual record reads are always fresh.
     #[tool(
-        description = "Clear bounded recall and namespace caches. Individual memory and embedding reads are not cached. Returns counts of entries cleared."
+        description = "Maintenance: clear this process's small in-memory caches and return the counts cleared."
     )]
     async fn memory_cache_clear(
         &self,
@@ -3357,50 +3464,7 @@ impl ServerHandler for ClioServer {
                 version: env!("CARGO_PKG_VERSION").into(),
                 ..Default::default()
             },
-            instructions: Some(
-                "Clio: local shared-memory store for AI tools (SQLite-backed).\n\n\
-                 NAMESPACE: memories are scoped per project. Resolution order is \
-                 explicit `namespace` -> auto-detect from `cwd` -> `global`. Always pass \
-                 `cwd` so recall and storage land in the right project.\n\n\
-                 CHOOSING A TOOL:\n\
-                 - memory_recall: keyword/FTS search; a sentence that matches nothing is \
-                 retried on any key word. Omit `query` for a recent-style listing.\n\
-                 - memory_search: semantic (vector) search; requires a configured embedding \
-                 backend and returns a configuration error if none is set.\n\
-                 - memory_remember: deliberate store. To update in place pass \
-                 `upsert: true` with BOTH `source` and `source_ref`; otherwise a new record \
-                 is inserted.\n\
-                 - memory_capture: LLM-classified store; low-confidence items queue to the \
-                 inbox for review instead of storing immediately.\n\
-                 - memory_context: assemble a scoped brief. Presets: project-brief, \
-                 person-brief, decision-history, active-constraints, recent-activity, handoff, custom. \
-                 The handoff preset requires `query` (a ticket id or topic) and returns a pickup \
-                 brief: relevant memories, active constraints, recent receipts.\n\
-                 - memory_inbox: review queued captures (list/approve/reject/edit via `action`).\n\
-                 - memory_session_checkpoint: distil a session delta exactly once, keyed by \
-                 source + session_id + cursor. Retries replay the stored result; an empty \
-                 extraction is a successful checkpoint. Requires a configured capture model.\n\
-                 - memory_resume: evidence-backed pickup brief (open work, blockers, \
-                 constraints, relevant knowledge — each with why-now). Prefer it over ad hoc \
-                 recall when resuming work. It does not count as use for ranking; pass \
-                 `session_id` and it records what it showed, so repeats are suppressed.\n\
-                 - memory_action: follow-up attention on memories (open loops). When the user \
-                 states an explicit decision or commitment, store it IMMEDIATELY with \
-                 memory_remember or memory_action(add) — do not wait for end-of-session \
-                 distillation, which is only the safety net. Complete with evidence when done. \
-                 action:eligible reports what needs attention now and why.\n\n\
-                 TICKET CONVENTION: when working a tracked issue, tag stored memories \
-                 `ticket:<issue-id>` (lowercase). Tags are FTS-indexed, so a later handoff \
-                 brief for that id finds them.\n\n\
-                 Archive is a soft-delete: archived records are hidden and excluded from recall \
-                 by default.\n\n\
-                 REPLY SIZE: list replies default to markdown cards (id, namespace, kind, \
-                 title, short excerpt). `response_format:\"json\"` returns the same fields as \
-                 compact JSON at about the same size, for parsing. Read a whole record with \
-                 memory_get; `full: true` on a JSON list returns every complete record and is \
-                 several times larger."
-                    .into(),
-            ),
+            instructions: Some(self.instructions()),
         }
     }
 
@@ -3552,6 +3616,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_writer(std::io::stderr)
         .init();
 
+    let core_only =
+        core_tools_requested(std::env::var(TOOLS_ENV).ok().as_deref()).map_err(|e| {
+            tracing::error!("{e}");
+            e
+        })?;
+
     // Resolve the database path (supports CLIO_DB_PATH env var and platform defaults).
     let db_path = clio_core::config::resolve_db_path(None).map_err(|e| {
         tracing::error!("Failed to resolve database path: {e}");
@@ -3594,7 +3664,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     tracing::info!("Database ready");
 
-    let server = ClioServer::new(db_path, conn, settings, backend);
+    let mut server = ClioServer::new(db_path, conn, settings, backend);
+    if core_only {
+        server = server.core_tools_only();
+        tracing::info!(
+            "{TOOLS_ENV}=core: offering the {} core tools",
+            CORE_TOOLS.len()
+        );
+    }
     let transport = rmcp::transport::io::stdio();
     let service = server.serve(transport).await.inspect_err(|e| {
         tracing::error!("Server failed to start: {e}");
@@ -4595,5 +4672,42 @@ mod surface_tests {
             .await
             .unwrap();
         assert!(nothing.contains("memory_recall"), "{nothing}");
+    }
+
+    #[test]
+    fn core_profile_offers_only_the_everyday_tools() {
+        assert_eq!(core_tools_requested(None), Ok(false));
+        assert_eq!(core_tools_requested(Some("")), Ok(false));
+        assert_eq!(core_tools_requested(Some("full")), Ok(false));
+        assert_eq!(core_tools_requested(Some(" core ")), Ok(true));
+        let error = core_tools_requested(Some("minimal")).unwrap_err();
+        assert!(error.contains("'core' or 'full'"), "{error}");
+
+        // The default is unchanged: every tool, every instruction line.
+        let full = server_with(&[]);
+        assert_eq!(full.tool_router.list_all().len(), 29);
+        assert!(full.instructions().contains("- memory_inbox:"));
+
+        let core = server_with(&[]).core_tools_only();
+        let mut offered: Vec<String> = core
+            .tool_router
+            .list_all()
+            .iter()
+            .map(|tool| tool.name.to_string())
+            .collect();
+        offered.sort_unstable();
+        let mut expected = CORE_TOOLS.map(String::from);
+        expected.sort_unstable();
+        assert_eq!(offered, expected);
+
+        // Instructions never point at a tool the profile does not offer.
+        let instructions = core.instructions();
+        for line in instructions.lines().filter(|line| line.starts_with("- ")) {
+            let tool = line[2..].split(':').next().unwrap();
+            assert!(CORE_TOOLS.contains(&tool), "{line}");
+        }
+        assert!(instructions.contains("- memory_recall:"));
+        assert!(!instructions.contains("memory_capture"));
+        assert!(!instructions.contains("memory_inbox"));
     }
 }
