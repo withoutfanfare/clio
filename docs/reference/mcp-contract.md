@@ -94,6 +94,13 @@ Tools that accept `cwd`: `memory_remember`, `memory_recall`, `memory_capture`,
 `memory_session_checkpoint`, `memory_search`, `memory_context`, `memory_resume`,
 and `memory_action`.
 
+A bare project name is the same namespace as its `project:` form in every
+tool that takes `namespace` or `cwd` from the list above: `clio` and
+`project:clio` both mean `project:clio` (core's `canonical_namespace`).
+`global` and any name that already has a `kind:` prefix are used as written.
+`memory_stats`, `memory_activity`, `memory_move` and `memory_namespace_delete`
+take the namespace exactly as given.
+
 **Exception — classified storage** (`memory_capture`, and distillation via
 `memory_session_checkpoint`): the model's classification may promote a memory to
 `global`, and that promotion ranks above the auto-detected `cwd` namespace:
@@ -329,6 +336,7 @@ This is the primary write path for AI clients. It should support both one-off wr
 - `importance`: `3`
 - `metadata`: `{}`
 - `upsert`: `false`
+- `full`: `false`
 
 ### Validation rules
 
@@ -348,7 +356,16 @@ This is the primary write path for AI clients. It should support both one-off wr
 
 ### Response
 
-Returns the stored memory record in structured form.
+A one-line JSON receipt. The caller already holds the content it sent, so it
+is not echoed back:
+
+```json
+{"id":"01954d70-cf20-7d42-bb3b-ff2f0f0de123","namespace":"project:ai","title":"Use SQLite","updated_at":"2026-03-02T19:15:00Z"}
+```
+
+`updated_at` is the value a later `memory_update` needs as
+`expected_updated_at`. `title` is `null` when the memory has none. Pass
+`full: true` to receive the complete stored memory record instead.
 
 ### Failure cases
 
@@ -400,11 +417,14 @@ Patchable fields are `namespace`, `kind`, `title`, `summary`, `content`,
 - attempts to regenerate the embedding when server-side `auto_embed` is enabled;
   an embedding failure is logged and does not roll back the stored edit
 - the Tauri editor sends only changed fields with the last observed
-  `updated_at`, then refreshes its local record from the response
+  `updated_at` and `full: true`, then refreshes its local record from the
+  response
 
 ### Response
 
-Returns the updated memory record in structured form.
+The same one-line receipt as `memory_remember` (`id`, `namespace`, `title`,
+`updated_at`), with the new `updated_at` ready for the next patch. Pass
+`full: true` to receive the complete updated memory record instead.
 
 ### Failure cases
 
@@ -452,7 +472,7 @@ This is the primary retrieval tool for AI clients. It must handle both semantic-
 - `match_all_tags`: `true`
 - `importance_min`: null (no lower bound)
 - `importance_max`: null (no upper bound)
-- `sort_by`: null (default: `updated_at DESC`; only applied when no FTS query and no scoring config)
+- `sort_by`: null (default: `updated_at DESC`). It orders a listing; with `query` it has no effect, because keyword results are ordered by relevance
 - `include_archived`: `false`
 - `archived_only`: `false`
 - `limit`: `10`
@@ -540,19 +560,26 @@ Shown indented here; the reply itself is one line:
 
 ### Markdown response
 
-Should include for each item:
+A count line, then one card per item:
 
-- title or id
-- id
-- namespace
-- kind
-- tags
-- updated timestamp
-- relevance rank when available
-- summary or short excerpt
+```text
+### Use SQLite
+`01954d70-cf20-7d42-bb3b-ff2f0f0de123` · project:ai/decision · 2026-03-02 · sqlite, memory
+> SQLite is the default shared local store.
+```
+
+- heading: the title, or the id when there is none
+- id, namespace/kind, creation date (so an old status note is not read as
+  current) and tags
+- the summary, or the first 200 characters of the content
+
+Rank and full timestamps are left out; they are in the `full: true` JSON.
 
 ### Failure cases
 
+- unknown `sort_by` → `Invalid sort_by '<value>'. Must be one of: updated_desc, updated_asc, importance_desc, importance_asc, created_desc, created_asc.` (it is never silently ignored)
+- `importance_min` or `importance_max` outside 1–5 → `<field> must be between 1 and 5.`
+- `full: true` without `response_format: "json"`
 - invalid pagination values
 - invalid response format
 - storage failure
@@ -613,7 +640,9 @@ Return recent memories with optional filtering and sorting.
 ### Behaviour
 
 - recall without a full-text query
-- sorted by `updated_at DESC` by default, or by `sort_by` when specified
+- sorted by `updated_at DESC` by default, or by `sort_by` when specified; an
+  unknown `sort_by` and an importance bound outside 1–5 are rejected as in
+  `memory_recall`
 - supports all filter parameters (kind, tags, importance range)
 - active-only by default
 
@@ -1158,7 +1187,7 @@ Handoff and context briefs answer "what is this project?"; resume answers "what 
 
 ### Response
 
-Markdown by default; `response_format: "json"` returns `{ namespace, sections: [{ heading, items: [{ memory_id, kind, title, content, source, created_at, state, reason }] }], total_items, generated_at }`.
+Markdown by default, one line per item with its kind, title, id and creation date, then why it is shown and its bounded content. `response_format: "json"` returns `{ namespace, sections: [{ heading, items: [{ memory_id, kind, title, content, source, created_at, state, reason }] }], total_items, generated_at }`.
 
 ## `memory_action`
 
@@ -1185,6 +1214,8 @@ One merged tool with an `action` discriminator, mirroring `memory_inbox`:
 ```
 
 `id` accepts either the attention item ID or the underlying memory ID.
+`namespace` accepts a bare project name (`clio` means `project:clio`), as
+`memory_recall` does.
 
 ### Behaviour
 
@@ -1201,6 +1232,7 @@ The `overview` response includes `memory_titles`, keyed by full memory ID, for e
 
 - missing required fields per action → validation error naming the field
 - unknown action → validation error listing the valid actions
+- unknown `status` filter on `list` → validation error listing the four statuses (it is never treated as "no matches")
 - id resolving to no attention item → not-found error
 - invalid transition (e.g. completing a cancelled item) → validation error stating both states
 
@@ -1420,7 +1452,7 @@ Find memories by semantic meaning using vector embeddings.
 
 - embed the query text using the active embedding backend
 - compute cosine similarity only against stored embeddings with the active model name and matching vector dimensions
-- when `namespace` is explicitly provided, filter to that namespace
+- when `namespace` is explicitly provided, filter to that namespace; a bare project name is canonicalised first, as in `memory_recall`
 - when `cwd` is provided and `namespace` is omitted, use scoped recall: search detected namespace first, then fill remaining slots from `global`; project-scoped results appear before global results
 - when detection falls back to `global`, search only `global` unless `global: true` requests all namespaces
 - exclude archived memories by default
@@ -1470,7 +1502,8 @@ The full shape, shown indented:
 - embeddings disabled in settings → `Configuration error: embeddings are disabled`
 - embedding backend not available at compile time → configuration error
 - embedding backend unreachable (e.g. OpenAI API key missing) → configuration error
-- no memories have been embedded yet → returns empty results without error
+- no embedding backend in this process → `Embedding backend not available. Ensure embeddings are configured in settings. Use memory_recall (keyword search) meanwhile.`
+- nothing similar enough, or no memories embedded yet → no error; the reply is a one-line note suggesting `memory_recall` with exact keywords (Markdown), or an empty envelope carrying that `note` (JSON)
 - memories embedded with another model or dimensionality are ignored until `clio embed backfill` replaces them
 - storage failure
 
