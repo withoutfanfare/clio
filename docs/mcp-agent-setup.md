@@ -555,7 +555,7 @@ Run `clio setup generic` to get a ready-to-paste JSON block with your exact bina
 
 ## MCP Tools Reference
 
-Once connected, AI agents have access to Clio's MCP tools. Each read or list tool returns either JSON or Markdown where its contract exposes `response_format` (default: `markdown` for human-readable output in chat, `json` for structured data).
+Once connected, AI agents have access to Clio's MCP tools. Each read or list tool returns either Markdown or JSON where its contract exposes `response_format`. Markdown is the default and the cheapest to read. JSON is for parsing: list tools return the same compact fields (id, namespace, kind, title, excerpt, creation date, score) on one line, at about the same size. To read a whole memory, call `memory_get`; `full: true` on a JSON list returns every complete record and is several times larger.
 
 ### Write tools
 
@@ -578,7 +578,7 @@ Once connected, AI agents have access to Clio's MCP tools. Each read or list too
 
 | Tool | Purpose | Key parameters |
 |---|---|---|
-| `memory_recall` | Full-text search (keyword matching via FTS5) | `query`, `namespace`, `cwd`, `kind`, `tags`, `match_all_tags`, `include_archived`, `limit`, `offset` |
+| `memory_recall` | Full-text search (keyword matching via FTS5). Every word must match; a multi-word query that matches nothing is retried on any key word, and the reply says so | `query`, `namespace`, `cwd`, `kind`, `tags`, `match_all_tags`, `include_archived`, `limit`, `offset` |
 | `memory_search` | Semantic search (cosine similarity over embeddings) | `query` (required), `namespace`, `cwd`, `include_archived`, `limit` |
 | `memory_get` | Fetch one memory by ID | `memory_id` |
 | `memory_recent` | Deprecated compatibility listing; prefer no-query `memory_recall` | `namespace`, `limit` |
@@ -588,7 +588,7 @@ Once connected, AI agents have access to Clio's MCP tools. Each read or list too
 | `memory_stats` | Aggregate statistics (counts, breakdowns, coverage) | `namespace` |
 | `memory_activity` | Recent activity feed (creates, updates, archives) | `namespace`, `limit` |
 | `memory_context` | Assemble a preset-scoped context brief | `namespace`, `cwd`, `preset`, `query` |
-| `memory_resume` | Assemble evidence-backed pickup context without access tracking | `namespace`, `cwd`, `query`, `session_id` |
+| `memory_resume` | Assemble evidence-backed pickup context. It does not count as use for ranking; with `session_id` it records what it showed, to suppress repeats | `namespace`, `cwd`, `query`, `session_id` |
 
 Individual-memory, recall, recent and embedding reads go directly to SQLite so
 separate MCP processes observe committed changes. Only the namespace list is

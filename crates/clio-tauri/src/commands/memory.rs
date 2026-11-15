@@ -167,6 +167,7 @@ pub async fn cmd_recall(
                     "limit": limit.unwrap_or(10),
                     "offset": offset.unwrap_or(0),
                     "response_format": "json",
+                    "full": true,
                 }),
             )
             .await;
@@ -252,6 +253,7 @@ pub async fn cmd_recent(
                     "limit": limit.unwrap_or(10),
                     "offset": offset.unwrap_or(0),
                     "response_format": "json",
+                    "full": true,
                 }),
             )
             .await;

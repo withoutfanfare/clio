@@ -20,7 +20,7 @@ use rmcp::model::{
 };
 use rmcp::{ErrorData, ServerHandler, ServiceExt, tool, tool_handler, tool_router};
 use schemars::JsonSchema;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use clio_core::error::ClioError;
 use clio_core::models::{
@@ -290,6 +290,10 @@ struct RecallParams {
     /// Format: markdown|json.
     #[serde(default = "default_response_format")]
     response_format: String,
+
+    /// With response_format json: complete records instead of compact ones.
+    #[serde(default)]
+    full: bool,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -351,6 +355,10 @@ struct RecentParams {
     /// Format: markdown|json.
     #[serde(default = "default_response_format")]
     response_format: String,
+
+    /// With response_format json: complete records instead of compact ones.
+    #[serde(default)]
+    full: bool,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -512,6 +520,10 @@ struct SearchParams {
     /// Format: markdown|json.
     #[serde(default = "default_response_format")]
     response_format: String,
+
+    /// With response_format json: complete records instead of compact ones.
+    #[serde(default)]
+    full: bool,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -597,6 +609,10 @@ struct ContextParams {
     /// Format: markdown|json.
     #[serde(default = "default_response_format")]
     response_format: String,
+
+    /// With response_format json: complete records instead of compact ones.
+    #[serde(default)]
+    full: bool,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -1304,6 +1320,98 @@ fn embed_memory_if_current(
 // Markdown rendering
 // ---------------------------------------------------------------------------
 
+/// The bounded preview of a memory shown in list replies: its summary when it
+/// has one, otherwise the start of its content.
+fn excerpt(m: &Memory) -> String {
+    let preview = m.summary.as_deref().unwrap_or(&m.content);
+    let cut = truncate_chars(preview, 200);
+    if cut.len() < preview.len() {
+        format!("{cut}...")
+    } else {
+        cut.to_string()
+    }
+}
+
+/// One memory in a compact JSON list: the fields of the Markdown card, enough
+/// to choose a memory. `memory_get` or `full: true` returns the whole record.
+#[derive(Serialize)]
+struct CompactItem<'a> {
+    id: &'a str,
+    namespace: &'a str,
+    kind: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    title: Option<&'a str>,
+    excerpt: String,
+    /// Creation date (YYYY-MM-DD).
+    created: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    score: Option<f64>,
+}
+
+impl<'a> CompactItem<'a> {
+    fn new(m: &'a Memory, rank: Option<f64>) -> Self {
+        Self {
+            id: &m.id,
+            namespace: &m.namespace,
+            kind: &m.kind,
+            title: m.title.as_deref(),
+            excerpt: excerpt(m),
+            created: m.created_at.get(..10).unwrap_or(&m.created_at),
+            // Keyword rank is BM25 (negative, lower is better); semantic rank is
+            // positive, higher is better. The magnitude reads the same way for
+            // both: a higher score is a better match.
+            score: rank.map(|r| (r.abs() * 1000.0).round() / 1000.0),
+        }
+    }
+}
+
+/// Compact JSON envelope for recall and search.
+#[derive(Serialize)]
+struct CompactList<'a> {
+    total: u32,
+    count: u32,
+    offset: u32,
+    limit: u32,
+    archived_only: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    note: Option<String>,
+    items: Vec<CompactItem<'a>>,
+}
+
+/// Compact JSON for a context brief: each section's memories as compact items.
+fn compact_brief_json(brief: &clio_core::assembly::ContextBrief) -> serde_json::Value {
+    let sections: Vec<serde_json::Value> = brief
+        .sections
+        .iter()
+        .map(|section| {
+            let items: Vec<CompactItem> = section
+                .items
+                .iter()
+                .map(|m| CompactItem::new(m, None))
+                .collect();
+            serde_json::json!({ "heading": section.heading, "items": items })
+        })
+        .collect();
+    serde_json::json!({
+        "namespace": brief.namespace,
+        "preset": brief.preset,
+        "total_memories_used": brief.total_memories_used,
+        "generated_at": brief.generated_at,
+        "sections": sections,
+    })
+}
+
+/// `full` only changes JSON replies; refuse it elsewhere rather than ignore it.
+fn validate_full(full: bool, format: &str) -> Result<(), String> {
+    if full && format != "json" {
+        return Err(
+            "`full` applies only with response_format \"json\". For one complete record use memory_get."
+                .into(),
+        );
+    }
+    Ok(())
+}
+
 /// Render a single memory as a Markdown summary card (used in list views).
 fn memory_card_md(item: &RecallItem) -> String {
     let m = &item.memory;
@@ -1311,22 +1419,15 @@ fn memory_card_md(item: &RecallItem) -> String {
 
     // Compact one-line metadata: `id` · namespace/kind · tags. Rank and full
     // timestamps are dropped from the card to save tokens — they remain in the
-    // `response_format:"json"` payload for callers that need them.
+    // `full: true` JSON payload for callers that need them.
     let mut meta = format!("`{}` · {}/{}", m.id, m.namespace, m.kind);
     if !m.tags.is_empty() {
         meta.push_str(&format!(" · {}", m.tags.join(", ")));
     }
 
-    let preview = m.summary.as_deref().unwrap_or(&m.content);
-    let truncated = if preview.len() > 200 {
-        format!("{}...", truncate_chars(preview, 200))
-    } else {
-        preview.to_string()
-    };
-
     format!(
         "### {heading}\n{meta}\n> {}\n",
-        truncated.replace('\n', "\n> ")
+        excerpt(m).replace('\n', "\n> ")
     )
 }
 
@@ -1426,30 +1527,51 @@ fn recall_note(
 }
 
 /// Format a response as either Markdown or JSON, depending on `response_format`.
-/// A `note` leads the Markdown reply and is the `note` field of the JSON one.
-fn format_recall_response(result: &RecallResult, format: &str, note: Option<String>) -> String {
-    if format == "json" {
-        let json = match note {
-            None => serde_json::to_string_pretty(result),
-            Some(note) => serde_json::to_value(result).and_then(|mut value| {
-                value["note"] = note.into();
-                serde_json::to_string_pretty(&value)
-            }),
-        };
-        json.unwrap_or_else(|e| format!("Serialisation error: {e}"))
-    } else {
-        match note {
+/// JSON is compact unless `full` asks for complete records. A `note` leads the
+/// Markdown reply and is the `note` field of the JSON one.
+fn format_recall_response(
+    result: &RecallResult,
+    format: &str,
+    full: bool,
+    note: Option<String>,
+) -> String {
+    if format != "json" {
+        return match note {
             Some(note) if result.total == 0 => note,
             Some(note) => format!("{note}\n\n{}", recall_result_md(result)),
             None => recall_result_md(result),
-        }
+        };
     }
+    let json = if !full {
+        serde_json::to_string(&CompactList {
+            total: result.total,
+            count: result.count,
+            offset: result.offset,
+            limit: result.limit,
+            archived_only: result.archived_only,
+            note,
+            items: result
+                .items
+                .iter()
+                .map(|item| CompactItem::new(&item.memory, item.rank))
+                .collect(),
+        })
+    } else {
+        match note {
+            None => serde_json::to_string(result),
+            Some(note) => serde_json::to_value(result).and_then(|mut value| {
+                value["note"] = note.into();
+                serde_json::to_string(&value)
+            }),
+        }
+    };
+    json.unwrap_or_else(|e| format!("Serialisation error: {e}"))
 }
 
 /// Format a single memory as either Markdown or JSON.
 fn format_memory_response(memory: &Memory, format: &str) -> String {
     if format == "json" {
-        serde_json::to_string_pretty(memory).unwrap_or_else(|e| format!("Serialisation error: {e}"))
+        serde_json::to_string(memory).unwrap_or_else(|e| format!("Serialisation error: {e}"))
     } else {
         memory_detail_md(memory)
     }
@@ -1753,7 +1875,7 @@ impl ClioServer {
             let conn = conn.lock().map_err(|e| format!("lock error: {e}"))?;
             let receipt = work_reports::report(&conn, &params.report, work_now()?)
                 .map_err(|e| format_clio_error(&e))?;
-            serde_json::to_string_pretty(&receipt).map_err(|e| format!("Serialisation error: {e}"))
+            serde_json::to_string(&receipt).map_err(|e| format!("Serialisation error: {e}"))
         })
         .await
         .map_err(|e| format!("Internal error: task failed: {e}"))?
@@ -1778,7 +1900,7 @@ impl ClioServer {
                 params.project.as_deref(),
             )
             .map_err(|e| format_clio_error(&e))?;
-            serde_json::to_string_pretty(&overview).map_err(|e| format!("Serialisation error: {e}"))
+            serde_json::to_string(&overview).map_err(|e| format!("Serialisation error: {e}"))
         })
         .await
         .map_err(|e| format!("Internal error: task failed: {e}"))?
@@ -1796,7 +1918,7 @@ impl ClioServer {
             let conn = conn.lock().map_err(|e| format!("lock error: {e}"))?;
             let history = work_reports::history(&conn, &params.source, &params.run_id)
                 .map_err(|e| format_clio_error(&e))?;
-            serde_json::to_string_pretty(&history).map_err(|e| format!("Serialisation error: {e}"))
+            serde_json::to_string(&history).map_err(|e| format!("Serialisation error: {e}"))
         })
         .await
         .map_err(|e| format!("Internal error: task failed: {e}"))?
@@ -1844,7 +1966,7 @@ impl ClioServer {
                 }
             }
 
-            serde_json::to_string_pretty(&memory).map_err(|e| format!("Serialisation error: {e}"))
+            serde_json::to_string(&memory).map_err(|e| format!("Serialisation error: {e}"))
         })
         .await
         .map_err(|e| format!("Internal error: task failed: {e}"))?
@@ -1897,7 +2019,7 @@ impl ClioServer {
                 }
             }
 
-            serde_json::to_string_pretty(&memory).map_err(|e| format!("Serialisation error: {e}"))
+            serde_json::to_string(&memory).map_err(|e| format!("Serialisation error: {e}"))
         })
         .await
         .map_err(|e| format!("Internal error: task failed: {e}"))?
@@ -1915,6 +2037,7 @@ impl ClioServer {
         Parameters(params): Parameters<RecallParams>,
     ) -> Result<String, String> {
         validate_response_format(&params.response_format)?;
+        validate_full(params.full, &params.response_format)?;
         let limit = cap_limit(params.limit);
         let conn = self.conn.clone();
         let cache = self.cache.clone();
@@ -1989,6 +2112,7 @@ impl ClioServer {
             Ok(format_recall_response(
                 &result,
                 &params.response_format,
+                params.full,
                 recall_note(&result, searched, widened, params.global),
             ))
         })
@@ -2026,6 +2150,7 @@ impl ClioServer {
         Parameters(params): Parameters<RecentParams>,
     ) -> Result<String, String> {
         validate_response_format(&params.response_format)?;
+        validate_full(params.full, &params.response_format)?;
         let limit = cap_limit(params.limit);
         let conn = self.conn.clone();
         let cache = self.cache.clone();
@@ -2054,6 +2179,7 @@ impl ClioServer {
             Ok(format_recall_response(
                 &result,
                 &params.response_format,
+                params.full,
                 None,
             ))
         })
@@ -2088,7 +2214,7 @@ impl ClioServer {
             let link = cache
                 .link(&conn, &input)
                 .map_err(|e| format_clio_error(&e))?;
-            serde_json::to_string_pretty(&link).map_err(|e| format!("Serialisation error: {e}"))
+            serde_json::to_string(&link).map_err(|e| format!("Serialisation error: {e}"))
         })
         .await
         .map_err(|e| format!("Internal error: task failed: {e}"))?
@@ -2108,7 +2234,7 @@ impl ClioServer {
             let memory = cache
                 .archive(&conn, &params.memory_id)
                 .map_err(|e| format_clio_error(&e))?;
-            serde_json::to_string_pretty(&memory).map_err(|e| format!("Serialisation error: {e}"))
+            serde_json::to_string(&memory).map_err(|e| format!("Serialisation error: {e}"))
         })
         .await
         .map_err(|e| format!("Internal error: task failed: {e}"))?
@@ -2154,7 +2280,7 @@ impl ClioServer {
             let memory = cache
                 .unarchive(&conn, &params.memory_id)
                 .map_err(|e| format_clio_error(&e))?;
-            serde_json::to_string_pretty(&memory).map_err(|e| format!("Serialisation error: {e}"))
+            serde_json::to_string(&memory).map_err(|e| format!("Serialisation error: {e}"))
         })
         .await
         .map_err(|e| format!("Internal error: task failed: {e}"))?
@@ -2174,7 +2300,7 @@ impl ClioServer {
             let memory = cache
                 .delete(&conn, &params.memory_id)
                 .map_err(|e| format_clio_error(&e))?;
-            serde_json::to_string_pretty(&memory).map_err(|e| format!("Serialisation error: {e}"))
+            serde_json::to_string(&memory).map_err(|e| format!("Serialisation error: {e}"))
         })
         .await
         .map_err(|e| format!("Internal error: task failed: {e}"))?
@@ -2197,7 +2323,7 @@ impl ClioServer {
             let memory = cache
                 .move_namespace(&conn, &params.memory_id, &params.namespace)
                 .map_err(|e| format_clio_error(&e))?;
-            serde_json::to_string_pretty(&memory).map_err(|e| format!("Serialisation error: {e}"))
+            serde_json::to_string(&memory).map_err(|e| format!("Serialisation error: {e}"))
         })
         .await
         .map_err(|e| format!("Internal error: task failed: {e}"))?
@@ -2213,8 +2339,7 @@ impl ClioServer {
             let namespaces = cache
                 .list_namespaces(&conn)
                 .map_err(|e| format_clio_error(&e))?;
-            serde_json::to_string_pretty(&namespaces)
-                .map_err(|e| format!("Serialisation error: {e}"))
+            serde_json::to_string(&namespaces).map_err(|e| format!("Serialisation error: {e}"))
         })
         .await
         .map_err(|e| format!("Internal error: task failed: {e}"))?
@@ -2228,7 +2353,7 @@ impl ClioServer {
             let conn = conn.lock().map_err(|e| format!("lock error: {e}"))?;
             let details = clio_core::repository::namespace_details(&conn)
                 .map_err(|e| format_clio_error(&e))?;
-            serde_json::to_string_pretty(&details).map_err(|e| format!("Serialisation error: {e}"))
+            serde_json::to_string(&details).map_err(|e| format!("Serialisation error: {e}"))
         })
         .await
         .map_err(|e| format!("Internal error: task failed: {e}"))?
@@ -2264,7 +2389,7 @@ impl ClioServer {
             )
             .map_err(|e| format_clio_error(&e))?;
             cache.clear_all();
-            serde_json::to_string_pretty(&report).map_err(|e| format!("Serialisation error: {e}"))
+            serde_json::to_string(&report).map_err(|e| format!("Serialisation error: {e}"))
         })
         .await
         .map_err(|e| format!("Internal error: task failed: {e}"))?
@@ -2296,7 +2421,7 @@ impl ClioServer {
                 let links = cache
                     .get_links(&conn, &params.memory_id)
                     .map_err(|e| format_clio_error(&e))?;
-                return serde_json::to_string_pretty(&links)
+                return serde_json::to_string(&links)
                     .map_err(|e| format!("Serialisation error: {e}"));
             }
             let mut contexts = clio_core::repository::get_link_contexts(&conn, &params.memory_id)
@@ -2304,7 +2429,7 @@ impl ClioServer {
             if direction == "incoming" {
                 contexts.retain(|c| c.direction == "incoming");
             }
-            serde_json::to_string_pretty(&contexts).map_err(|e| format!("Serialisation error: {e}"))
+            serde_json::to_string(&contexts).map_err(|e| format!("Serialisation error: {e}"))
         })
         .await
         .map_err(|e| format!("Internal error: task failed: {e}"))?
@@ -2363,7 +2488,7 @@ impl ClioServer {
                     }
                 }
             }
-            serde_json::to_string_pretty(&result).map_err(|e| format!("Serialisation error: {e}"))
+            serde_json::to_string(&result).map_err(|e| format!("Serialisation error: {e}"))
         })
         .await
         .map_err(|e| format!("Internal error: task failed: {e}"))?
@@ -2437,7 +2562,7 @@ impl ClioServer {
                 )
                 .map_err(|e| format_clio_error(&e))?
             } {
-                return serde_json::to_string_pretty(&existing)
+                return serde_json::to_string(&existing)
                     .map_err(|e| format!("Serialisation error: {e}"));
             }
 
@@ -2474,7 +2599,7 @@ impl ClioServer {
                 }
             }
 
-            serde_json::to_string_pretty(&result).map_err(|e| format!("Serialisation error: {e}"))
+            serde_json::to_string(&result).map_err(|e| format!("Serialisation error: {e}"))
         })
         .await
         .map_err(|e| format!("Internal error: task failed: {e}"))?
@@ -2494,6 +2619,7 @@ impl ClioServer {
             return Err("query must not be empty for semantic search.".into());
         }
         validate_response_format(&params.response_format)?;
+        validate_full(params.full, &params.response_format)?;
         let limit = cap_limit(params.limit);
         let conn = self.conn.clone();
         let settings = self.settings()?;
@@ -2570,6 +2696,7 @@ impl ClioServer {
             Ok(format_recall_response(
                 &result,
                 &params.response_format,
+                params.full,
                 None,
             ))
         })
@@ -2591,8 +2718,7 @@ impl ClioServer {
                 .map_err(|e| format_clio_error(&e))?;
 
             if params.response_format == "json" {
-                serde_json::to_string_pretty(&stats)
-                    .map_err(|e| format!("Serialisation error: {e}"))
+                serde_json::to_string(&stats).map_err(|e| format!("Serialisation error: {e}"))
             } else {
                 Ok(format_stats_md(&stats))
             }
@@ -2617,8 +2743,7 @@ impl ClioServer {
                     .map_err(|e| format_clio_error(&e))?;
 
             if params.response_format == "json" {
-                serde_json::to_string_pretty(&entries)
-                    .map_err(|e| format!("Serialisation error: {e}"))
+                serde_json::to_string(&entries).map_err(|e| format!("Serialisation error: {e}"))
             } else {
                 Ok(format_activity_md(&entries))
             }
@@ -2668,8 +2793,7 @@ impl ClioServer {
                         })
                     })
                     .collect();
-                serde_json::to_string_pretty(&items)
-                    .map_err(|e| format!("Serialisation error: {e}"))
+                serde_json::to_string(&items).map_err(|e| format!("Serialisation error: {e}"))
             } else {
                 Ok(format_suggestions_md(&suggestions))
             }
@@ -2687,6 +2811,7 @@ impl ClioServer {
         Parameters(params): Parameters<ContextParams>,
     ) -> Result<String, String> {
         validate_response_format(&params.response_format)?;
+        validate_full(params.full, &params.response_format)?;
         let max_items = cap_limit(params.max_items);
         let conn = self.conn.clone();
         let settings = self.settings()?;
@@ -2718,11 +2843,12 @@ impl ClioServer {
             let brief = clio_core::assembly::build_context(&conn, &request)
                 .map_err(|e| format_clio_error(&e))?;
 
-            if params.response_format == "json" {
-                serde_json::to_string_pretty(&brief)
-                    .map_err(|e| format!("Serialisation error: {e}"))
-            } else {
+            if params.response_format != "json" {
                 Ok(format_brief_md(&brief))
+            } else if params.full {
+                serde_json::to_string(&brief).map_err(|e| format!("Serialisation error: {e}"))
+            } else {
+                Ok(compact_brief_json(&brief).to_string())
             }
         })
         .await
@@ -2782,7 +2908,7 @@ impl ClioServer {
                         } else {
                             serde_json::json!(items)
                         };
-                        serde_json::to_string_pretty(&result)
+                        serde_json::to_string(&result)
                             .map_err(|e| format!("Serialisation error: {e}"))
                     } else {
                         Ok(review_list_md(&items))
@@ -2792,15 +2918,13 @@ impl ClioServer {
                     let id = params.review_id.as_deref().expect("validated present");
                     let memory = clio_core::review::approve_review(&conn, id, &settings)
                         .map_err(|e| format_clio_error(&e))?;
-                    serde_json::to_string_pretty(&memory)
-                        .map_err(|e| format!("Serialisation error: {e}"))
+                    serde_json::to_string(&memory).map_err(|e| format!("Serialisation error: {e}"))
                 }
                 "reject" => {
                     let id = params.review_id.as_deref().expect("validated present");
                     let item = clio_core::review::reject_review(&conn, id)
                         .map_err(|e| format_clio_error(&e))?;
-                    serde_json::to_string_pretty(&item)
-                        .map_err(|e| format!("Serialisation error: {e}"))
+                    serde_json::to_string(&item).map_err(|e| format!("Serialisation error: {e}"))
                 }
                 "edit" => {
                     let id = params.review_id.clone().expect("validated present");
@@ -2815,8 +2939,7 @@ impl ClioServer {
                     };
                     let item = clio_core::review::edit_review(&conn, &id, &edits)
                         .map_err(|e| format_clio_error(&e))?;
-                    serde_json::to_string_pretty(&item)
-                        .map_err(|e| format!("Serialisation error: {e}"))
+                    serde_json::to_string(&item).map_err(|e| format!("Serialisation error: {e}"))
                 }
                 _ => unreachable!("action validated above"),
             }
@@ -2829,8 +2952,9 @@ impl ClioServer {
         description = "Build a resume brief: eligible open work, blocked items, constraints, \
                        recent decisions, prompt-relevant knowledge and recent activity — each \
                        with the reason it appears now. Call at session start (no query), and \
-                       again with `query` on the first substantive task prompt. Reads are \
-                       untracked and repeats are suppressed per session_id scope."
+                       again with `query` on the first substantive task prompt. It does not \
+                       count as use for ranking; with `session_id` it records what it showed, \
+                       so repeats are suppressed in that session."
     )]
     async fn memory_resume(
         &self,
@@ -2869,8 +2993,7 @@ impl ClioServer {
             let brief = clio_core::assembly::build_resume_brief(&conn, &request)
                 .map_err(|e| format_clio_error(&e))?;
             if params.response_format == "json" {
-                serde_json::to_string_pretty(&brief)
-                    .map_err(|e| format!("Serialisation error: {e}"))
+                serde_json::to_string(&brief).map_err(|e| format!("Serialisation error: {e}"))
             } else {
                 Ok(resume_brief_md(&brief))
             }
@@ -3000,7 +3123,7 @@ impl ClioServer {
                         Ok(item) => {
                             conn.execute_batch("COMMIT")
                                 .map_err(|e| format!("commit error: {e}"))?;
-                            serde_json::to_string_pretty(&item)
+                            serde_json::to_string(&item)
                                 .map_err(|e| format!("Serialisation error: {e}"))
                         }
                         Err(e) => {
@@ -3017,8 +3140,7 @@ impl ClioServer {
                         limit,
                     )
                     .map_err(|e| format_clio_error(&e))?;
-                    serde_json::to_string_pretty(&items)
-                        .map_err(|e| format!("Serialisation error: {e}"))
+                    serde_json::to_string(&items).map_err(|e| format!("Serialisation error: {e}"))
                 }
                 "overview" => {
                     let overview = attention::overview(
@@ -3029,7 +3151,7 @@ impl ClioServer {
                         settings.attention.max_age_days,
                     )
                     .map_err(|e| format_clio_error(&e))?;
-                    serde_json::to_string_pretty(&overview)
+                    serde_json::to_string(&overview)
                         .map_err(|e| format!("Serialisation error: {e}"))
                 }
                 "eligible" => {
@@ -3042,8 +3164,7 @@ impl ClioServer {
                     };
                     let items =
                         attention::eligible(&conn, &context).map_err(|e| format_clio_error(&e))?;
-                    serde_json::to_string_pretty(&items)
-                        .map_err(|e| format!("Serialisation error: {e}"))
+                    serde_json::to_string(&items).map_err(|e| format!("Serialisation error: {e}"))
                 }
                 "complete" => {
                     let id = params.action_id.as_deref().expect("validated present");
@@ -3055,24 +3176,21 @@ impl ClioServer {
                         Some("agent"),
                     )
                     .map_err(|e| format_clio_error(&e))?;
-                    serde_json::to_string_pretty(&item)
-                        .map_err(|e| format!("Serialisation error: {e}"))
+                    serde_json::to_string(&item).map_err(|e| format!("Serialisation error: {e}"))
                 }
                 "snooze" => {
                     let id = params.action_id.as_deref().expect("validated present");
                     let until = params.until.as_deref().expect("validated present");
                     let item = attention::snooze(&conn, id, until, Some("agent"))
                         .map_err(|e| format_clio_error(&e))?;
-                    serde_json::to_string_pretty(&item)
-                        .map_err(|e| format!("Serialisation error: {e}"))
+                    serde_json::to_string(&item).map_err(|e| format!("Serialisation error: {e}"))
                 }
                 "cancel" => {
                     let id = params.action_id.as_deref().expect("validated present");
                     let item =
                         attention::cancel(&conn, id, params.reason.as_deref(), Some("agent"))
                             .map_err(|e| format_clio_error(&e))?;
-                    serde_json::to_string_pretty(&item)
-                        .map_err(|e| format!("Serialisation error: {e}"))
+                    serde_json::to_string(&item).map_err(|e| format!("Serialisation error: {e}"))
                 }
                 "attach_external" => {
                     let id = params.action_id.as_deref().expect("validated present");
@@ -3084,8 +3202,7 @@ impl ClioServer {
                         Some("agent"),
                     )
                     .map_err(|e| format_clio_error(&e))?;
-                    serde_json::to_string_pretty(&item)
-                        .map_err(|e| format!("Serialisation error: {e}"))
+                    serde_json::to_string(&item).map_err(|e| format!("Serialisation error: {e}"))
                 }
                 "history" => {
                     let id = params.action_id.as_deref().expect("validated present");
@@ -3093,8 +3210,7 @@ impl ClioServer {
                         .map_err(|e| format_clio_error(&e))?;
                     let events = clio_core::events::list_events(&conn, &item.memory_id, limit)
                         .map_err(|e| format_clio_error(&e))?;
-                    serde_json::to_string_pretty(&events)
-                        .map_err(|e| format!("Serialisation error: {e}"))
+                    serde_json::to_string(&events).map_err(|e| format!("Serialisation error: {e}"))
                 }
                 _ => unreachable!("action validated above"),
             }
@@ -3113,7 +3229,7 @@ impl ClioServer {
     ) -> Result<String, String> {
         let cache = self.cache.clone();
         let result = cache.clear_all();
-        serde_json::to_string_pretty(&result).map_err(|e| format!("Serialisation error: {e}"))
+        serde_json::to_string(&result).map_err(|e| format!("Serialisation error: {e}"))
     }
 }
 
@@ -3160,7 +3276,8 @@ impl ServerHandler for ClioServer {
                  extraction is a successful checkpoint. Requires a configured capture model.\n\
                  - memory_resume: evidence-backed pickup brief (open work, blockers, \
                  constraints, relevant knowledge — each with why-now). Prefer it over ad hoc \
-                 recall when resuming work; it is untracked and repeat-suppressed per session.\n\
+                 recall when resuming work. It does not count as use for ranking; pass \
+                 `session_id` and it records what it showed, so repeats are suppressed.\n\
                  - memory_action: follow-up attention on memories (open loops). When the user \
                  states an explicit decision or commitment, store it IMMEDIATELY with \
                  memory_remember or memory_action(add) — do not wait for end-of-session \
@@ -3170,8 +3287,12 @@ impl ServerHandler for ClioServer {
                  `ticket:<issue-id>` (lowercase). Tags are FTS-indexed, so a later handoff \
                  brief for that id finds them.\n\n\
                  Archive is a soft-delete: archived records are hidden and excluded from recall \
-                 by default. Pass `response_format:\"json\"` for structured processing (cheaper \
-                 tokens); markdown is for human display."
+                 by default.\n\n\
+                 REPLY SIZE: list replies default to markdown cards (id, namespace, kind, \
+                 title, short excerpt). `response_format:\"json\"` returns the same fields as \
+                 compact JSON at about the same size, for parsing. Read a whole record with \
+                 memory_get; `full: true` on a JSON list returns every complete record and is \
+                 several times larger."
                     .into(),
             ),
         }
@@ -3710,6 +3831,7 @@ mod concurrency_tests {
                     include_archived: false,
                     limit: 10,
                     response_format: "json".into(),
+                    full: false,
                 }))
                 .await
         });
@@ -4110,5 +4232,73 @@ mod surface_tests {
             single.starts_with("No memories match that query. Try"),
             "{single}"
         );
+    }
+
+    #[tokio::test]
+    async fn json_lists_are_compact_unless_full_records_are_requested() {
+        let long = "Deploy notes. ".repeat(100);
+        let server = server_with(&[("project:demo", "Release procedure", &long)]);
+        let args =
+            json!({"query": "deploy", "namespace": "project:demo", "response_format": "json"});
+
+        let compact = recall(&server, args.clone()).await.unwrap();
+        assert!(!compact.contains('\n'), "compact JSON is one line");
+        let value: serde_json::Value = serde_json::from_str(&compact).unwrap();
+        assert_eq!(value["total"], 1);
+        assert_eq!(value["archived_only"], false);
+        let item = value["items"][0].as_object().unwrap();
+        let mut keys: Vec<&str> = item.keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            [
+                "created",
+                "excerpt",
+                "id",
+                "kind",
+                "namespace",
+                "score",
+                "title"
+            ]
+        );
+        assert_eq!(item["excerpt"].as_str().unwrap().chars().count(), 203);
+        assert_eq!(item["created"].as_str().unwrap().len(), 10);
+        // One-memory corpus: BM25 is about zero. Never negative, though.
+        assert!(item["score"].as_f64().unwrap() >= 0.0);
+
+        let mut full = args.clone();
+        full["full"] = json!(true);
+        let value: serde_json::Value =
+            serde_json::from_str(&recall(&server, full).await.unwrap()).unwrap();
+        assert_eq!(value["items"][0]["content"], long);
+        assert!(value["items"][0]["rank"].is_number());
+
+        // `full` is refused, not ignored, where it cannot apply.
+        let refused = recall(&server, json!({"query": "deploy", "full": true}))
+            .await
+            .unwrap_err();
+        assert!(refused.contains("response_format \"json\""), "{refused}");
+
+        let brief = server
+            .memory_context(Parameters(
+                serde_json::from_value(json!({
+                    "namespace": "project:demo",
+                    "response_format": "json"
+                }))
+                .unwrap(),
+            ))
+            .await
+            .unwrap();
+        assert!(brief.contains("\"excerpt\""), "{brief}");
+        assert!(!brief.contains("\"content\""), "{brief}");
+    }
+
+    #[test]
+    fn instructions_do_not_overstate_json_or_resume() {
+        let server = server_with(&[]);
+        let instructions = server.get_info().instructions.unwrap();
+        assert!(!instructions.contains("cheaper"));
+        assert!(!instructions.contains("untracked"));
+        assert!(instructions.contains("records what it showed"));
     }
 }

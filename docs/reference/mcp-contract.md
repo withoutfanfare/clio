@@ -156,21 +156,62 @@ Canonical structured response for search/list operations:
   "count": 1,
   "offset": 0,
   "limit": 10,
+  "archived_only": false,
   "items": []
 }
 ```
+
+A `note` string is added when the reply needs explaining (a widened or empty
+`memory_recall`).
+
+### Compact item
+
+What each entry of `items` holds in a JSON list reply, unless the caller passes
+`full: true`:
+
+```json
+{
+  "id": "01954d70-cf20-7d42-bb3b-ff2f0f0de123",
+  "namespace": "project:ai",
+  "kind": "decision",
+  "title": "Use SQLite",
+  "excerpt": "SQLite is the default shared local store.",
+  "created": "2026-03-02",
+  "score": 7.813
+}
+```
+
+- `excerpt`: the summary when the memory has one, otherwise the first 200
+  characters of its content followed by `...`
+- `created`: the creation date, so an old status note is not read as current
+- `score`: omitted when the listing is unranked. Higher is always a better
+  match: it is the magnitude of the core `rank` (BM25 for `memory_recall`,
+  similarity for `memory_search`), rounded to three places. Items are already
+  ordered best first
+- `title` is omitted when the memory has none
 
 ### Response formats
 
 Allowed values:
 
+- `markdown` (default)
 - `json`
-- `markdown`
 
 Semantics:
 
-- `json` for machine consumption
-- `markdown` for readable summaries inside AI chat surfaces
+- `markdown`: readable cards, the cheapest form for a model to read
+- `json`: the same information for parsing. Every JSON reply is a single line
+  (not pretty-printed). List tools (`memory_recall`, `memory_recent`,
+  `memory_search`, `memory_context`) return compact items, about the size of
+  the Markdown reply
+- `full: true` with `json` on those list tools returns complete memory records
+  instead of compact items, several times larger. The desktop app's remote
+  mode uses it, because it deserialises whole records. `full` with `markdown`
+  is rejected rather than ignored. For one complete record, use `memory_get`
+
+Measured on a 27,000-memory store, the same ten results were 3,258 characters
+as Markdown, 3,617 as compact JSON and 14,004 as full JSON (16,283 when JSON was
+still pretty-printed and the only JSON shape).
 
 ## Tool Definitions
 
@@ -417,6 +458,7 @@ This is the primary retrieval tool for AI clients. It must handle both semantic-
 - `limit`: `10`
 - `offset`: `0`
 - `response_format`: `markdown`
+- `full`: `false` (JSON only: complete records instead of compact items)
 
 ### Sort orders
 
@@ -453,12 +495,24 @@ This is the primary retrieval tool for AI clients. It must handle both semantic-
 
 ### Structured response
 
+`response_format: "json"` returns the recall envelope with
+[compact items](#compact-item), on one line:
+
+```json
+{"total":1,"count":1,"offset":0,"limit":10,"archived_only":false,"items":[{"id":"01954d70-cf20-7d42-bb3b-ff2f0f0de123","namespace":"project:ai","kind":"decision","title":"Use SQLite","excerpt":"SQLite is the default shared local store.","created":"2026-03-02","score":7.813}]}
+```
+
+With `full: true` each item is the complete memory record plus the core `rank`
+(BM25 for a keyword query: negative, lower is better; `null` for a listing).
+Shown indented here; the reply itself is one line:
+
 ```json
 {
   "total": 1,
   "count": 1,
   "offset": 0,
   "limit": 10,
+  "archived_only": false,
   "items": [
     {
       "id": "01954d70-cf20-7d42-bb3b-ff2f0f0de123",
@@ -577,6 +631,7 @@ Return recent memories with optional filtering and sorting.
 - `offset`: `0`
 - `limit`: `10`
 - `response_format`: `markdown`
+- `full`: `false` (JSON only: complete records instead of compact items)
 
 ## `memory_link`
 
@@ -1096,8 +1151,8 @@ Handoff and context briefs answer "what is this project?"; resume answers "what 
 1. Sections in priority order: Needs attention (eligible open work with machine-readable reasons: `overdue`, `reminder_due`, `project_session`, `dormant`), Waiting on, Active constraints (project first plus up to two global), Recent decisions, Relevant knowledge (query only), Recent activity (receipts)
 2. Empty sections are omitted and release their capacity; each non-empty critical section (attention, waiting, constraints) keeps one guaranteed slot at small budgets
 3. Items are deduplicated across sections by memory ID; archived, expired, resolved and cancelled records never appear
-4. Every read is untracked: automatic delivery leaves `access_count` and `last_accessed_at` unchanged
-5. With `session_id`, each included attention item records one idempotent `surfaced` event and is suppressed on repeat requests in the same scope until its state changes
+4. A resume never counts as use for ranking: `access_count` and `last_accessed_at` stay unchanged. It is not write-free, though (see 5)
+5. With `session_id`, every item shown records one idempotent `surfaced` event in `memory_events`. Attention items are then suppressed on repeat requests in the same scope until their state changes. Without `session_id` nothing is written
 6. The character budget counts the serialised representation (title + bounded content + reason); at least one item is always kept
 7. Event-write failure logs a warning and still returns the brief
 
@@ -1353,6 +1408,7 @@ Find memories by semantic meaning using vector embeddings.
 - `include_archived`: `false`
 - `limit`: `10`
 - `response_format`: `markdown`
+- `full`: `false` (JSON only: complete records instead of compact items)
 
 ### Validation rules
 
@@ -1369,11 +1425,13 @@ Find memories by semantic meaning using vector embeddings.
 - when detection falls back to `global`, search only `global` unless `global: true` requests all namespaces
 - exclude archived memories by default
 - return results sorted by similarity descending
-- similarity score is returned in the `rank` field (range 0.0–1.0; higher is more similar)
+- the ranking value is returned as `score` in a compact item and as `rank` in a full record; higher is a better match. It is the cosine similarity adjusted by the keyword boost and the configured scoring, so it is not confined to 0.0–1.0
 
 ### Response
 
-Returns a recall envelope identical in shape to `memory_recall`. The `rank` field contains the cosine similarity score rather than a BM25 rank:
+Returns a recall envelope identical in shape to `memory_recall`:
+[compact items](#compact-item) by default, complete records with `full: true`.
+The full shape, shown indented:
 
 ```json
 {
@@ -1381,6 +1439,7 @@ Returns a recall envelope identical in shape to `memory_recall`. The `rank` fiel
   "count": 1,
   "offset": 0,
   "limit": 10,
+  "archived_only": false,
   "items": [
     {
       "id": "01954d70-cf20-7d42-bb3b-ff2f0f0de123",
@@ -1537,6 +1596,7 @@ The `handoff` preset requires `query` (a ticket id or topic) and assembles a pic
 - `max_items`: `20`
 - `include_links`: `false`
 - `response_format`: `markdown`
+- `full`: `false` (JSON only: complete records instead of compact items)
 
 ### Available presets
 
@@ -1566,6 +1626,9 @@ The `handoff` preset requires `query` (a ticket id or topic) and assembles a pic
   "generated_at": "2026-03-03T08:30:00Z"
 }
 ```
+
+Each entry of `items` is a [compact item](#compact-item) without `score`, or a
+complete memory record with `full: true`. The reply is one line.
 
 ### Failure cases
 
@@ -1701,7 +1764,9 @@ Rules:
 - honour `limit`
 - do not dump large datasets by default
 - for Markdown responses, prefer concise summaries to full raw content lists
-- full content is appropriate for `memory_get` and the item resource
+- JSON list responses are compact by the same rule; never pretty-print JSON
+- full content is appropriate for `memory_get`, the item resource, and a list
+  call that asks for it with `full: true`
 
 ## Compatibility Rules
 
@@ -1792,6 +1857,12 @@ The MCP implementation is incorrect if:
 - its defaults differ from the CLI/core semantics
 - archived records appear unexpectedly in default recall
 - error messages are opaque enough that an agent cannot recover
+
+Two adapter behaviours are deliberate presentation choices, not different
+semantics: the retry of an empty multi-word `memory_recall` (it calls core's
+any-word search and labels the result), and the compact JSON projection of
+list replies (the complete core records remain available with `full: true`).
+The CLI does neither yet.
 
 ## Acceptance Criteria
 
