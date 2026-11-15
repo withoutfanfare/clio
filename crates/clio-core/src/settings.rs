@@ -48,6 +48,12 @@ pub struct ScoringConfig {
     /// query, so any-word matches would be noise. `0.0` = never stay quiet.
     #[serde(default = "default_quiet_similarity")]
     pub quiet_similarity: f64,
+
+    /// A resume brief skips a relevant-knowledge candidate whose stored
+    /// embedding is at least this similar to one already chosen (or whose
+    /// title is the same), and takes the next candidate. `0.0` = keep copies.
+    #[serde(default = "default_dedup_similarity")]
+    pub dedup_similarity: f64,
 }
 
 fn default_decay_lambda() -> f64 {
@@ -70,6 +76,10 @@ fn default_quiet_similarity() -> f64 {
     0.40
 }
 
+fn default_dedup_similarity() -> f64 {
+    0.85
+}
+
 impl Default for ScoringConfig {
     fn default() -> Self {
         Self {
@@ -80,6 +90,7 @@ impl Default for ScoringConfig {
             fusion: true,
             fusion_budget_ms: default_fusion_budget_ms(),
             quiet_similarity: default_quiet_similarity(),
+            dedup_similarity: default_dedup_similarity(),
         }
     }
 }

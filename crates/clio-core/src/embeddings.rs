@@ -900,6 +900,65 @@ fn fts_match_strengths(conn: &Connection, query: &str) -> std::collections::Hash
 }
 
 // ---------------------------------------------------------------------------
+// Near-copies among chosen items
+// ---------------------------------------------------------------------------
+
+/// Remembers the items chosen so far and recognises a near-copy of one: the
+/// same title, or a stored embedding at least `threshold` similar. Uses the
+/// vectors already stored, so nothing is embedded. A memory with no stored
+/// vector is only ever a copy by title.
+pub(crate) struct NearCopies {
+    threshold: f64,
+    vectors: Vec<Vec<f32>>,
+    titles: std::collections::HashSet<String>,
+}
+
+impl NearCopies {
+    pub(crate) fn new(threshold: f64) -> Self {
+        Self {
+            threshold,
+            vectors: Vec::new(),
+            titles: std::collections::HashSet::new(),
+        }
+    }
+
+    /// True when `memory` repeats an item already admitted. Otherwise it is
+    /// admitted and later candidates are compared with it.
+    pub(crate) fn repeats(&mut self, conn: &Connection, memory: &Memory) -> Result<bool> {
+        if self.threshold <= 0.0 {
+            return Ok(false);
+        }
+        let title = memory
+            .title
+            .as_deref()
+            .map(|t| t.trim().to_lowercase())
+            .filter(|t| !t.is_empty());
+        if title.as_ref().is_some_and(|t| self.titles.contains(t)) {
+            return Ok(true);
+        }
+        let blob: Option<Vec<u8>> = conn
+            .query_row(
+                "SELECT embedding FROM memory_embeddings WHERE memory_id = ?1",
+                params![memory.id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let vector = blob.map(|b| decode_embedding(&b)).transpose()?;
+        if let Some(vector) = &vector {
+            // Vectors of another model's size are not comparable: not a copy.
+            if self.vectors.iter().any(|kept| {
+                cosine_similarity(kept, vector).is_ok_and(|similarity| similarity >= self.threshold)
+            }) {
+                return Ok(true);
+            }
+        }
+        self.titles.extend(title);
+        self.vectors.extend(vector);
+        Ok(false)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Similarity-based link suggestions
 // ---------------------------------------------------------------------------
 

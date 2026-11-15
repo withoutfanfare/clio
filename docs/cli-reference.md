@@ -303,7 +303,9 @@ if there is no backend, it fails, or it takes longer than
 `scoring.fusion_budget_ms` (1,000 ms), the keyword result is returned alone and
 the command still succeeds. `scoring.fusion` switches the merge off. When the
 most similar memory in the namespace is below `scoring.quiet_similarity` (0.40)
-the section is left empty: nothing stored is about the task.
+the section is left empty: nothing stored is about the task. A candidate that
+repeats one already chosen (same title, or stored embeddings at least
+`scoring.dedup_similarity` similar, 0.85) is skipped and the slot refilled.
 
 ```sh
 clio resume                                  # session-start context

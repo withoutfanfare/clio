@@ -1159,6 +1159,15 @@ fn resume_recall(
 ) -> Result<Vec<ResumeItem>> {
     let limit = recall_query.limit as usize;
     let knowledge = recall_query.query.is_some();
+    // Two slots are not spent on one fact: a near-copy is skipped and the
+    // next candidate takes its place.
+    let mut copies = crate::embeddings::NearCopies::new(
+        recall_query
+            .scoring
+            .as_ref()
+            .filter(|_| knowledge)
+            .map_or(0.0, |s| s.dedup_similarity),
+    );
     let mut items = Vec::new();
     if knowledge {
         recall_query.limit = 50;
@@ -1195,6 +1204,9 @@ fn resume_recall(
                 if ["constraint", "decision"].contains(&m.kind.as_str()) && conn.query_row(
                     "SELECT EXISTS(SELECT 1 FROM memory_events WHERE memory_id = ?1 AND session_id = ?2 AND event_type = 'surfaced' AND actor = 'resume:ack' AND created_at >= ?3 AND json_extract(metadata_json, '$.memory_updated_at') = ?3)",
                     rusqlite::params![m.id, scope, m.updated_at], |r| r.get::<_, bool>(0))? { continue; }
+            }
+            if copies.repeats(conn, &m)? {
+                continue;
             }
             items.push(resume_item_from_memory(&m, "knowledge", reason.to_string()));
             if items.len() >= limit {
@@ -2410,6 +2422,42 @@ mod tests {
         assert_eq!(fused.len(), 2, "the unrelated memory stays out: {fused:?}");
         assert!(fused.contains(&(named.id, "matches task terms".to_string())));
         assert!(fused.contains(&(meant.id, "similar in meaning to the task".to_string())));
+    }
+
+    #[test]
+    fn resume_knowledge_skips_near_copies_and_refills() {
+        let conn = test_db();
+        let ns = "project:resume";
+        let first = make_memory(&conn, ns, "fact", "Deploys run the ship script");
+        let copy = make_memory(&conn, ns, "fact", "Deploys always run the ship script");
+        let other = make_memory(&conn, ns, "fact", "Deploys need a clean tree and a green build before anything else happens");
+        for (memory, vector) in [(&first, [1.0, 0.0]), (&copy, [0.99, 0.141]), (&other, [0.0, 1.0])] {
+            crate::embeddings::store_embedding(&conn, &memory.id, "test", 2, &vector).unwrap();
+        }
+        let mut request = resume_request(ns);
+        request.query = Some("deploys".into());
+        request.max_items = 2;
+        let shown = |request: &ResumeRequest| -> Vec<String> {
+            let brief = build_resume_brief(&conn, request).unwrap();
+            let knowledge = section(&brief, "Relevant knowledge").unwrap();
+            knowledge.items.iter().map(|i| i.memory_id.clone()).collect()
+        };
+
+        request.scoring = Some(ScoringConfig::default());
+        let deduped = shown(&request);
+        assert_eq!(deduped.len(), 2);
+        assert!(deduped.contains(&other.id), "the freed slot is refilled");
+        assert!(
+            deduped.contains(&first.id) != deduped.contains(&copy.id),
+            "one of the two copies, not both: {deduped:?}"
+        );
+
+        request.scoring = Some(ScoringConfig {
+            dedup_similarity: 0.0,
+            ..Default::default()
+        });
+        let kept = shown(&request);
+        assert!(kept.contains(&first.id) && kept.contains(&copy.id), "{kept:?}");
     }
 
     #[test]
