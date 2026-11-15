@@ -112,7 +112,9 @@ restart.
 
 Use `capture --model <model> --dry-run` or `distill --model <model> --dry-run`
 for a one-off comparison that does not change the active setting. Add
-`--metrics` to include latency and provider-reported token usage.
+`--metrics` to include latency and provider-reported token usage; for
+`distill` it also reports `knowledge_items_returned`, the number of knowledge
+items the model returned before the cap was applied.
 
 ### Desktop control suitability
 

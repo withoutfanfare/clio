@@ -2884,7 +2884,8 @@ fn cmd_distill(
 
     if args.dry_run {
         let started = std::time::Instant::now();
-        let (mut memories, usage) = clio_core::capture::distill_with_usage(&text, &capture_config)?;
+        let (mut memories, usage, returned) =
+            clio_core::capture::distill_measured(&text, &capture_config)?;
         let elapsed_ms = started.elapsed().as_millis();
 
         // Report the namespace each memory would actually be stored under, not the
@@ -2905,6 +2906,8 @@ fn cmd_distill(
                     "model": capture_config.model,
                     "elapsed_ms": elapsed_ms,
                     "usage": usage,
+                    // Before the cap: what the model itself returned.
+                    "knowledge_items_returned": returned,
                     "result": memories,
                 })
             } else {

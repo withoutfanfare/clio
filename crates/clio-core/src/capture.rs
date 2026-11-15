@@ -448,8 +448,22 @@ pub fn distill_with_usage(
     text: &str,
     config: &CaptureConfig,
 ) -> Result<(Vec<DistilledMemory>, CaptureUsage)> {
+    distill_measured(text, config).map(|(memories, usage, _)| (memories, usage))
+}
+
+/// Distil text and also report how many knowledge items the model returned
+/// before the cap trimmed them. The capture benchmark needs that figure: the
+/// capped list can never exceed the ceiling, so it cannot show whether the
+/// model obeyed the prompt.
+#[cfg(feature = "capture")]
+pub fn distill_measured(
+    text: &str,
+    config: &CaptureConfig,
+) -> Result<(Vec<DistilledMemory>, CaptureUsage, usize)> {
     let response = chat_with_usage(DISTILLATION_SYSTEM_PROMPT, text, config, true)?;
-    Ok((parse_distillation(&response.content)?, response.usage))
+    let memories = parse_uncapped(&response.content)?;
+    let returned = memories.iter().filter(|m| m.kind != "receipt").count();
+    Ok((cap_distilled_memories(memories), response.usage, returned))
 }
 
 /// Parse the LLM's JSON response into a `ClassificationResult`, with
@@ -546,6 +560,11 @@ fn classification_from_value(v: &serde_json::Value, allow_receipt: bool) -> Clas
 /// wrapping the array under a `memories` key. Items whose `content` is empty or
 /// whitespace-only are dropped. An empty array is valid and yields no memories.
 pub fn parse_distillation(raw: &str) -> Result<Vec<DistilledMemory>> {
+    Ok(cap_distilled_memories(parse_uncapped(raw)?))
+}
+
+/// [`parse_distillation`] before the knowledge cap is applied.
+fn parse_uncapped(raw: &str) -> Result<Vec<DistilledMemory>> {
     let trimmed = raw.trim();
     let json_str = if trimmed.starts_with("```") {
         trimmed
@@ -641,7 +660,7 @@ pub fn parse_distillation(raw: &str) -> Result<Vec<DistilledMemory>> {
         })
         .collect();
 
-    Ok(cap_distilled_memories(memories))
+    Ok(memories)
 }
 
 /// Hard ceiling on knowledge atoms accepted from one distillation call.
@@ -1857,6 +1876,8 @@ mod tests {
         let memories = parse_distillation(&raw).expect("parse failed");
         assert_eq!(memories.len(), MAX_KNOWLEDGE_ATOMS);
         assert!(memories.iter().all(|m| m.kind != "receipt"));
+        // What the model actually returned is still countable before the cap.
+        assert_eq!(parse_uncapped(&raw).unwrap().len(), 6);
     }
 
     #[test]

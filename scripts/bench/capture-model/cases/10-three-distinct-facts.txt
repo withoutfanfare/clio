@@ -1,0 +1,24 @@
+Project: scooda | Branch: develop
+
+---
+
+## User
+Before we plan the payments rework I want the ground rules written down, because we keep relearning them. First: how do we hold money?
+
+## Assistant
+Every amount is stored and calculated as an integer number of pence, never as a float or a decimal string. That was decided after last year's reconciliation drift, where floating-point rounding in the Gift Aid calculation left the ledger a few pence out against the bank on roughly one donation in two hundred. Formatting to pounds happens only at the edge, when an amount is displayed or exported.
+
+## User
+Agreed, that stays. Second: the webhook ordering problem that bit us in March.
+
+## Assistant
+Stripe does not deliver webhooks in the order the events happened. A `charge.refunded` can arrive before the `charge.succeeded` it refers to. So every webhook handler must compare the event's own `created` timestamp with the one already stored on the payment and ignore an event that is older than what we hold. Processing events in arrival order is what marked refunded donations as paid in March.
+
+## User
+Yes. And third, the export window, since the rework will touch that job.
+
+## Assistant
+The finance system pulls the nightly donations export at 02:00 UTC and does not retry. The export job therefore has to finish before 02:00; if it runs late, finance imports yesterday's file again and the month-end figures are wrong until someone notices. That is why the job is scheduled for 00:30 and why it must not be moved later or made to wait on other jobs.
+
+## User
+Good. Those three are the rules. We'll start the actual rework next week; nothing to change today.
