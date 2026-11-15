@@ -1968,3 +1968,7 @@ Direct ID reads, audit/history and export/import preserve expired records.
 
 Session checkpoint distillation includes the earlier-title digest used by CLI
 checkpoints, preserving corrections while avoiding repeated knowledge.
+
+Core semantic retrieval, namespace moves, statistics and activity filters accept
+bare project names. The reserved `global` namespace is case-insensitive; names
+with a colon retain their spelling. Migration 018 also normalises global casing.

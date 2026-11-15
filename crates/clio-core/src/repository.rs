@@ -1443,6 +1443,7 @@ pub fn unarchive(conn: &Connection, id: &str) -> Result<Memory> {
 
 /// Move a single memory to a different namespace. Returns the updated memory.
 pub fn move_namespace(conn: &Connection, id: &str, namespace: &str) -> Result<Memory> {
+    let namespace = &crate::context::canonical_namespace(namespace);
     if namespace.is_empty() || namespace.len() > 120 {
         return Err(ClioError::Validation(
             "namespace must be between 1 and 120 characters.".into(),
@@ -1463,6 +1464,8 @@ pub fn move_namespace(conn: &Connection, id: &str, namespace: &str) -> Result<Me
 /// Move all memories in one namespace to another. Returns the number of
 /// memories moved.
 pub fn move_namespace_bulk(conn: &Connection, from: &str, to: &str) -> Result<usize> {
+    let from = &crate::context::canonical_namespace(from);
+    let to = &crate::context::canonical_namespace(to);
     if to.is_empty() || to.len() > 120 {
         return Err(ClioError::Validation(
             "namespace must be between 1 and 120 characters.".into(),

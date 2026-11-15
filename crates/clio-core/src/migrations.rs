@@ -581,9 +581,12 @@ const MIGRATIONS: &[Migration] = &[
         // `updated_at` is left alone so the age and dormancy limits still
         // judge these items by when they were last really touched.
         sql: r#"
+            UPDATE attention_items SET namespace = 'global'
+            WHERE lower(namespace) = 'global';
+
             UPDATE attention_items
             SET namespace = 'project:' || trim(lower(namespace), '-')
-            WHERE namespace != 'global'
+            WHERE lower(namespace) != 'global'
               AND instr(namespace, ':') = 0
               AND namespace NOT GLOB '*[^A-Za-z0-9_-]*'
               AND trim(namespace, '-') != ''
@@ -704,7 +707,7 @@ mod tests {
             ("project:scooda", "project:scooda"),
             // No such project among memories: nothing proves an alias.
             ("ReviewDemo", "ReviewDemo"),
-            ("GLOBAL", "GLOBAL"),
+            ("GLOBAL", "global"),
             // Never candidates.
             ("global", "global"),
             ("topic:rust", "topic:rust"),

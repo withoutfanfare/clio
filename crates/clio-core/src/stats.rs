@@ -13,6 +13,8 @@ use crate::models::{MemoryStats, RecentEntry, WeekSummary};
 ///
 /// If `namespace` is provided, counts are scoped to that namespace only.
 pub fn memory_stats(conn: &Connection, namespace: Option<&str>) -> Result<MemoryStats> {
+    let canonical = namespace.map(crate::context::canonical_namespace);
+    let namespace = canonical.as_deref();
     // Single query to get both total and active counts.
     let (total_memories, active_memories, archived_memories) = if let Some(ns) = namespace {
         let (total, active): (u32, u32) = conn.query_row(
@@ -157,6 +159,8 @@ pub fn timeline(
     namespace: Option<&str>,
     weeks: u32,
 ) -> Result<Vec<WeekSummary>> {
+    let canonical = namespace.map(crate::context::canonical_namespace);
+    let namespace = canonical.as_deref();
     let sql = if namespace.is_some() {
         "SELECT strftime('%Y-W%W', created_at) AS week, COUNT(*)
          FROM memories
@@ -208,6 +212,8 @@ pub fn recent_activity(
     namespace: Option<&str>,
     limit: u32,
 ) -> Result<Vec<RecentEntry>> {
+    let canonical = namespace.map(crate::context::canonical_namespace);
+    let namespace = canonical.as_deref();
     // We use a UNION ALL approach to capture distinct events:
     // - created_at = updated_at and archived_at IS NULL => "created"
     // - archived_at IS NOT NULL => "archived" (at archived_at time)
@@ -518,6 +524,8 @@ pub fn effectiveness(
     namespace: Option<&str>,
     dormant_days: u32,
 ) -> Result<EffectivenessReport> {
+    let canonical = namespace.map(crate::context::canonical_namespace);
+    let namespace = canonical.as_deref();
     let ns_clause = |column: &str| match namespace {
         Some(_) => format!(" AND {column} = ?1"),
         None => String::new(),

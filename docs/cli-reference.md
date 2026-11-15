@@ -655,3 +655,7 @@ Ordinary recall, recent lists, semantic search and context briefs exclude expire
 memories (including linked expansion). CLI recall/search/recent accept
 `--include-expired`; MCP equivalents accept `include_expired: true` for history.
 Direct ID reads, audit/history and export/import preserve expired records.
+
+Core semantic retrieval, namespace moves, statistics and activity filters accept
+bare project names. The reserved `global` namespace is case-insensitive; names
+with a colon retain their spelling. Migration 018 also normalises global casing.

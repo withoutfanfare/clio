@@ -142,7 +142,7 @@ fn worktree_common_dir(dir: &Path) -> Option<std::path::PathBuf> {
 /// - Falls back to `"global"`.
 pub fn resolve_namespace(explicit: Option<&str>, cwd: Option<&Path>, auto_detect: bool) -> String {
     if let Some(ns) = explicit {
-        return ns.to_string();
+        return canonical_namespace(ns);
     }
 
     if auto_detect {
@@ -164,7 +164,7 @@ pub fn resolve_namespace_with_context(
     auto_detect: bool,
 ) -> (String, Option<DetectedContext>) {
     if let Some(ns) = explicit {
-        return (ns.to_string(), None);
+        return (canonical_namespace(ns), None);
     }
 
     if auto_detect {
@@ -204,7 +204,10 @@ pub fn init_namespace(dir: &Path, namespace: &str) -> std::io::Result<()> {
 /// `project:clio`, so one project never splits across two spellings.
 /// `global` and anything already carrying a `kind:` prefix are unchanged.
 pub fn canonical_namespace(namespace: &str) -> String {
-    if namespace == "global" || namespace.contains(':') {
+    if namespace.eq_ignore_ascii_case("global") {
+        return "global".to_string();
+    }
+    if namespace.contains(':') {
         return namespace.to_string();
     }
     let slug = slugify(namespace);

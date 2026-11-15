@@ -886,11 +886,11 @@ fn resolve_mcp_namespace(
 ) -> String {
     let local_detected = if auto_detect { local_detected } else { None };
     // A bare project name ("clio") means the same namespace in every tool.
-    clio_core::context::canonical_namespace(&clio_core::context::resolve_namespace(
+    clio_core::context::resolve_namespace(
         explicit.or(local_detected),
         cwd,
         auto_detect,
-    ))
+    )
 }
 
 /// The namespace for tools that treat "none given, none detected" as no scope
@@ -910,7 +910,6 @@ fn optional_mcp_namespace(
     explicit
         .map(str::to_string)
         .or_else(|| auto_detect.then(detected).flatten())
-        .map(|ns| clio_core::context::canonical_namespace(&ns))
 }
 
 fn validate_memory_payload(params: &RememberParams) -> Result<(), String> {
