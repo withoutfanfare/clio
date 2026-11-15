@@ -1036,6 +1036,8 @@ The schema is ready for coding agents when:
 
 ---
 
+Dates supplied as `valid_from` or `valid_until` must be ISO-8601 dates or date-times (for example `2026-11-15` or `2026-11-15T12:00:00Z`); core remember and update reject unreadable values.
+
 ## Related Documentation
 
 - [MCP Contract](mcp-contract.md) — MCP tool and resource definitions

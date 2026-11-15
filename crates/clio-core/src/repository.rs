@@ -1924,6 +1924,28 @@ mod tests {
     use super::*;
 
     #[test]
+    fn validity_dates_are_validated_on_remember_and_update() {
+        let conn = crate::db::open_in_memory().unwrap();
+        let settings = crate::settings::Settings::default();
+        for field in ["valid_from", "valid_until"] {
+            for value in ["never", "next Friday", "2999/01/01", "2026-02-30"] {
+                let mut input = serde_json::json!({"content": "date validation"});
+                input[field] = value.into();
+                let error = remember(&conn, &serde_json::from_value(input).unwrap(), &settings).unwrap_err();
+                assert!(error.to_string().contains("2026-11-15"));
+            }
+            for value in ["2999-01-01", "2999-01-01T12:30:00", "2999-01-01T12:30:00Z", "2999-01-01T12:30:00+01:00"] {
+                let mut input = serde_json::json!({"content": "valid date"});
+                input[field] = value.into();
+                let memory = remember(&conn, &serde_json::from_value(input).unwrap(), &settings).unwrap();
+                let mut patch = serde_json::json!({});
+                patch[field] = "never".into();
+                assert!(update(&conn, &memory.id, &serde_json::from_value(patch).unwrap(), &settings).is_err());
+            }
+        }
+    }
+
+    #[test]
     fn expired_retrieval_preserves_history_and_export() {
         let conn = crate::db::open_in_memory().unwrap();
         let input = serde_json::from_value::<RememberInput>(serde_json::json!({
