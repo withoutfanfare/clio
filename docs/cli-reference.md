@@ -646,3 +646,7 @@ Default DB: `~/Library/Application Support/clio/memory.db` (macOS)
 - [Settings Reference](reference/settings.md) — all configuration keys and defaults
 - [Schema Reference](reference/schema.md) — database structure
 - [Documentation Index](README.md) — all available documentation
+
+Ordinary keyword recall retries an empty multi-word query using any-word matching.
+Scoped recall widens only when both project and global strict results are empty.
+Pagination beyond an existing result set does not widen. JSON envelopes are unchanged.

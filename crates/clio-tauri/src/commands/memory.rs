@@ -194,7 +194,7 @@ pub async fn cmd_recall(
         match_any_term: false,
     };
 
-    let result = app.cache.recall(&app.conn, &q)?;
+    let (result, _) = clio_core::repository::recall_ordinary(&app.conn, &q, None)?;
     Ok(result)
 }
 

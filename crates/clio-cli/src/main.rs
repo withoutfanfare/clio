@@ -2072,7 +2072,7 @@ fn cmd_recall(
     // --namespace: search only that exact namespace.
     // Neither: use scoped-then-global recall (project namespace + global fallback).
     let scoring = Some(s.scoring.clone());
-    let result = if args.global {
+    let (result, widened) = if args.global {
         let query = RecallQuery {
             query: args.query,
             namespace: None,
@@ -2092,7 +2092,7 @@ fn cmd_recall(
             skip_access_tracking: false,
             match_any_term: false,
         };
-        repository::recall(&conn, &query)?
+        repository::recall_ordinary(&conn, &query, None)?
     } else if args.namespace.is_some() {
         let query = RecallQuery {
             query: args.query,
@@ -2113,7 +2113,7 @@ fn cmd_recall(
             skip_access_tracking: false,
             match_any_term: false,
         };
-        repository::recall(&conn, &query)?
+        repository::recall_ordinary(&conn, &query, None)?
     } else {
         let query = RecallQuery {
             query: args.query,
@@ -2134,12 +2134,15 @@ fn cmd_recall(
             skip_access_tracking: false,
             match_any_term: false,
         };
-        repository::recall_scoped(&conn, &query, &detected_ns)?
+        repository::recall_ordinary(&conn, &query, Some(&detected_ns))?
     };
 
     if json {
         println!("{}", serde_json::to_string_pretty(&result)?);
     } else {
+        if widened {
+            eprintln!("No memory contains every word; a wider search was used.");
+        }
         print_recall_result(&result);
     }
 

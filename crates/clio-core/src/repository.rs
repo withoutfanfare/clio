@@ -578,6 +578,28 @@ fn row_to_memory(raw: MemoryRow) -> Result<Memory> {
 // Recall (FTS + recent + filters)
 // ---------------------------------------------------------------------------
 
+/// Ordinary recall retries an empty multi-word search with any-word matching.
+/// A scoped retry considers the combined project and global result first.
+/// The boolean reports widening without changing the serialised result contract.
+pub fn recall_ordinary(
+    conn: &Connection,
+    query: &RecallQuery,
+    scope: Option<&str>,
+) -> Result<(RecallResult, bool)> {
+    let run = |q: &RecallQuery| match scope {
+        Some(namespace) => recall_scoped(conn, q, namespace),
+        None => recall(conn, q),
+    };
+    let result = run(query)?;
+    let widened = result.total == 0 && !query.match_any_term
+        && query.query.as_deref().is_some_and(|q| q.split_whitespace().nth(1).is_some());
+    if widened {
+        Ok((run(&RecallQuery { match_any_term: true, ..query.clone() })?, true))
+    } else {
+        Ok((result, false))
+    }
+}
+
 /// Search or list memories according to the query parameters.
 ///
 /// When `include_links` is true, linked memories are appended to the results
@@ -1896,6 +1918,23 @@ pub fn schema_info(conn: &Connection) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ordinary_recall_widens_only_empty_totals() {
+        let conn = crate::db::open_in_memory().unwrap();
+        remember(&conn, &serde_json::from_value::<RememberInput>(serde_json::json!({
+            "namespace": "global", "content": "release procedure"
+        })).unwrap(), &crate::settings::Settings::default()).unwrap();
+        let query = RecallQuery { query: Some("release missing".into()), ..Default::default() };
+        let (result, widened) = recall_ordinary(&conn, &query, Some("demo")).unwrap();
+        assert!(widened);
+        assert_eq!(result.total, 1);
+        let query = RecallQuery { query: Some("release".into()), offset: 10, ..query };
+        let (result, widened) = recall_ordinary(&conn, &query, Some("demo")).unwrap();
+        assert!(!widened);
+        assert_eq!(result.total, 1);
+        assert!(result.items.is_empty());
+    }
 
     #[test]
     fn any_term_query_drops_stopwords_and_joins_with_or() {

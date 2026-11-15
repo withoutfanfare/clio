@@ -2248,7 +2248,6 @@ impl ClioServer {
         validate_importance_filter(params.importance_max, "importance_max")?;
         let limit = cap_limit(params.limit);
         let conn = self.conn.clone();
-        let cache = self.cache.clone();
         let settings = self.settings()?;
         tokio::task::spawn_blocking(move || {
             let conn = conn.lock().map_err(|e| format!("lock error: {e}"))?;
@@ -2281,40 +2280,14 @@ impl ClioServer {
                 match_any_term: false,
             };
 
-            // --global: search all namespaces without scoping.
-            // --namespace: search only that exact namespace.
-            // Neither: use scoped-then-global recall (project namespace + global fallback).
-            let run = |query: &RecallQuery| {
-                if params.global {
-                    cache.recall(&conn, query)
-                } else if params.namespace.is_some() {
-                    let scoped_query = RecallQuery {
-                        namespace: Some(detected_ns.clone()),
-                        ..query.clone()
-                    };
-                    cache.recall(&conn, &scoped_query)
-                } else {
-                    cache.recall_scoped(&conn, query, &detected_ns)
-                }
-                .map_err(|e| format_clio_error(&e))
-            };
-
-            let mut result = run(&query)?;
-            // A sentence rarely has every word in one memory. When the strict
-            // search finds nothing, retry with core's any-word search (the one
-            // resume briefs use) and say so, rather than answer "0 memories".
             let searched = query.query.is_some();
-            let widened = result.total == 0
-                && query
-                    .query
-                    .as_deref()
-                    .is_some_and(|q| q.split_whitespace().nth(1).is_some());
-            if widened {
-                result = run(&RecallQuery {
-                    match_any_term: true,
-                    ..query.clone()
-                })?;
+            let mut query = query;
+            if !params.global && params.namespace.is_some() {
+                query.namespace = Some(detected_ns.clone());
             }
+            let scope = (!params.global && params.namespace.is_none()).then_some(detected_ns.as_str());
+            let (result, widened) = clio_core::repository::recall_ordinary(&conn, &query, scope)
+                .map_err(|e| format_clio_error(&e))?;
 
             Ok(format_recall_response(
                 &result,
