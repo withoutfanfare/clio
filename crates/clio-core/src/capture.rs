@@ -1329,6 +1329,8 @@ mod tests {
         // Output stored before the field existed still deserialises.
         let old: DistilledMemory = serde_json::from_str(&item("")).unwrap();
         assert_eq!(old.lifetime, Lifetime::Durable);
+        // The dry-run output the capture benchmark grades spells it out.
+        assert_eq!(serde_json::to_value(&old).unwrap()["lifetime"], "durable");
     }
 
     #[test]

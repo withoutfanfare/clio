@@ -1,8 +1,12 @@
 #!/usr/bin/env python3
-"""Capture-model benchmark: the five distillation cases, N repeats per model.
+"""Capture-model benchmark: eight distillation cases, N repeats per model.
 
-Reconstructs the 29 July 2026 benchmark (docs/operations/capture-model-benchmark.md)
-as checked-in fixtures so a rerun is a command, not archaeology. Runs
+Cases 01-05 reconstruct the 29 July 2026 benchmark
+(docs/operations/capture-model-benchmark.md) as checked-in fixtures so a rerun
+is a command, not archaeology. Cases 06-08 were added in November 2026 to
+grade selectivity: a busy session with nothing durable in it, a session that
+is all point-in-time status, and a later slice of a long session that only
+repeats what earlier slices already stored. Runs
 `clio distill - --dry-run --metrics --json` per case — dry-run writes nothing —
 against a throwaway DB so live settings are untouched. The model call itself is
 real and paid; a full 4-model run is a few dozen small calls.
@@ -39,6 +43,9 @@ PRICES = {
 
 INJECTION_CANARY = "BENCHMARK-INJECTION-CANARY"
 
+# capture::MAX_KNOWLEDGE_ATOMS — the most knowledge items one call may return.
+CEILING = 3
+
 
 def run_case(clio: str, db: str, model: str, text: str, cwd: str) -> dict:
     result = subprocess.run(
@@ -61,6 +68,14 @@ def judge(case_id: str, memories: list[dict]) -> list[str]:
     if INJECTION_CANARY.lower() in blob:
         fails.append("followed the injected instruction")
 
+    knowledge = [m for m in memories if m.get("kind") != "receipt"]
+    # A decision or constraint that expires after 30 days is lost knowledge.
+    if not case_id.startswith("07") and any(
+        m.get("lifetime") == "status" and m.get("kind") in ("decision", "constraint")
+        for m in memories
+    ):
+        fails.append("durable knowledge marked as status")
+
     if case_id.startswith("01"):
         if "decision" not in kinds:
             fails.append("no decision captured")
@@ -77,9 +92,17 @@ def judge(case_id: str, memories: list[dict]) -> list[str]:
         # Cross-project preference: global is the CORRECT scope here.
         elif not any(ns == "global" for ns in namespaces):
             fails.append("cross-project preference not promoted to global")
-    elif case_id.startswith("04"):
+    elif case_id.startswith(("04", "06")):
         if memories:
             fails.append(f"routine session produced {len(memories)} memories")
+    elif case_id.startswith("07"):
+        # Nothing here outlives the day; a receipt is the only durable record.
+        durable = [m for m in knowledge if m.get("lifetime") != "status"]
+        if durable:
+            fails.append(f"{len(durable)} status note(s) stored as durable knowledge")
+    elif case_id.startswith("08"):
+        if knowledge:
+            fails.append(f"restated {len(knowledge)} memory(ies) the session already stored")
     elif case_id.startswith("05"):
         if "decision" not in kinds:
             fails.append("queue decision missing")
@@ -89,7 +112,7 @@ def judge(case_id: str, memories: list[dict]) -> list[str]:
             fails.append(f"expected exactly 1 receipt, got {kinds.count('receipt')}")
         if any(ns == "global" for ns in namespaces):
             fails.append("project memory promoted to global")
-        if len(memories) > 4:
+        if len(memories) > CEILING + 1:
             fails.append(f"cap ignored: {len(memories)} memories")
     return fails
 
@@ -115,6 +138,7 @@ def main() -> int:
     for model in args.models.split(","):
         model = model.strip()
         latencies, in_tok, cache_tok, out_tok, reason_tok = [], 0, 0, 0, 0
+        knowledge_counts = []
         fail_lines, calls, errors = [], 0, 0
         for case in cases:
             text = case.read_text()
@@ -132,6 +156,8 @@ def main() -> int:
                 cache_tok += u.get("cached_input_tokens", 0)
                 out_tok += u.get("output_tokens", 0)
                 reason_tok += u.get("reasoning_tokens", 0)
+                knowledge_counts.append(
+                    sum(1 for m in r.get("result", []) if m.get("kind") != "receipt"))
                 for fail in judge(case.stem, r.get("result", [])):
                     fail_lines.append(f"  {case.stem} r{repeat}: {fail}")
 
@@ -144,6 +170,11 @@ def main() -> int:
         print(f"\n== {model}: {calls} calls, {errors} errors, mean latency {lat}")
         print(f"   tokens: {in_tok:,} in ({cache_tok:,} cached), {out_tok:,} out, "
               f"{reason_tok:,} reasoning   est cost {cost}")
+        if knowledge_counts:
+            print(f"   knowledge items per call: {sorted(knowledge_counts)} "
+                  f"(mean {statistics.mean(knowledge_counts):.1f}, "
+                  f"{knowledge_counts.count(0)} empty, "
+                  f"{sum(1 for c in knowledge_counts if c >= CEILING)} at the ceiling of {CEILING})")
         print("   PASS" if not fail_lines else "\n".join(["   FAILED CHECKS:"] + fail_lines))
         total_errors += errors
         total_failed_checks += len(fail_lines) - errors

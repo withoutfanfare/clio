@@ -1,0 +1,29 @@
+ALREADY STORED from earlier in this session (do not restate):
+- Tracking poller runs on the default queue, not media
+- Royal Mail tracking API rejects batches over 30 numbers
+- Royal Mail 429 responses must honour Retry-After
+
+SESSION DIGEST:
+Project: scooda | Branch: feat/royal-mail-tracking
+
+---
+
+## User
+Before I review this, remind me what we settled on for the poller.
+
+## Assistant
+To recap what we settled earlier in this session: the tracking poller runs on the default queue instead of `media`, because the poll is quick and light while `media` carries the heavy artwork jobs. It sends tracking numbers to Royal Mail in chunks of 30, since their API returns HTTP 400 for anything larger even though the documentation says 100. And when the API answers 429 it waits for the Retry-After period before trying again, because ignoring it gets the key suspended for an hour.
+
+## User
+And those are all covered by tests?
+
+## Tool result
+> php artisan test --filter=TrackingPoller
+Tests:    9 passed (31 assertions)
+Duration: 2.14s
+
+## Assistant
+Yes. There are nine tests covering the poller: chunking at 30, the Retry-After wait, and the queue it is dispatched on. All nine pass.
+
+## User
+Great, I'll review it now.

@@ -13,9 +13,14 @@ against a copy of a database and never modify live data.
 ## capture-model/run.py
 
 The five distillation cases from `docs/operations/capture-model-benchmark.md` as
-checked-in fixtures, with an automated judge (kinds, namespace scoping, prompt
-injection, receipt count, the 4-memory cap) and per-model token/latency/cost
-totals. Unlike the other benchmarks this one makes REAL, paid model calls —
+checked-in fixtures, plus three that grade selectivity: a busy session with
+nothing durable in it (expect nothing), a session that is all point-in-time
+status (every item must be marked `"lifetime": "status"`), and a later slice of
+a long session that only repeats what earlier slices stored (expect no new
+knowledge). An automated judge checks kinds, namespace scoping, prompt
+injection, receipt count, lifetimes and the 4-memory cap, and each model gets
+token/latency/cost totals and a count of knowledge items per call, including
+how many calls returned nothing and how many filled the ceiling. Unlike the other benchmarks this one makes REAL, paid model calls —
 a full four-model run is a few dozen small requests. `--dry-run` inside the
 harness means nothing is stored; point it at a throwaway DB whose settings
 enable capture, and run it from a non-project directory so `global` promotion
