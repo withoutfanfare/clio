@@ -193,12 +193,15 @@ pub fn fused_recall(
         .collect();
     let ids: Vec<&str> = keyword.iter().map(|i| i.memory.id.as_str()).collect();
     let evidence = crate::repository::term_evidence(conn, &keyword_query, &weighed, &ids)?;
-    if far && evidence.values().all(|(shared, _)| *shared < AGREEING_TERMS) {
+    if far
+        && evidence
+            .values()
+            .all(|(shared, _)| *shared < AGREEING_TERMS)
+    {
         return Ok(Vec::new());
     }
-    let names_identifier = |id: &str| {
-        scoring.identifiers_first && evidence.get(id).is_some_and(|(_, named)| *named)
-    };
+    let names_identifier =
+        |id: &str| scoring.identifiers_first && evidence.get(id).is_some_and(|(_, named)| *named);
 
     let k = scoring.fusion_k.max(0.0);
     let mut fused: HashMap<String, (f64, FusedItem)> = HashMap::new();
@@ -340,8 +343,9 @@ fn semantic_leg(
         .into_iter()
         .map(|memory| {
             let cosine = similarity.get(&memory.id).copied().unwrap_or(0.0);
-            let multiplier =
-                scoring.map_or(1.0, |s| crate::scoring::composite_multiplier(&memory, s, now));
+            let multiplier = scoring.map_or(1.0, |s| {
+                crate::scoring::composite_multiplier(&memory, s, now)
+            });
             (cosine * multiplier, memory)
         })
         .collect();
@@ -350,10 +354,7 @@ fn semantic_leg(
             .unwrap_or(std::cmp::Ordering::Equal)
             .then_with(|| a.1.id.cmp(&b.1.id))
     });
-    let ordered = scored
-        .into_iter()
-        .map(|(_, memory)| memory)
-        .collect();
+    let ordered = scored.into_iter().map(|(_, memory)| memory).collect();
     Ok((ordered, nearest))
 }
 
@@ -401,7 +402,12 @@ mod tests {
         // Names the identifier, means something else.
         let named = store(&conn, "project:x", "SCO-123 rollout checklist", &[0.0, 1.0]);
         // Means the same, shares no word with the query.
-        let meant = store(&conn, "project:x", "card payments declined at checkout", &[1.0, 0.0]);
+        let meant = store(
+            &conn,
+            "project:x",
+            "card payments declined at checkout",
+            &[1.0, 0.0],
+        );
         // Both: shares a word and the meaning.
         let both = store(&conn, "project:x", "stripe SCO-123 webhook", &[0.9, 0.1]);
         store(&conn, "project:x", "unrelated gardening note", &[-1.0, 0.0]);
@@ -411,7 +417,11 @@ mod tests {
         let ids: Vec<&str> = fused.iter().map(|f| f.item.memory.id.as_str()).collect();
         assert_eq!(ids[0], both.id, "found by both legs ranks first");
         assert!(ids.contains(&named.id.as_str()) && ids.contains(&meant.id.as_str()));
-        assert_eq!(ids.len(), 3, "the unrelated note is below the similarity floor");
+        assert_eq!(
+            ids.len(),
+            3,
+            "the unrelated note is below the similarity floor"
+        );
         let meant_item = fused.iter().find(|f| f.item.memory.id == meant.id).unwrap();
         assert!(!meant_item.keyword);
 
@@ -425,7 +435,12 @@ mod tests {
     fn an_overrun_or_failed_semantic_leg_falls_back_to_keywords() {
         let conn = crate::db::open_in_memory().unwrap();
         let named = store(&conn, "project:x", "lease expiry rules", &[0.0, 1.0]);
-        store(&conn, "project:x", "something similar in meaning", &[1.0, 0.0]);
+        store(
+            &conn,
+            "project:x",
+            "something similar in meaning",
+            &[1.0, 0.0],
+        );
         let late = QueryEmbedding {
             deadline: Some(Instant::now() - Duration::from_secs(1)),
             ..embedding(&[1.0, 0.0])
@@ -440,9 +455,21 @@ mod tests {
         let conn = crate::db::open_in_memory().unwrap();
         // Both legs half-agree on these; neither names the ticket.
         let agreed: Vec<Memory> = (0..3)
-            .map(|i| store(&conn, "project:x", &format!("stripe webhook retries {i}"), &[1.0, 0.0]))
+            .map(|i| {
+                store(
+                    &conn,
+                    "project:x",
+                    &format!("stripe webhook retries {i}"),
+                    &[1.0, 0.0],
+                )
+            })
             .collect();
-        let named = store(&conn, "project:x", "SCO-123 was closed as a duplicate", &[0.0, 1.0]);
+        let named = store(
+            &conn,
+            "project:x",
+            "SCO-123 was closed as a duplicate",
+            &[0.0, 1.0],
+        );
         let q = query("SCO-123 stripe webhook retries");
         let near = embedding(&[1.0, 0.0]);
 
@@ -489,11 +516,19 @@ mod tests {
             model: "another-model".into(),
             ..near.clone()
         };
-        assert_eq!(fused_recall(&conn, &q, Some(&other_model)).unwrap().len(), 1);
+        assert_eq!(
+            fused_recall(&conn, &q, Some(&other_model)).unwrap().len(),
+            1
+        );
 
         // Three of the query's words agreeing on one memory is evidence by
         // itself, however far its meaning sits.
-        let agreed = store(&conn, "project:x", "lease expiry notes for agents", &[0.0, 1.0]);
+        let agreed = store(
+            &conn,
+            "project:x",
+            "lease expiry notes for agents",
+            &[0.0, 1.0],
+        );
         let found = fused_recall(&conn, &q, Some(&near)).unwrap();
         assert_eq!(found.len(), 2);
         assert_eq!(found[0].item.memory.id, agreed.id);
@@ -501,7 +536,12 @@ mod tests {
         assert!(fused_recall(&conn, &q, Some(&near)).unwrap().is_empty());
 
         // Something close in meaning lets the keyword match through as well.
-        store(&conn, "project:x", "tokens time out after an hour", &[0.9, 0.436]);
+        store(
+            &conn,
+            "project:x",
+            "tokens time out after an hour",
+            &[0.9, 0.436],
+        );
         assert_eq!(fused_recall(&conn, &q, Some(&near)).unwrap().len(), 2);
     }
 
@@ -520,8 +560,11 @@ mod tests {
             ..on.clone()
         };
         assert!(query_embedding(&off, Some("task"), ok).is_none());
-        let failing =
-            |_: &str| Err(crate::error::ClioError::Config("embeddings are disabled".into()));
+        let failing = |_: &str| {
+            Err(crate::error::ClioError::Config(
+                "embeddings are disabled".into(),
+            ))
+        };
         assert!(query_embedding(&on, Some("task"), failing).is_none());
         let slow = |_: &str| {
             std::thread::sleep(Duration::from_millis(400));

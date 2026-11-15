@@ -1376,8 +1376,8 @@ impl ClioServer {
             ),
             (
                 "memory_search",
-                "find by meaning (a question or description in your own words). Needs an \
-                 embedding backend; if it reports none, use memory_recall.",
+                "find by meaning (a question or description in your own words), with key-word \
+                 matches merged in. Without an embedding backend it returns key-word matches only.",
             ),
             (
                 "memory_get",
@@ -1787,7 +1787,11 @@ fn search_fused(
             "Semantic search was unavailable, so these are keyword matches only.".to_string()
         })
     };
-    Ok(format_recall_response(&result, &params.response_format, note))
+    Ok(format_recall_response(
+        &result,
+        &params.response_format,
+        note,
+    ))
 }
 
 fn recall_note(
@@ -3250,11 +3254,8 @@ impl ClioServer {
         let backend = self.embedding_backend.clone();
         tokio::task::spawn_blocking(move || {
             // Embedded before the lock: other tool calls need not wait on it.
-            let query_embedding = fused_query_embedding(
-                &settings.scoring,
-                params.query.as_deref(),
-                backend,
-            );
+            let query_embedding =
+                fused_query_embedding(&settings.scoring, params.query.as_deref(), backend);
             let conn = conn.lock().map_err(|e| format!("lock error: {e}"))?;
             let cwd_path = params.cwd.as_deref().map(std::path::Path::new);
             let namespace = optional_mcp_namespace(

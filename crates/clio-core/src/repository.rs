@@ -2092,7 +2092,11 @@ mod tests {
         };
         assert_eq!(first(3.0, 0.01), weaker.id, "full weight: importance wins");
         assert_eq!(first(1.0, 0.01), better.id, "off: the text match wins");
-        assert_eq!(first(3.0, 0.0), better.id, "decay off keeps plain BM25 order");
+        assert_eq!(
+            first(3.0, 0.0),
+            better.id,
+            "decay off keeps plain BM25 order"
+        );
     }
 
     #[test]

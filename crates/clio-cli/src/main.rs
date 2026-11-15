@@ -2722,10 +2722,9 @@ fn cmd_search_fused(
     args: SearchArgs,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let config = s.embeddings.clone();
-    let embedding =
-        clio_core::fusion::query_embedding(&s.scoring, Some(&args.query), move |q| {
-            embeddings::embed_with_config(&config, q)
-        });
+    let embedding = clio_core::fusion::query_embedding(&s.scoring, Some(&args.query), move |q| {
+        embeddings::embed_with_config(&config, q)
+    });
     let base = RecallQuery {
         query: Some(args.query),
         namespace: args.namespace.clone().filter(|_| !args.global),

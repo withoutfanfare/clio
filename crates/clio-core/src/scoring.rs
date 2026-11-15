@@ -168,7 +168,10 @@ mod tests {
             importance_clamp: 1.25,
             ..Default::default()
         };
-        assert_eq!(composite_multiplier(&mem_at(5, 0, &now_str(now)), &neutral, now), 1.0);
+        assert_eq!(
+            composite_multiplier(&mem_at(5, 0, &now_str(now)), &neutral, now),
+            1.0
+        );
     }
 
     #[test]

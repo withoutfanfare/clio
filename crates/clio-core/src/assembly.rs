@@ -2389,14 +2389,18 @@ mod tests {
         let named = make_memory(&conn, ns, "fact", "The spool uses atomic renames");
         let meant = make_memory(&conn, ns, "fact", "Writes survive a power cut");
         let far = make_memory(&conn, ns, "fact", "Bananas are yellow");
-        for (memory, vector) in [(&named, [0.0, 1.0]), (&meant, [1.0, 0.0]), (&far, [-1.0, 0.0])] {
+        for (memory, vector) in [
+            (&named, [0.0, 1.0]),
+            (&meant, [1.0, 0.0]),
+            (&far, [-1.0, 0.0]),
+        ] {
             crate::embeddings::store_embedding(&conn, &memory.id, "test", 2, &vector).unwrap();
         }
 
         let mut request = resume_request(ns);
         request.query = Some("is the spool durable".into());
         request.scoring = Some(ScoringConfig::default());
-        let reasons =|request: &ResumeRequest| -> Vec<(String, String)> {
+        let reasons = |request: &ResumeRequest| -> Vec<(String, String)> {
             let brief = build_resume_brief(&conn, request).unwrap();
             section(&brief, "Relevant knowledge")
                 .map(|s| {
@@ -2430,8 +2434,17 @@ mod tests {
         let ns = "project:resume";
         let first = make_memory(&conn, ns, "fact", "Deploys run the ship script");
         let copy = make_memory(&conn, ns, "fact", "Deploys always run the ship script");
-        let other = make_memory(&conn, ns, "fact", "Deploys need a clean tree and a green build before anything else happens");
-        for (memory, vector) in [(&first, [1.0, 0.0]), (&copy, [0.99, 0.141]), (&other, [0.0, 1.0])] {
+        let other = make_memory(
+            &conn,
+            ns,
+            "fact",
+            "Deploys need a clean tree and a green build before anything else happens",
+        );
+        for (memory, vector) in [
+            (&first, [1.0, 0.0]),
+            (&copy, [0.99, 0.141]),
+            (&other, [0.0, 1.0]),
+        ] {
             crate::embeddings::store_embedding(&conn, &memory.id, "test", 2, &vector).unwrap();
         }
         let mut request = resume_request(ns);
@@ -2440,7 +2453,11 @@ mod tests {
         let shown = |request: &ResumeRequest| -> Vec<String> {
             let brief = build_resume_brief(&conn, request).unwrap();
             let knowledge = section(&brief, "Relevant knowledge").unwrap();
-            knowledge.items.iter().map(|i| i.memory_id.clone()).collect()
+            knowledge
+                .items
+                .iter()
+                .map(|i| i.memory_id.clone())
+                .collect()
         };
 
         request.scoring = Some(ScoringConfig::default());
@@ -2457,7 +2474,10 @@ mod tests {
             ..Default::default()
         });
         let kept = shown(&request);
-        assert!(kept.contains(&first.id) && kept.contains(&copy.id), "{kept:?}");
+        assert!(
+            kept.contains(&first.id) && kept.contains(&copy.id),
+            "{kept:?}"
+        );
     }
 
     #[test]
