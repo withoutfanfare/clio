@@ -595,7 +595,7 @@ pub fn recall_ordinary(
     };
     let result = run(query)?;
     let widened = result.total == 0 && !query.match_any_term
-        && query.query.as_deref().is_some_and(|q| q.split_whitespace().nth(1).is_some());
+        && query.query.as_deref().is_some_and(|q| q.split_whitespace().nth(1).is_some() && sanitise_fts_query_any(q) != sanitise_fts_query(q));
     if widened {
         // Loose any-word matches are not evidence of use; counting them
         // would feed junk into the access signal that ranking reads.
@@ -1997,6 +1997,8 @@ mod tests {
         assert!(!widened);
         assert_eq!(result.total, 1);
         assert!(result.items.is_empty());
+        let query = RecallQuery { query: Some("is it on".into()), ..Default::default() };
+        assert!(!recall_ordinary(&conn, &query, None).unwrap().1);
     }
 
     #[test]

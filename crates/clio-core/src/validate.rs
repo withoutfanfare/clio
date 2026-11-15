@@ -113,7 +113,8 @@ pub fn remember_input(input: &RememberInput) -> Result<()> {
                     .unwrap();
             let fractional_format = time::format_description::parse(
                 "[year]-[month]-[day]T[hour]:[minute]:[second].[subsecond]",
-            ).unwrap();
+            )
+            .unwrap();
             let date = time::Date::parse(value, &date_format).is_ok();
             let datetime =
                 time::OffsetDateTime::parse(value, &time::format_description::well_known::Rfc3339)

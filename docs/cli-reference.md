@@ -171,7 +171,7 @@ clio recall --query "redis" --json
 
 Ordinary keyword recall retries an empty multi-word query using any-word matching.
 Scoped recall widens only when both project and global strict results are empty.
-Pagination beyond an existing result set does not widen. CLI recall JSON reports `widened`; MCP JSON retains its core envelope.
+Pagination beyond an existing result set does not widen. A filler-only query whose retry would be identical does not report widening. CLI recall JSON reports `widened`; MCP JSON retains its core envelope.
 
 Ordinary recall, recent lists, semantic search and context briefs exclude expired
 memories (including linked expansion). CLI recall/search/recent accept
