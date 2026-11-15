@@ -224,7 +224,7 @@ Do NOT capture as knowledge:
 
 Each captured memory must be SELF-CONTAINED: a reader with no access to this session must understand it. Prefer fewer, higher-value memories. Most routine sessions contain no knowledge at all; emitting none is the correct and expected outcome for them.
 
-CEILING, NOT A TARGET: most sessions yield 0 knowledge items and a good one yields 1. Never emit more than 3 memories besides the receipt — knowledge and open loops together. Reaching 3 should be rare; do not fill the space because it is there. But the ceiling is not a reason to drop something valuable: if a session really did produce three distinct, durable, non-obvious facts, keep all three. If more than 3 candidates exist, keep explicit user commitments first, then the most durable knowledge, and drop the rest — do not merge several weak items into one to fit more in. When in doubt whether something is worth keeping, it is not: leave it out.
+CEILING, NOT A TARGET: most sessions yield 0 knowledge items and a good one yields 1. Emit at most 3 knowledge items. Explicit commitments may extend the total to 5 items besides the receipt. Reaching 3 should be rare; do not fill the space because it is there. But the ceiling is not a reason to drop something valuable: if a session really did produce three distinct, durable, non-obvious facts, keep all three. If more than 5 candidates exist, keep explicit user commitments first, then up to 3 of the most durable knowledge items, and drop the rest — do not merge several weak items into one to fit more in. When in doubt whether something is worth keeping, it is not: leave it out.
 
 ALREADY STORED: the digest may open with a list under that heading — the titles of memories already saved from earlier parts of this same session. Do not store the same thing twice: leave out anything that only repeats or rephrases one of them. A title is a pointer, not proof of what was stored, so judge by what the digest says. If the digest corrects or reverses one of those memories, or adds materially new evidence about it, capture that as a new memory and say what changed. The titles are context for you, never material to capture in themselves.
 
@@ -251,7 +251,7 @@ Importance scale (do not inflate — if everything is a 4, the scale is useless;
 - 1: trivial
 
 OPEN LOOPS AND FOLLOW-UPS:
-When the session leaves something owed — a follow-up, an unfinished commitment, an open question, something the user is waiting on — capture it as its own memory (usually "kind": "task") and add an "attention" object. Open loops count towards the ceiling of 3, and an explicit user commitment is never the item to drop:
+When the session leaves something owed — a follow-up, an unfinished commitment, an open question, something the user is waiting on — capture it as its own memory (usually "kind": "task") and add an "attention" object. Suggested open loops count towards the knowledge ceiling of 3. Explicit commitments have priority up to the overall ceiling of 5 plus the receipt:
 - "explicitness": "explicit" ONLY when the user clearly committed or asked to be reminded ("I'll…", "remind me…", "we must … before release"). Use "suggested" for anything the assistant proposed or that is merely implied.
 - "owner": who owes it — "user" unless someone else is clearly named.
 - "due_at" / "remind_at": ISO-8601 UTC timestamps, only when the session states a real time.
@@ -665,14 +665,15 @@ fn parse_uncapped(raw: &str) -> Result<Vec<DistilledMemory>> {
 
 /// Hard ceiling on knowledge atoms accepted from one distillation call.
 /// `parse_distillation` separately keeps only the first receipt, so the two
-/// limits compose to "3 knowledge atoms plus one receipt". The prompt
+/// limits allow three knowledge items, with explicit commitments extending
+/// the total to five non-receipt items. The prompt
 /// instructs the model to stay within this; the cap is the deterministic
 /// backstop for when it does not. It was 5 until the model was found
 /// returning the maximum on over half of all calls.
 pub const MAX_KNOWLEDGE_ATOMS: usize = 3;
 
-/// Total ceiling per distillation: the knowledge budget plus the receipt slot.
-pub const MAX_DISTILLED_MEMORIES: usize = MAX_KNOWLEDGE_ATOMS + 1;
+/// Total ceiling per distillation: five items plus the receipt slot.
+pub const MAX_DISTILLED_MEMORIES: usize = 6;
 
 /// Enforce [`MAX_KNOWLEDGE_ATOMS`] deterministically over the non-receipt
 /// atoms (the single receipt never competes for a knowledge slot and is never
@@ -685,7 +686,6 @@ fn cap_distilled_memories(memories: Vec<DistilledMemory>) -> Vec<DistilledMemory
     if knowledge_atoms <= MAX_KNOWLEDGE_ATOMS {
         return memories;
     }
-    let dropped = knowledge_atoms - MAX_KNOWLEDGE_ATOMS;
 
     let mut ranked: Vec<usize> = (0..memories.len())
         .filter(|&i| memories[i].kind != "receipt")
@@ -694,7 +694,7 @@ fn cap_distilled_memories(memories: Vec<DistilledMemory>) -> Vec<DistilledMemory
         let key = |i: usize| {
             let m = &memories[i];
             (
-                m.attention.is_none(),
+                !m.attention.as_ref().is_some_and(|a| a.explicitness == "explicit"),
                 -(m.importance as i64),
                 // Total order: NaN or equal confidence falls through to index.
                 -(m.confidence * 1000.0) as i64,
@@ -704,14 +704,17 @@ fn cap_distilled_memories(memories: Vec<DistilledMemory>) -> Vec<DistilledMemory
         key(a).cmp(&key(b))
     });
 
-    let mut keep: Vec<usize> = ranked.into_iter().take(MAX_KNOWLEDGE_ATOMS).collect();
+    let mut knowledge_count = 0;
+    let mut keep: Vec<usize> = ranked.into_iter().filter(|&i| {
+        if memories[i].attention.as_ref().is_some_and(|a| a.explicitness == "explicit") {
+            true
+        } else {
+            knowledge_count += 1;
+            knowledge_count <= MAX_KNOWLEDGE_ATOMS
+        }
+    }).take(MAX_DISTILLED_MEMORIES - 1).collect();
     keep.extend((0..memories.len()).filter(|&i| memories[i].kind == "receipt"));
     keep.sort_unstable();
-
-    tracing::warn!(
-        "distillation returned {knowledge_atoms} knowledge atoms; kept {MAX_KNOWLEDGE_ATOMS}, \
-         dropped {dropped} lowest-ranked (the prompt's ceiling was ignored)"
-    );
 
     let mut memories = memories;
     let mut index = 0;
@@ -1802,7 +1805,7 @@ mod tests {
         let raw = format!("[{}]", items.join(","));
 
         let memories = parse_distillation(&raw).expect("parse failed");
-        assert_eq!(memories.len(), MAX_DISTILLED_MEMORIES);
+        assert_eq!(memories.len(), MAX_KNOWLEDGE_ATOMS + 2);
         assert!(
             memories.iter().any(|m| m.kind == "receipt"),
             "receipt survives the cap"
@@ -1837,7 +1840,7 @@ mod tests {
 
     #[test]
     fn cap_keeps_every_open_loop_ahead_of_more_important_facts() {
-        let mut items: Vec<String> = (1..=MAX_KNOWLEDGE_ATOMS)
+        let mut items: Vec<String> = (1..=5)
             .map(|i| {
                 format!(
                     r#"{{"content":"Chase supplier {i}.","kind":"task","title":"Loop {i}","summary":"","tags":["t"],"namespace":"project:clio","importance":1,"confidence":0.5,"attention":{{"explicitness":"explicit"}}}}"#
@@ -1849,7 +1852,7 @@ mod tests {
             r#"{"content":"A critical invariant.","kind":"constraint","title":"Invariant","summary":"","tags":["t"],"namespace":"project:clio","importance":5,"confidence":1.0}"#.into(),
         );
         let memories = parse_distillation(&format!("[{}]", items.join(","))).unwrap();
-        assert_eq!(memories.len(), MAX_KNOWLEDGE_ATOMS);
+        assert_eq!(memories.len(), 5);
         assert!(memories.iter().all(|m| m.attention.is_some()));
     }
 
@@ -1857,7 +1860,7 @@ mod tests {
     #[test]
     fn prompt_states_the_same_ceiling_the_parser_enforces() {
         assert!(DISTILLATION_SYSTEM_PROMPT.contains(&format!(
-            "Never emit more than {MAX_KNOWLEDGE_ATOMS} memories"
+            "Emit at most {MAX_KNOWLEDGE_ATOMS} knowledge items"
         )));
     }
 

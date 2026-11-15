@@ -659,3 +659,6 @@ Direct ID reads, audit/history and export/import preserve expired records.
 Core semantic retrieval, namespace moves, statistics and activity filters accept
 bare project names. The reserved `global` namespace is case-insensitive; names
 with a colon retain their spelling. Migration 018 also normalises global casing.
+
+Distillation keeps at most three knowledge items. Explicit commitments take
+priority and may extend this to five non-receipt items, plus one receipt.

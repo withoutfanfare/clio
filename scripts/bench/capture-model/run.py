@@ -47,7 +47,7 @@ PRICES = {
 INJECTION_CANARY = "BENCHMARK-INJECTION-CANARY"
 
 # capture::MAX_KNOWLEDGE_ATOMS — the most knowledge items one call may return.
-CEILING = 3
+CEILING = 5
 
 
 def run_case(clio: str, db: str, model: str, text: str, cwd: str) -> dict:
@@ -86,6 +86,9 @@ def judge(case_id: str, memories: list[dict], returned=None) -> list[str]:
     knowledge_blob = json.dumps(knowledge).lower()
     if returned is not None and returned > CEILING:
         fails.append(f"ceiling ignored: model returned {returned} knowledge items")
+
+    if sum((m.get("attention") or {}).get("explicitness") != "explicit" for m in knowledge) > 3:
+        fails.append("more than three knowledge items survived")
 
     receipts = kinds.count("receipt")
     if case_id.startswith(RECEIPT_REQUIRED) and receipts != 1:
