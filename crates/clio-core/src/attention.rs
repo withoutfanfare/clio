@@ -550,7 +550,11 @@ pub fn overview(
         .collect();
     let memory_titles = crate::repository::get_many_eligible(conn, &ids, false, true)?
         .into_iter()
-        .filter(|memory| namespace.is_none_or(|ns| memory.namespace == ns))
+        // Canonical on both sides: `namespace` already is, and a memory may
+        // still carry the bare spelling its follow-up was repaired from.
+        .filter(|memory| {
+            namespace.is_none_or(|ns| crate::context::canonical_namespace(&memory.namespace) == ns)
+        })
         .map(|memory| {
             let title = memory
                 .title
@@ -1166,6 +1170,15 @@ mod tests {
         )
         .unwrap();
         assert_eq!(open_attention(&conn, &bare.id).namespace, "project:scooda");
+
+        // The overview still shows that follow-up's title, although its
+        // memory carries the bare spelling.
+        let scoped = overview(&conn, Some("scooda"), None, 0, 0).unwrap();
+        assert_eq!(scoped.open.len(), 1);
+        assert_eq!(
+            scoped.memory_titles.get(&bare.id).unwrap(),
+            "Filed from a bare namespace"
+        );
     }
 
     #[test]

@@ -431,7 +431,7 @@ CREATE INDEX idx_attention_status ON attention_items(status, namespace);
 
 - Statuses are only `open`, `snoozed`, `resolved`, `cancelled`. Invalid transitions are validation errors, not no-ops; `resolved` and `cancelled` are terminal.
 - Creation is idempotent per memory and commits atomically with its `attention_opened` event.
-- `namespace` is always stored in canonical form (a bare `clio` becomes `project:clio`), and listing, eligibility and the overview accept a bare project name and treat it the same way.
+- New rows store `namespace` in canonical form (a bare `clio` becomes `project:clio`), and listing, eligibility and the overview accept a bare project name and treat it the same way. The overview also canonicalises a memory's namespace before matching it to the requested one, so a follow-up keeps its title when its memory still has the bare spelling. A pre-existing bare value that migration 018 did not rewrite keeps its spelling and is reached only by an unscoped listing.
 - Completion never deletes or rewrites the source memory; it records a `resolved` event and, when evidence is supplied, a `resolved_by` link from the followed-up memory to the evidence memory.
 - Resolving or cancelling a follow-up archives its memory in the same transaction when that memory's `kind` is `task`, so finished work stops ranking in recall. The attention row, its events and the `resolved_by` link are untouched and the memory is still fetched by ID. Memories of any other kind stay live.
 - Eligibility (`overdue`, `reminder_due`, `project_session`, `dormant`) is a pure read returning a machine-readable reason; it mutates nothing, including access ranking.
@@ -988,7 +988,7 @@ The export format should be easy for:
 | `015_memory_repair_journal` | immutable repair transaction/journal tables, rollback linkage and database-wide generation triggers |
 | `016_work_reporting_proof` | isolated `work_runs` identities and `work_reports` receipts for direct reporting |
 | `017_work_guidance` | receipt-scoped human acceptance and separately stored next-task recommendations |
-| `018_canonical_attention_namespaces` | data only: rewrites bare `attention_items.namespace` values (`Scooda`) to `project:<slug>` without changing `updated_at` |
+| `018_canonical_attention_namespaces` | data only: rewrites a bare `attention_items.namespace` (`Scooda`) to `project:<slug>` when memories already exist under that project namespace, without changing `updated_at`; any other bare name is left as it is |
 
 ## Invariants For Implementers
 

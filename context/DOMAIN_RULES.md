@@ -212,7 +212,7 @@ A checkpoint commits the distillation of one session delta exactly once, keyed b
 An attention item marks one memory as operationally open. Memories record what was said; attention records what is still owed.
 
 - One optional attention row per memory (`UNIQUE(memory_id)`); creation is idempotent and commits atomically with its `attention_opened` event
-- An attention item's namespace is stored in canonical form (`clio` becomes `project:clio`); listing, eligibility and the overview canonicalise the namespace they are asked for, so a bare project name reaches the same items
+- A new attention item's namespace is stored in canonical form (`clio` becomes `project:clio`); listing, eligibility and the overview canonicalise the namespace they are asked for, so a bare project name reaches the same items. Older bare values were rewritten only where memories already existed under the matching `project:` namespace; a similar spelling alone is not treated as proof of the same project
 - Statuses are only `open`, `snoozed`, `resolved`, `cancelled`; invalid transitions are validation errors, not no-ops; `resolved` and `cancelled` are terminal
 - Completion never deletes or rewrites the source memory — it records a `resolved` event and, when evidence is supplied, a `resolved_by` link from the followed-up memory to the evidence memory
 - When a follow-up is resolved or cancelled, its memory is archived in the same transaction if its kind is `task` (hidden, not deleted). The attention row, events and `resolved_by` link still lead to the outcome; a fact or decision that only had a follow-up attached stays live
