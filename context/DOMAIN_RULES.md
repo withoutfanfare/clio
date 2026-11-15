@@ -214,6 +214,7 @@ An attention item marks one memory as operationally open. Memories record what w
 - One optional attention row per memory (`UNIQUE(memory_id)`); creation is idempotent and commits atomically with its `attention_opened` event
 - Statuses are only `open`, `snoozed`, `resolved`, `cancelled`; invalid transitions are validation errors, not no-ops; `resolved` and `cancelled` are terminal
 - Completion never deletes or rewrites the source memory — it records a `resolved` event and, when evidence is supplied, a `resolved_by` link from the followed-up memory to the evidence memory
+- When a follow-up is resolved or cancelled, its memory is archived in the same transaction if its kind is `task` (hidden, not deleted). The attention row, events and `resolved_by` link still lead to the outcome; a fact or decision that only had a follow-up attached stays live
 - Eligibility is a pure read returning a machine-readable reason per item: `overdue` (past `due_at`), `reminder_due` (past `remind_at`, including expired snoozes), `project_session` (the `project-session` trigger in the item's own namespace), `dormant` (untouched for `attention.dormant_days`)
 - An item surfaces at most once per session/topic scope for the same reason and state — the `surfaced` event's idempotency key includes the item's `updated_at`, so any state change re-arms surfacing
 - Automatic surfacing records events but never touches `access_count`/`last_accessed_at` ranking data

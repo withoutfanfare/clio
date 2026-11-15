@@ -4,8 +4,10 @@
 //! user committed to, is waiting on, or must decide. Statuses are only
 //! `open`, `snoozed`, `resolved` and `cancelled`. Completion never rewrites
 //! the source memory — it records a resolution event and, when evidence is
-//! supplied, a `resolved_by` link. Eligibility is a pure read that returns a
-//! machine-readable reason for every item it surfaces.
+//! supplied, a `resolved_by` link. A `task` memory is archived once its
+//! follow-up is resolved or cancelled, so finished work stops ranking as
+//! knowledge. Eligibility is a pure read that returns a machine-readable
+//! reason for every item it surfaces.
 
 use rusqlite::{Connection, OptionalExtension, params};
 
@@ -331,6 +333,17 @@ fn transition(
                 ..EventInput::default()
             },
         )?;
+
+        // A finished task is not knowledge worth recalling: hide its memory.
+        // The attention row, its events and any `resolved_by` link still lead
+        // to the outcome, and the memory can be fetched by ID. Other kinds
+        // stay live — a fact or decision that merely had a follow-up attached
+        // is still true once the follow-up closes.
+        if matches!(to_status, STATUS_RESOLVED | STATUS_CANCELLED)
+            && crate::repository::get_raw(conn, &item.memory_id)?.kind == "task"
+        {
+            crate::repository::archive(conn, &item.memory_id)?;
+        }
 
         get_attention(conn, &item.id)
     })();
@@ -1039,6 +1052,68 @@ mod tests {
         assert!(complete(&conn, &item.id, None, None, None).is_err());
         assert!(snooze(&conn, &item.id, "2026-08-01T00:00:00Z", None).is_err());
         assert!(cancel(&conn, &item.id, None, None).is_err());
+    }
+
+    #[test]
+    fn finishing_a_follow_up_archives_its_task_but_keeps_the_outcome_reachable() {
+        let conn = test_conn();
+        let done = remember(&conn, "Ship the fix");
+        let dropped = remember(&conn, "Try the other vendor");
+        let evidence = remember(&conn, "Fix shipped in commit abc123");
+        let fact = remember(&conn, "The vendor API caps batches at 30");
+        conn.execute(
+            "UPDATE memories SET kind = 'fact' WHERE id = ?1",
+            params![fact.id],
+        )
+        .unwrap();
+        for memory in [&done, &dropped, &fact] {
+            open_attention(&conn, &memory.id);
+        }
+
+        complete(&conn, &done.id, Some(&evidence.id), Some("shipped"), None).unwrap();
+        cancel(&conn, &dropped.id, Some("not needed"), None).unwrap();
+        cancel(&conn, &fact.id, None, None).unwrap();
+
+        let archived = |id: &str| {
+            crate::repository::get_raw(&conn, id)
+                .unwrap()
+                .archived_at
+                .is_some()
+        };
+        assert!(archived(&done.id) && archived(&dropped.id));
+        assert!(!archived(&fact.id), "a fact outlives its follow-up");
+        assert!(!archived(&evidence.id));
+
+        // Hidden from recall, yet everything about the outcome is still there.
+        let recalled = crate::repository::recall(
+            &conn,
+            &crate::models::RecallQuery {
+                namespace: Some("project:attention-test".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let ids: Vec<&str> = recalled
+            .items
+            .iter()
+            .map(|i| i.memory.id.as_str())
+            .collect();
+        assert!(!ids.contains(&done.id.as_str()) && !ids.contains(&dropped.id.as_str()));
+
+        let item = resolve_attention(&conn, &done.id).unwrap();
+        assert_eq!(item.status, STATUS_RESOLVED);
+        let history = events::list_events(&conn, &done.id, 10).unwrap();
+        assert!(
+            history
+                .iter()
+                .any(|e| e.event_type == "resolved" && e.reason.as_deref() == Some("shipped"))
+        );
+        let links = crate::repository::get_links(&conn, &done.id).unwrap();
+        assert!(links.iter().any(|l| l.to_memory_id == evidence.id));
+        assert_eq!(
+            crate::repository::get(&conn, &done.id).unwrap().content,
+            "Ship the fix"
+        );
     }
 
     #[test]

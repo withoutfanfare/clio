@@ -431,6 +431,7 @@ CREATE INDEX idx_attention_status ON attention_items(status, namespace);
 - Statuses are only `open`, `snoozed`, `resolved`, `cancelled`. Invalid transitions are validation errors, not no-ops; `resolved` and `cancelled` are terminal.
 - Creation is idempotent per memory and commits atomically with its `attention_opened` event.
 - Completion never deletes or rewrites the source memory; it records a `resolved` event and, when evidence is supplied, a `resolved_by` link from the followed-up memory to the evidence memory.
+- Resolving or cancelling a follow-up archives its memory in the same transaction when that memory's `kind` is `task`, so finished work stops ranking in recall. The attention row, its events and the `resolved_by` link are untouched and the memory is still fetched by ID. Memories of any other kind stay live.
 - Eligibility (`overdue`, `reminder_due`, `project_session`, `dormant`) is a pure read returning a machine-readable reason; it mutates nothing, including access ranking.
 - Existing `task`-kind memories remain valid without attention rows.
 
