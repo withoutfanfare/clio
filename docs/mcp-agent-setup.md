@@ -555,14 +555,44 @@ Run `clio setup generic` to get a ready-to-paste JSON block with your exact bina
 
 ## MCP Tools Reference
 
-Once connected, AI agents have access to Clio's MCP tools. Each read or list tool returns either JSON or Markdown where its contract exposes `response_format` (default: `markdown` for human-readable output in chat, `json` for structured data).
+Once connected, AI agents have access to Clio's MCP tools. Each read or list tool returns either Markdown or JSON where its contract exposes `response_format`. There are three values. `markdown` is the default and the one to read: cards of id, namespace, kind, creation date, title and a short excerpt. `compact` is for structured processing: the same fields as one-line JSON, at about the same size. `json` returns whole records and is several times larger; use it only when a program needs them (the desktop app does). To read one whole memory, call `memory_get`.
+
+### A smaller tool list (`CLIO_MCP_TOOLS`)
+
+Many clients load every tool definition into the model's context at the start of each session. Clio's full list is 29 tools and about 7,000 tokens. Set the environment variable `CLIO_MCP_TOOLS=core` on the `clio-mcp` process to offer only the ten everyday tools, about 3,700 tokens:
+
+`memory_recall`, `memory_search`, `memory_get`, `memory_remember`, `memory_update`, `memory_resume`, `memory_context`, `memory_action`, `memory_feedback`, `memory_archive`
+
+| Value | Tools offered |
+|---|---|
+| unset, empty or `full` | All 29 (the default; nothing changes for existing clients) |
+| `core` | The ten above. The others are not listed, and calling one is an unknown-tool error |
+| anything else | The server refuses to start and names the two valid values |
+
+```json
+{
+  "mcpServers": {
+    "clio": {
+      "command": "/path/to/clio-mcp",
+      "env": {
+        "CLIO_DB_PATH": "/path/to/memory.db",
+        "CLIO_MCP_TOOLS": "core"
+      }
+    }
+  }
+}
+```
+
+The core list leaves out housekeeping (statistics, namespaces, links, the capture inbox, hard delete, work reports). Use the CLI or the desktop app for those, or run a second server entry with the full list. The session hooks and the desktop app are unaffected: the hooks use the CLI, and the desktop app needs the full list, which is the default.
+
+The variable is read by `clio-mcp` itself. Through the SSH bridge (`clio remote-mcp`) it must be set on the remote machine, because the bridge does not forward it: point `--remote-binary` at a small wrapper script that exports `CLIO_MCP_TOOLS=core` and then runs `clio-mcp`. Keep the desktop app's remote connection on the plain binary: it calls tools outside the core list.
 
 ### Write tools
 
 | Tool | Purpose | Key parameters |
 |---|---|---|
-| `memory_remember` | Store or upsert a memory | `content` (required), `kind`, `title`, `summary`, `tags`, `namespace`, `cwd`, `importance`, `upsert`, `source`, `source_ref` |
-| `memory_update` | Patch a known memory while rejecting stale edits | `memory_id`, `expected_updated_at`, changed fields |
+| `memory_remember` | Store or upsert a memory. Returns the whole record; pass `response_format: "compact"` for a short receipt (`id`, `namespace`, `title`, `updated_at`) | `content` (required), `kind`, `title`, `summary`, `tags`, `namespace`, `cwd`, `importance`, `upsert`, `source`, `source_ref` |
+| `memory_update` | Patch a known memory while rejecting stale edits; `compact` returns the same receipt | `memory_id`, `expected_updated_at`, changed fields |
 | `memory_capture` | Classify text, then return a `Stored` or `Queued` outcome | `text` (required), `namespace`, `cwd` |
 | `memory_session_checkpoint` | Distil one session delta with exact-once replay | `text`, `source`, `session_id`, `cursor`, `namespace`, `cwd` |
 | `memory_link` | Create a typed directional link between two memories | `from_memory_id`, `to_memory_id`, `relationship` |
@@ -578,7 +608,7 @@ Once connected, AI agents have access to Clio's MCP tools. Each read or list too
 
 | Tool | Purpose | Key parameters |
 |---|---|---|
-| `memory_recall` | Full-text search (keyword matching via FTS5) | `query`, `namespace`, `cwd`, `kind`, `tags`, `match_all_tags`, `include_archived`, `limit`, `offset` |
+| `memory_recall` | Full-text search (keyword matching via FTS5). Every word must match; a multi-word query that matches nothing is retried on any key word, and the reply says so | `query`, `namespace`, `cwd`, `kind`, `tags`, `match_all_tags`, `include_archived`, `limit`, `offset` |
 | `memory_search` | Semantic search (cosine similarity over embeddings) | `query` (required), `namespace`, `cwd`, `include_archived`, `limit` |
 | `memory_get` | Fetch one memory by ID | `memory_id` |
 | `memory_recent` | Deprecated compatibility listing; prefer no-query `memory_recall` | `namespace`, `limit` |
@@ -588,7 +618,7 @@ Once connected, AI agents have access to Clio's MCP tools. Each read or list too
 | `memory_stats` | Aggregate statistics (counts, breakdowns, coverage) | `namespace` |
 | `memory_activity` | Recent activity feed (creates, updates, archives) | `namespace`, `limit` |
 | `memory_context` | Assemble a preset-scoped context brief | `namespace`, `cwd`, `preset`, `query` |
-| `memory_resume` | Assemble evidence-backed pickup context without access tracking | `namespace`, `cwd`, `query`, `session_id` |
+| `memory_resume` | Assemble evidence-backed pickup context. It does not count as use for ranking; with `session_id` it records what it showed, to suppress repeats | `namespace`, `cwd`, `query`, `session_id` |
 
 Individual-memory, recall, recent and embedding reads go directly to SQLite so
 separate MCP processes observe committed changes. Only the namespace list is

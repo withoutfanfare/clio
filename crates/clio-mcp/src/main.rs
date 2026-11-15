@@ -20,7 +20,7 @@ use rmcp::model::{
 };
 use rmcp::{ErrorData, ServerHandler, ServiceExt, tool, tool_handler, tool_router};
 use schemars::JsonSchema;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use clio_core::error::ClioError;
 use clio_core::models::{
@@ -114,7 +114,8 @@ struct RememberParams {
     #[schemars(skip)]
     clio_namespace: Option<String>,
 
-    /// Memory kind: note, decision, snippet.
+    /// Kind. `decision` and `constraint` are what briefs surface; otherwise
+    /// fact, task, snippet or note (default).
     #[serde(default = "default_kind")]
     kind: String,
 
@@ -164,6 +165,10 @@ struct RememberParams {
     /// Replace the record with the same source+source_ref instead of inserting.
     #[serde(default)]
     upsert: bool,
+
+    /// json (default, the whole record) | compact (a short receipt).
+    #[serde(default = "default_write_format")]
+    response_format: String,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -212,6 +217,10 @@ struct UpdateParams {
 
     #[serde(default, deserialize_with = "deserialize_nullable_patch")]
     valid_until: Option<Option<String>>,
+
+    /// json (default, the whole record) | compact (a short receipt).
+    #[serde(default = "default_write_format")]
+    response_format: String,
 }
 
 fn deserialize_nullable_patch<'de, D, T>(
@@ -226,7 +235,7 @@ where
 
 #[derive(Debug, Deserialize, JsonSchema)]
 struct RecallParams {
-    /// Search query. Omit for recent.
+    /// Words to find. Omit to list recent memories.
     #[serde(default)]
     query: Option<String>,
 
@@ -267,7 +276,8 @@ struct RecallParams {
     #[serde(default)]
     importance_max: Option<i32>,
 
-    /// Sort order: updated_desc, updated_asc, importance_desc, importance_asc, created_desc, created_asc.
+    /// Sort a listing: updated_desc, updated_asc, importance_desc, importance_asc,
+    /// created_desc, created_asc. Has no effect with `query` (best match first).
     #[serde(default)]
     sort_by: Option<String>,
 
@@ -287,7 +297,8 @@ struct RecallParams {
     #[serde(default)]
     offset: u32,
 
-    /// Format: markdown|json.
+    /// markdown (default) | compact (the same fields as JSON) | json (whole
+    /// records, several times larger).
     #[serde(default = "default_response_format")]
     response_format: String,
 }
@@ -304,51 +315,39 @@ struct GetParams {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 struct RecentParams {
-    /// Namespace filter.
     #[serde(default)]
     namespace: Option<String>,
 
-    /// Kind filter.
     #[serde(default)]
     kind: Option<String>,
 
-    /// Tag filter.
     #[serde(default)]
     tags: Vec<String>,
 
-    /// Require all tags to match.
     #[serde(default = "default_true")]
     match_all_tags: bool,
 
-    /// Minimum importance (1–5).
     #[serde(default)]
     importance_min: Option<i32>,
 
-    /// Maximum importance (1–5).
     #[serde(default)]
     importance_max: Option<i32>,
 
-    /// Sort order: updated_desc, updated_asc, importance_desc, importance_asc, created_desc, created_asc.
     #[serde(default)]
     sort_by: Option<String>,
 
-    /// Include archived.
     #[serde(default)]
     include_archived: bool,
 
-    /// Return only archived memories.
     #[serde(default)]
     archived_only: bool,
 
-    /// Pagination offset.
     #[serde(default)]
     offset: u32,
 
-    /// Max results.
     #[serde(default = "default_limit")]
     limit: u32,
 
-    /// Format: markdown|json.
     #[serde(default = "default_response_format")]
     response_format: String,
 }
@@ -417,9 +416,7 @@ struct GetLinksParams {
     /// Memory ID.
     memory_id: String,
 
-    /// Edge direction: outgoing (default, compatible shape), incoming, or
-    /// both. Non-default directions return edge contexts with a `direction`
-    /// field relative to this memory.
+    /// outgoing (default), incoming or both.
     #[serde(default)]
     direction: Option<String>,
 }
@@ -481,7 +478,7 @@ struct SessionCheckpointParams {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 struct SearchParams {
-    /// Search query.
+    /// A question or description, in your own words.
     query: String,
 
     /// Namespace filter.
@@ -509,7 +506,8 @@ struct SearchParams {
     #[serde(default = "default_limit")]
     limit: u32,
 
-    /// Format: markdown|json.
+    /// markdown (default) | compact (the same fields as JSON) | json (whole
+    /// records, several times larger).
     #[serde(default = "default_response_format")]
     response_format: String,
 }
@@ -545,8 +543,7 @@ struct SuggestLinksParams {
     /// Memory ID.
     memory_id: String,
 
-    /// Minimum cosine similarity (0.0–1.0). Only suggestions at or above this are
-    /// returned: lower = more permissive (more, looser links); 0.9+ = near-identical.
+    /// Minimum cosine similarity 0.0–1.0; lower returns more, looser suggestions.
     #[serde(default = "default_threshold")]
     threshold: f64,
 
@@ -574,11 +571,11 @@ struct ContextParams {
     #[schemars(skip)]
     clio_namespace: Option<String>,
 
-    /// Preset: project-brief, person-brief, decision-history, active-constraints, recent-activity, handoff, custom.
+    /// project-brief, person-brief, decision-history, active-constraints, recent-activity, handoff, custom.
     #[serde(default = "default_preset")]
     preset: String,
 
-    /// FTS query for the custom and handoff presets (handoff requires it — pass the ticket id or topic).
+    /// Keywords for the custom preset; required by handoff (a ticket id or topic).
     #[serde(default)]
     query: Option<String>,
 
@@ -586,7 +583,7 @@ struct ContextParams {
     #[serde(default = "default_max_items")]
     max_items: u32,
 
-    /// Character budget for the whole brief (sections truncated greedily once reached).
+    /// Character budget for the whole brief.
     #[serde(default)]
     char_budget: Option<u32>,
 
@@ -594,17 +591,18 @@ struct ContextParams {
     #[serde(default)]
     include_links: bool,
 
-    /// Format: markdown|json.
+    /// markdown (default) | compact (the same fields as JSON) | json (whole
+    /// records, several times larger).
     #[serde(default = "default_response_format")]
     response_format: String,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
 struct InboxParams {
-    /// Action: list | approve | reject | edit.
+    /// list | approve | reject | edit.
     action: String,
 
-    /// Review item ID. Required for approve/reject/edit; ignored for list.
+    /// Review item ID (approve/reject/edit).
     #[serde(default, alias = "id")]
     review_id: Option<String>,
 
@@ -616,7 +614,7 @@ struct InboxParams {
     #[serde(default = "default_response_format")]
     response_format: String,
 
-    /// Include confirmation that JSON list results cover pending and edited items.
+    /// JSON list: wrap items with confirmation that edited ones are included.
     #[serde(default)]
     include_status_scope: bool,
 
@@ -651,8 +649,8 @@ struct InboxParams {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 struct ResumeParams {
-    /// Prompt/task context for the relevant-knowledge section. Omit at
-    /// session start; pass the user's task on the first substantive prompt.
+    /// The task in a sentence, for the relevant-knowledge section. Omit at
+    /// session start.
     #[serde(default)]
     query: Option<String>,
 
@@ -664,8 +662,7 @@ struct ResumeParams {
     #[serde(default)]
     cwd: Option<String>,
 
-    /// Session or topic scope: suppresses repeats within the scope and
-    /// records idempotent `surfaced` events.
+    /// Session or topic scope: records what was shown and suppresses repeats.
     #[serde(default)]
     session_id: Option<String>,
 
@@ -700,8 +697,11 @@ fn resume_brief_md(brief: &clio_core::assembly::ResumeBrief) -> String {
         for item in &section.items {
             let title = item.title.as_deref().unwrap_or("(untitled)");
             out.push_str(&format!(
-                "- [{}] **{}** ({})\n",
-                item.kind, title, item.memory_id
+                "- [{}] **{}** ({}, {})\n",
+                item.kind,
+                title,
+                item.memory_id,
+                day(&item.created_at)
             ));
             out.push_str(&format!("  why: {}\n", item.reason));
             out.push_str(&format!("  {}\n", item.content));
@@ -712,11 +712,11 @@ fn resume_brief_md(brief: &clio_core::assembly::ResumeBrief) -> String {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 struct ActionParams {
-    /// Action: add | list | eligible | complete | snooze | cancel | attach_external | history.
+    /// add | list | eligible | overview | complete | snooze | cancel | attach_external | history.
     action: String,
 
-    /// Attention item ID or memory ID. Required for complete, snooze, cancel,
-    /// attach_external and history.
+    /// Attention item or memory ID (complete, snooze, cancel, attach_external,
+    /// history).
     #[serde(default, alias = "id")]
     action_id: Option<String>,
 
@@ -832,6 +832,12 @@ fn default_response_format() -> String {
     "markdown".into()
 }
 
+/// Writes answer with the whole record unless asked otherwise: programs that
+/// call them (the desktop app's remote mode) decode a complete `Memory`.
+fn default_write_format() -> String {
+    "json".into()
+}
+
 fn default_activity_limit() -> u32 {
     20
 }
@@ -867,7 +873,32 @@ fn resolve_mcp_namespace(
     auto_detect: bool,
 ) -> String {
     let local_detected = if auto_detect { local_detected } else { None };
-    clio_core::context::resolve_namespace(explicit.or(local_detected), cwd, auto_detect)
+    // A bare project name ("clio") means the same namespace in every tool.
+    clio_core::context::canonical_namespace(&clio_core::context::resolve_namespace(
+        explicit.or(local_detected),
+        cwd,
+        auto_detect,
+    ))
+}
+
+/// The namespace for tools that treat "none given, none detected" as no scope
+/// at all (resume, follow-ups) rather than falling back to `global`.
+fn optional_mcp_namespace(
+    explicit: Option<&str>,
+    local_detected: Option<&str>,
+    cwd: Option<&std::path::Path>,
+    auto_detect: bool,
+) -> Option<String> {
+    let detected = || {
+        local_detected.map(str::to_string).or_else(|| {
+            cwd.and_then(clio_core::context::detect_namespace)
+                .map(|ctx| ctx.namespace)
+        })
+    };
+    explicit
+        .map(str::to_string)
+        .or_else(|| auto_detect.then(detected).flatten())
+        .map(|ns| clio_core::context::canonical_namespace(&ns))
 }
 
 fn validate_memory_payload(params: &RememberParams) -> Result<(), String> {
@@ -1144,13 +1175,47 @@ fn validate_memory_id(id: &str, field_name: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Validate a response_format value.
+/// Validate a response_format value. `json` is always the complete record
+/// shape programs decode; `compact` is the small JSON shape where a tool has
+/// one, and the same as `json` where it does not.
 fn validate_response_format(format: &str) -> Result<(), String> {
     match format {
-        "markdown" | "json" => Ok(()),
+        "markdown" | "compact" | "json" => Ok(()),
         other => Err(format!(
-            "Invalid response_format '{other}'. Must be 'markdown' or 'json'."
+            "Invalid response_format '{other}'. Must be 'markdown', 'compact' or 'json'."
         )),
+    }
+}
+
+/// Validate the response_format of a write, before anything is stored.
+fn validate_write_format(format: &str) -> Result<(), String> {
+    match format {
+        "json" | "compact" => Ok(()),
+        other => Err(format!(
+            "Invalid response_format '{other}'. Must be 'json' or 'compact'."
+        )),
+    }
+}
+
+/// Parse `sort_by`, rejecting an unknown value instead of ignoring it.
+fn parse_sort_by(value: Option<&str>) -> Result<Option<SortOrder>, String> {
+    value
+        .map(|sort| {
+            SortOrder::from_str_opt(sort).ok_or_else(|| {
+                format!(
+                    "Invalid sort_by '{sort}'. Must be one of: updated_desc, updated_asc, \
+                     importance_desc, importance_asc, created_desc, created_asc."
+                )
+            })
+        })
+        .transpose()
+}
+
+/// Reject an importance filter outside 1–5: it could only ever match nothing.
+fn validate_importance_filter(value: Option<i32>, field_name: &str) -> Result<(), String> {
+    match value {
+        Some(v) if !(1..=5).contains(&v) => Err(format!("{field_name} must be between 1 and 5.")),
+        _ => Ok(()),
     }
 }
 
@@ -1225,6 +1290,157 @@ impl ClioServer {
                 Ok(cache.settings.clone())
             }
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tool profile
+// ---------------------------------------------------------------------------
+
+/// Environment variable choosing which tools the server offers.
+const TOOLS_ENV: &str = "CLIO_MCP_TOOLS";
+
+/// The everyday tools: find, read, store, brief and follow up. Offered alone
+/// when `CLIO_MCP_TOOLS=core`, for clients that load every tool definition
+/// into context.
+const CORE_TOOLS: [&str; 10] = [
+    "memory_recall",
+    "memory_search",
+    "memory_get",
+    "memory_remember",
+    "memory_update",
+    "memory_resume",
+    "memory_context",
+    "memory_action",
+    "memory_feedback",
+    "memory_archive",
+];
+
+/// Whether `CLIO_MCP_TOOLS` asks for the core tools only. Unset, empty and
+/// `full` all mean every tool; anything else is a startup error rather than a
+/// silent fallback.
+fn core_tools_requested(value: Option<&str>) -> Result<bool, String> {
+    match value.map(str::trim) {
+        None | Some("") | Some("full") => Ok(false),
+        Some("core") => Ok(true),
+        Some(other) => Err(format!(
+            "Invalid {TOOLS_ENV} '{other}'. Must be 'core' or 'full'."
+        )),
+    }
+}
+
+impl ClioServer {
+    /// Drop every tool outside [`CORE_TOOLS`]: they are no longer listed and
+    /// calling one is an unknown-tool error.
+    fn core_tools_only(mut self) -> Self {
+        for tool in self.tool_router.list_all() {
+            if !CORE_TOOLS.contains(&tool.name.as_ref()) {
+                self.tool_router.remove_route(&tool.name);
+            }
+        }
+        self
+    }
+
+    /// Server instructions: how to scope a call and which tool to pick. Only
+    /// tools this process offers are described.
+    fn instructions(&self) -> String {
+        const TOOL_NOTES: [(&str, &str); 13] = [
+            (
+                "memory_resume",
+                "start here when beginning or resuming work: open follow-ups, blockers, \
+                 constraints, recent decisions and, with `query`, knowledge relevant to the \
+                 task, each with why it is shown. Not counted as use for ranking; pass \
+                 `session_id` and it records what it showed, so repeats are suppressed.",
+            ),
+            (
+                "memory_recall",
+                "find by exact words (a name, identifier, ticket id, short phrase). A \
+                 sentence that matches nothing is retried on any key word. Omit `query` to \
+                 list recent memories.",
+            ),
+            (
+                "memory_search",
+                "find by meaning (a question or description in your own words). Needs an \
+                 embedding backend; if it reports none, use memory_recall.",
+            ),
+            (
+                "memory_get",
+                "read one whole memory by id; list replies carry only an excerpt.",
+            ),
+            (
+                "memory_context",
+                "one themed brief. Presets: project-brief, person-brief, decision-history, \
+                 active-constraints, recent-activity, handoff, custom. handoff requires \
+                 `query` (a ticket id or topic) and returns a pickup brief.",
+            ),
+            (
+                "memory_remember",
+                "store one memory you have worded yourself. To update in place pass \
+                 `upsert: true` with BOTH `source` and `source_ref`; otherwise a new record \
+                 is inserted.",
+            ),
+            (
+                "memory_update",
+                "edit a memory by id; needs the `updated_at` you last saw.",
+            ),
+            (
+                "memory_capture",
+                "LLM-classified store; low-confidence items queue to the inbox for review \
+                 instead of storing immediately.",
+            ),
+            (
+                "memory_inbox",
+                "review queued captures (list/approve/reject/edit via `action`).",
+            ),
+            (
+                "memory_session_checkpoint",
+                "distil a session delta exactly once, keyed by source + session_id + \
+                 cursor. Requires a configured capture model.",
+            ),
+            (
+                "memory_action",
+                "follow-ups (open loops). When the user states an explicit decision or \
+                 commitment, store it IMMEDIATELY with memory_remember or \
+                 memory_action(add) — do not wait for end-of-session distillation, which is \
+                 only the safety net. Complete with evidence when done. action:eligible \
+                 reports what needs attention now and why.",
+            ),
+            (
+                "memory_feedback",
+                "say when a memory helped (useful) or misled you (wrong, stale).",
+            ),
+            (
+                "memory_archive",
+                "hide a wrong or outdated memory (soft delete; archived records are \
+                 excluded from recall by default).",
+            ),
+        ];
+
+        let mut text = String::from(
+            "Clio: local shared-memory store for AI tools (SQLite-backed).\n\n\
+             NAMESPACE: memories are scoped per project. Resolution order is \
+             explicit `namespace` -> auto-detect from `cwd` -> `global`. Always pass \
+             `cwd` so recall and storage land in the right project.\n\n\
+             CHOOSING A TOOL:\n",
+        );
+        for (tool, note) in TOOL_NOTES {
+            if self.tool_router.has_route(tool) {
+                text.push_str(&format!("- {tool}: {note}\n"));
+            }
+        }
+        text.push_str(
+            "\nTICKET CONVENTION: when working a tracked issue, tag stored memories \
+             `ticket:<issue-id>` (lowercase). Tags are FTS-indexed, so a later handoff \
+             brief for that id finds them.\n\n\
+             REPLY FORMAT (`response_format`): leave it as markdown, the default, for \
+             reading: cards of id, namespace, kind, date, title and excerpt. Use \
+             `compact` for structured processing: the same fields as one-line JSON, \
+             about the same size. Use `json` only when a program needs whole records; \
+             it is several times larger. To read one whole memory use memory_get. \
+             Writes echo the whole record unless you pass `compact`, which returns a \
+             short receipt.",
+        );
+        text
     }
 }
 
@@ -1304,29 +1520,115 @@ fn embed_memory_if_current(
 // Markdown rendering
 // ---------------------------------------------------------------------------
 
+/// The bounded preview of a memory shown in list replies: its summary when it
+/// has one, otherwise the start of its content.
+fn excerpt(m: &Memory) -> String {
+    let preview = m.summary.as_deref().unwrap_or(&m.content);
+    let cut = truncate_chars(preview, 200);
+    if cut.len() < preview.len() {
+        format!("{cut}...")
+    } else {
+        cut.to_string()
+    }
+}
+
+/// The date part (YYYY-MM-DD) of a stored timestamp.
+fn day(timestamp: &str) -> &str {
+    timestamp.get(..10).unwrap_or(timestamp)
+}
+
+/// One memory in a compact JSON list: the fields of the Markdown card, enough
+/// to choose a memory. `memory_get` or `json` returns the whole record.
+#[derive(Serialize)]
+struct CompactItem<'a> {
+    id: &'a str,
+    namespace: &'a str,
+    kind: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    title: Option<&'a str>,
+    excerpt: String,
+    /// Creation date (YYYY-MM-DD).
+    created: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    score: Option<f64>,
+}
+
+impl<'a> CompactItem<'a> {
+    fn new(m: &'a Memory, rank: Option<f64>) -> Self {
+        Self {
+            id: &m.id,
+            namespace: &m.namespace,
+            kind: &m.kind,
+            title: m.title.as_deref(),
+            excerpt: excerpt(m),
+            created: day(&m.created_at),
+            // Keyword rank is BM25 (negative, lower is better); semantic rank is
+            // positive, higher is better. The magnitude reads the same way for
+            // both: a higher score is a better match.
+            score: rank.map(|r| (r.abs() * 1000.0).round() / 1000.0),
+        }
+    }
+}
+
+/// Compact JSON envelope for recall and search.
+#[derive(Serialize)]
+struct CompactList<'a> {
+    total: u32,
+    count: u32,
+    offset: u32,
+    limit: u32,
+    archived_only: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    note: Option<String>,
+    items: Vec<CompactItem<'a>>,
+}
+
+/// Compact JSON for a context brief: each section's memories as compact items.
+fn compact_brief_json(brief: &clio_core::assembly::ContextBrief) -> serde_json::Value {
+    let sections: Vec<serde_json::Value> = brief
+        .sections
+        .iter()
+        .map(|section| {
+            let items: Vec<CompactItem> = section
+                .items
+                .iter()
+                .map(|m| CompactItem::new(m, None))
+                .collect();
+            serde_json::json!({ "heading": section.heading, "items": items })
+        })
+        .collect();
+    serde_json::json!({
+        "namespace": brief.namespace,
+        "preset": brief.preset,
+        "total_memories_used": brief.total_memories_used,
+        "generated_at": brief.generated_at,
+        "sections": sections,
+    })
+}
+
 /// Render a single memory as a Markdown summary card (used in list views).
 fn memory_card_md(item: &RecallItem) -> String {
     let m = &item.memory;
     let heading = m.title.as_deref().unwrap_or(&m.id);
 
-    // Compact one-line metadata: `id` · namespace/kind · tags. Rank and full
-    // timestamps are dropped from the card to save tokens — they remain in the
-    // `response_format:"json"` payload for callers that need them.
-    let mut meta = format!("`{}` · {}/{}", m.id, m.namespace, m.kind);
+    // Compact one-line metadata: `id` · namespace/kind · created date · tags.
+    // The date is there so an old status note is not read as a standing fact.
+    // Rank and full timestamps stay out to save tokens — they remain in the
+    // `json` payload for callers that need them.
+    let mut meta = format!(
+        "`{}` · {}/{} · {}",
+        m.id,
+        m.namespace,
+        m.kind,
+        day(&m.created_at)
+    );
     if !m.tags.is_empty() {
         meta.push_str(&format!(" · {}", m.tags.join(", ")));
     }
 
-    let preview = m.summary.as_deref().unwrap_or(&m.content);
-    let truncated = if preview.len() > 200 {
-        format!("{}...", truncate_chars(preview, 200))
-    } else {
-        preview.to_string()
-    };
-
     format!(
         "### {heading}\n{meta}\n> {}\n",
-        truncated.replace('\n', "\n> ")
+        excerpt(m).replace('\n', "\n> ")
     )
 }
 
@@ -1392,19 +1694,91 @@ fn memory_detail_md(m: &Memory) -> String {
     md
 }
 
-/// Format a response as either Markdown or JSON, depending on `response_format`.
-fn format_recall_response(result: &RecallResult, format: &str) -> String {
-    if format == "json" {
-        serde_json::to_string_pretty(result).unwrap_or_else(|e| format!("Serialisation error: {e}"))
-    } else {
-        recall_result_md(result)
+/// What a keyword recall should say before its results: that the search was
+/// widened to any word, or where to look next when nothing matched at all.
+/// `None` for an ordinary result.
+fn recall_note(
+    result: &RecallResult,
+    searched: bool,
+    widened: bool,
+    global: bool,
+) -> Option<String> {
+    if result.total > 0 {
+        return widened.then(|| {
+            "No memory contains every word of the query, so this is a wider search \
+             for any of its key words (best match first)."
+                .to_string()
+        });
     }
+    if !searched {
+        return None;
+    }
+    let mut note = String::from("No memories match that query");
+    if widened {
+        note.push_str(", even searching for any of its key words");
+    }
+    note.push_str(
+        ". Try memory_search (finds by meaning, not exact words) or fewer, different keywords",
+    );
+    if !global {
+        note.push_str(", or `global: true` to search every project");
+    }
+    note.push('.');
+    Some(note)
+}
+
+/// Format a list reply. `json` is the complete core envelope, unchanged, that
+/// programs decode into `RecallResult`; `compact` is the small JSON shape. A
+/// `note` leads the Markdown reply and is the `note` field of the compact one.
+fn format_recall_response(result: &RecallResult, format: &str, note: Option<String>) -> String {
+    let json = match format {
+        "json" => serde_json::to_string(result),
+        "compact" => serde_json::to_string(&CompactList {
+            total: result.total,
+            count: result.count,
+            offset: result.offset,
+            limit: result.limit,
+            archived_only: result.archived_only,
+            note,
+            items: result
+                .items
+                .iter()
+                .map(|item| CompactItem::new(&item.memory, item.rank))
+                .collect(),
+        }),
+        _ => {
+            return match note {
+                Some(note) if result.total == 0 => note,
+                Some(note) => format!("{note}\n\n{}", recall_result_md(result)),
+                None => recall_result_md(result),
+            };
+        }
+    };
+    json.unwrap_or_else(|e| format!("Serialisation error: {e}"))
+}
+
+/// The reply to a write: the whole stored record (`json`), or with `compact`
+/// a receipt — enough to refer to the memory again, plus the `updated_at`
+/// that `memory_update` requires — because the caller already holds the
+/// content it sent.
+fn write_reply(memory: &Memory, format: &str) -> Result<String, String> {
+    if format == "compact" {
+        serde_json::to_string(&serde_json::json!({
+            "id": memory.id,
+            "namespace": memory.namespace,
+            "title": memory.title,
+            "updated_at": memory.updated_at,
+        }))
+    } else {
+        serde_json::to_string(memory)
+    }
+    .map_err(|e| format!("Serialisation error: {e}"))
 }
 
 /// Format a single memory as either Markdown or JSON.
 fn format_memory_response(memory: &Memory, format: &str) -> String {
-    if format == "json" {
-        serde_json::to_string_pretty(memory).unwrap_or_else(|e| format!("Serialisation error: {e}"))
+    if format != "markdown" {
+        serde_json::to_string(memory).unwrap_or_else(|e| format!("Serialisation error: {e}"))
     } else {
         memory_detail_md(memory)
     }
@@ -1708,7 +2082,7 @@ impl ClioServer {
             let conn = conn.lock().map_err(|e| format!("lock error: {e}"))?;
             let receipt = work_reports::report(&conn, &params.report, work_now()?)
                 .map_err(|e| format_clio_error(&e))?;
-            serde_json::to_string_pretty(&receipt).map_err(|e| format!("Serialisation error: {e}"))
+            serde_json::to_string(&receipt).map_err(|e| format!("Serialisation error: {e}"))
         })
         .await
         .map_err(|e| format!("Internal error: task failed: {e}"))?
@@ -1733,7 +2107,7 @@ impl ClioServer {
                 params.project.as_deref(),
             )
             .map_err(|e| format_clio_error(&e))?;
-            serde_json::to_string_pretty(&overview).map_err(|e| format!("Serialisation error: {e}"))
+            serde_json::to_string(&overview).map_err(|e| format!("Serialisation error: {e}"))
         })
         .await
         .map_err(|e| format!("Internal error: task failed: {e}"))?
@@ -1751,7 +2125,7 @@ impl ClioServer {
             let conn = conn.lock().map_err(|e| format!("lock error: {e}"))?;
             let history = work_reports::history(&conn, &params.source, &params.run_id)
                 .map_err(|e| format_clio_error(&e))?;
-            serde_json::to_string_pretty(&history).map_err(|e| format!("Serialisation error: {e}"))
+            serde_json::to_string(&history).map_err(|e| format!("Serialisation error: {e}"))
         })
         .await
         .map_err(|e| format!("Internal error: task failed: {e}"))?
@@ -1759,9 +2133,7 @@ impl ClioServer {
 
     /// Store a memory record.
     #[tool(
-        description = "Store a memory. To replace one in place pass `upsert: true` with BOTH \
-                       `source` and `source_ref`; otherwise a new record is inserted, and a \
-                       repeated `source` + `source_ref` is rejected as a duplicate."
+        description = "Store one memory you have worded yourself. Pass `response_format: compact` for a short receipt instead of the whole record echoed back. To replace a record in place pass `upsert: true` with BOTH `source` and `source_ref`; without upsert a repeated pair is rejected as a duplicate. To edit a memory by ID, use memory_update."
     )]
     async fn memory_remember(
         &self,
@@ -1769,6 +2141,7 @@ impl ClioServer {
     ) -> Result<String, String> {
         // MCP boundary validation (defence-in-depth on top of core validation).
         validate_memory_payload(&params)?;
+        validate_write_format(&params.response_format)?;
         let conn = self.conn.clone();
         let cache = self.cache.clone();
         let settings = self.settings()?;
@@ -1782,6 +2155,7 @@ impl ClioServer {
                 settings.context.auto_detect,
             );
             let upsert = params.upsert;
+            let format = params.response_format.clone();
             let input = remember_input(params, namespace, upsert);
             let memory = {
                 let conn = conn.lock().map_err(|e| format!("lock error: {e}"))?;
@@ -1799,7 +2173,7 @@ impl ClioServer {
                 }
             }
 
-            serde_json::to_string_pretty(&memory).map_err(|e| format!("Serialisation error: {e}"))
+            write_reply(&memory, &format)
         })
         .await
         .map_err(|e| format!("Internal error: task failed: {e}"))?
@@ -1807,7 +2181,7 @@ impl ClioServer {
 
     /// Patch a memory in place by ID.
     #[tool(
-        description = "Patch only the supplied fields of a memory without creating a duplicate. expected_updated_at is required and rejects stale writes."
+        description = "Change fields of an existing memory by ID; only the fields you supply change. Requires `expected_updated_at` (the `updated_at` you last saw) and rejects a stale write. Pass `response_format: compact` for a short receipt."
     )]
     async fn memory_update(
         &self,
@@ -1815,7 +2189,9 @@ impl ClioServer {
     ) -> Result<String, String> {
         validate_memory_id(&params.memory_id, "memory_id")?;
         validate_update_payload(&params)?;
+        validate_write_format(&params.response_format)?;
         let memory_id = params.memory_id;
+        let format = params.response_format;
         let input = UpdateInput {
             namespace: params.namespace,
             kind: params.kind,
@@ -1852,7 +2228,7 @@ impl ClioServer {
                 }
             }
 
-            serde_json::to_string_pretty(&memory).map_err(|e| format!("Serialisation error: {e}"))
+            write_reply(&memory, &format)
         })
         .await
         .map_err(|e| format!("Internal error: task failed: {e}"))?
@@ -1860,14 +2236,16 @@ impl ClioServer {
 
     /// Full-text search and filter memories.
     #[tool(
-        description = "Keyword/full-text (FTS) search and filter memories. Omit `query` for a \
-                       recent-style listing. Pass `cwd` for namespace auto-detection."
+        description = "Find memories by exact words: names, identifiers, ticket ids, short phrases. Every word of `query` must match; if nothing does, a multi-word query is retried on any key word and the reply says so. Omit `query` to list recent memories. To search by meaning, use memory_search."
     )]
     async fn memory_recall(
         &self,
         Parameters(params): Parameters<RecallParams>,
     ) -> Result<String, String> {
         validate_response_format(&params.response_format)?;
+        let sort_by = parse_sort_by(params.sort_by.as_deref())?;
+        validate_importance_filter(params.importance_min, "importance_min")?;
+        validate_importance_filter(params.importance_max, "importance_max")?;
         let limit = cap_limit(params.limit);
         let conn = self.conn.clone();
         let cache = self.cache.clone();
@@ -1883,7 +2261,6 @@ impl ClioServer {
             );
 
             let scoring = Some(settings.scoring.clone());
-            let sort_by = params.sort_by.as_deref().and_then(SortOrder::from_str_opt);
             let query = RecallQuery {
                 query: params.query,
                 namespace: None,
@@ -1907,32 +2284,50 @@ impl ClioServer {
             // --global: search all namespaces without scoping.
             // --namespace: search only that exact namespace.
             // Neither: use scoped-then-global recall (project namespace + global fallback).
-            let result = if params.global {
-                cache
-                    .recall(&conn, &query)
-                    .map_err(|e| format_clio_error(&e))?
-            } else if params.namespace.is_some() {
-                let scoped_query = RecallQuery {
-                    namespace: Some(detected_ns),
-                    ..query
-                };
-                cache
-                    .recall(&conn, &scoped_query)
-                    .map_err(|e| format_clio_error(&e))?
-            } else {
-                cache
-                    .recall_scoped(&conn, &query, &detected_ns)
-                    .map_err(|e| format_clio_error(&e))?
+            let run = |query: &RecallQuery| {
+                if params.global {
+                    cache.recall(&conn, query)
+                } else if params.namespace.is_some() {
+                    let scoped_query = RecallQuery {
+                        namespace: Some(detected_ns.clone()),
+                        ..query.clone()
+                    };
+                    cache.recall(&conn, &scoped_query)
+                } else {
+                    cache.recall_scoped(&conn, query, &detected_ns)
+                }
+                .map_err(|e| format_clio_error(&e))
             };
 
-            Ok(format_recall_response(&result, &params.response_format))
+            let mut result = run(&query)?;
+            // A sentence rarely has every word in one memory. When the strict
+            // search finds nothing, retry with core's any-word search (the one
+            // resume briefs use) and say so, rather than answer "0 memories".
+            let searched = query.query.is_some();
+            let widened = result.total == 0
+                && query
+                    .query
+                    .as_deref()
+                    .is_some_and(|q| q.split_whitespace().nth(1).is_some());
+            if widened {
+                result = run(&RecallQuery {
+                    match_any_term: true,
+                    ..query.clone()
+                })?;
+            }
+
+            Ok(format_recall_response(
+                &result,
+                &params.response_format,
+                recall_note(&result, searched, widened, params.global),
+            ))
         })
         .await
         .map_err(|e| format!("Internal error: task failed: {e}"))?
     }
 
     /// Get a memory by ID.
-    #[tool(description = "Get a memory by ID.")]
+    #[tool(description = "Read one whole memory by ID. List replies carry only an excerpt.")]
     async fn memory_get(
         &self,
         Parameters(params): Parameters<GetParams>,
@@ -1953,21 +2348,21 @@ impl ClioServer {
     }
 
     /// List recent memories.
-    #[tool(
-        description = "Deprecated: use memory_recall with no `query` instead. Lists recent memories."
-    )]
+    #[tool(description = "Deprecated: use memory_recall with no `query` (same parameters).")]
     async fn memory_recent(
         &self,
         Parameters(params): Parameters<RecentParams>,
     ) -> Result<String, String> {
         validate_response_format(&params.response_format)?;
+        let sort_by = parse_sort_by(params.sort_by.as_deref())?;
+        validate_importance_filter(params.importance_min, "importance_min")?;
+        validate_importance_filter(params.importance_max, "importance_max")?;
         let limit = cap_limit(params.limit);
         let conn = self.conn.clone();
         let cache = self.cache.clone();
         let settings = self.settings()?;
         tokio::task::spawn_blocking(move || {
             let conn = conn.lock().map_err(|e| format!("lock error: {e}"))?;
-            let sort_by = params.sort_by.as_deref().and_then(SortOrder::from_str_opt);
             let query = RecallQuery {
                 namespace: params.namespace,
                 kind: params.kind,
@@ -1986,7 +2381,11 @@ impl ClioServer {
             let result = cache
                 .recall(&conn, &query)
                 .map_err(|e| format_clio_error(&e))?;
-            Ok(format_recall_response(&result, &params.response_format))
+            Ok(format_recall_response(
+                &result,
+                &params.response_format,
+                None,
+            ))
         })
         .await
         .map_err(|e| format!("Internal error: task failed: {e}"))?
@@ -2019,14 +2418,16 @@ impl ClioServer {
             let link = cache
                 .link(&conn, &input)
                 .map_err(|e| format_clio_error(&e))?;
-            serde_json::to_string_pretty(&link).map_err(|e| format!("Serialisation error: {e}"))
+            serde_json::to_string(&link).map_err(|e| format!("Serialisation error: {e}"))
         })
         .await
         .map_err(|e| format!("Internal error: task failed: {e}"))?
     }
 
     /// Archive a memory.
-    #[tool(description = "Archive a memory by ID.")]
+    #[tool(
+        description = "Hide a memory that is wrong or out of date. Reversible (memory_unarchive); prefer it to memory_delete."
+    )]
     async fn memory_archive(
         &self,
         Parameters(params): Parameters<ArchiveParams>,
@@ -2039,7 +2440,7 @@ impl ClioServer {
             let memory = cache
                 .archive(&conn, &params.memory_id)
                 .map_err(|e| format_clio_error(&e))?;
-            serde_json::to_string_pretty(&memory).map_err(|e| format!("Serialisation error: {e}"))
+            serde_json::to_string(&memory).map_err(|e| format!("Serialisation error: {e}"))
         })
         .await
         .map_err(|e| format!("Internal error: task failed: {e}"))?
@@ -2085,14 +2486,16 @@ impl ClioServer {
             let memory = cache
                 .unarchive(&conn, &params.memory_id)
                 .map_err(|e| format_clio_error(&e))?;
-            serde_json::to_string_pretty(&memory).map_err(|e| format!("Serialisation error: {e}"))
+            serde_json::to_string(&memory).map_err(|e| format!("Serialisation error: {e}"))
         })
         .await
         .map_err(|e| format!("Internal error: task failed: {e}"))?
     }
 
     /// Permanently delete a memory.
-    #[tool(description = "Permanently delete a memory by ID. Cascades to links and embeddings.")]
+    #[tool(
+        description = "Permanently delete a memory by ID, with its links and embeddings. Cannot be undone; prefer memory_archive."
+    )]
     async fn memory_delete(
         &self,
         Parameters(params): Parameters<DeleteParams>,
@@ -2105,7 +2508,7 @@ impl ClioServer {
             let memory = cache
                 .delete(&conn, &params.memory_id)
                 .map_err(|e| format_clio_error(&e))?;
-            serde_json::to_string_pretty(&memory).map_err(|e| format!("Serialisation error: {e}"))
+            serde_json::to_string(&memory).map_err(|e| format!("Serialisation error: {e}"))
         })
         .await
         .map_err(|e| format!("Internal error: task failed: {e}"))?
@@ -2128,14 +2531,14 @@ impl ClioServer {
             let memory = cache
                 .move_namespace(&conn, &params.memory_id, &params.namespace)
                 .map_err(|e| format_clio_error(&e))?;
-            serde_json::to_string_pretty(&memory).map_err(|e| format!("Serialisation error: {e}"))
+            serde_json::to_string(&memory).map_err(|e| format!("Serialisation error: {e}"))
         })
         .await
         .map_err(|e| format!("Internal error: task failed: {e}"))?
     }
 
     /// List namespaces.
-    #[tool(description = "List all namespaces.")]
+    #[tool(description = "List all namespace names.")]
     async fn memory_namespaces(&self) -> Result<String, String> {
         let conn = self.conn.clone();
         let cache = self.cache.clone();
@@ -2144,8 +2547,7 @@ impl ClioServer {
             let namespaces = cache
                 .list_namespaces(&conn)
                 .map_err(|e| format_clio_error(&e))?;
-            serde_json::to_string_pretty(&namespaces)
-                .map_err(|e| format!("Serialisation error: {e}"))
+            serde_json::to_string(&namespaces).map_err(|e| format!("Serialisation error: {e}"))
         })
         .await
         .map_err(|e| format!("Internal error: task failed: {e}"))?
@@ -2159,7 +2561,7 @@ impl ClioServer {
             let conn = conn.lock().map_err(|e| format!("lock error: {e}"))?;
             let details = clio_core::repository::namespace_details(&conn)
                 .map_err(|e| format_clio_error(&e))?;
-            serde_json::to_string_pretty(&details).map_err(|e| format!("Serialisation error: {e}"))
+            serde_json::to_string(&details).map_err(|e| format!("Serialisation error: {e}"))
         })
         .await
         .map_err(|e| format!("Internal error: task failed: {e}"))?
@@ -2195,7 +2597,7 @@ impl ClioServer {
             )
             .map_err(|e| format_clio_error(&e))?;
             cache.clear_all();
-            serde_json::to_string_pretty(&report).map_err(|e| format!("Serialisation error: {e}"))
+            serde_json::to_string(&report).map_err(|e| format!("Serialisation error: {e}"))
         })
         .await
         .map_err(|e| format!("Internal error: task failed: {e}"))?
@@ -2227,7 +2629,7 @@ impl ClioServer {
                 let links = cache
                     .get_links(&conn, &params.memory_id)
                     .map_err(|e| format_clio_error(&e))?;
-                return serde_json::to_string_pretty(&links)
+                return serde_json::to_string(&links)
                     .map_err(|e| format!("Serialisation error: {e}"));
             }
             let mut contexts = clio_core::repository::get_link_contexts(&conn, &params.memory_id)
@@ -2235,7 +2637,7 @@ impl ClioServer {
             if direction == "incoming" {
                 contexts.retain(|c| c.direction == "incoming");
             }
-            serde_json::to_string_pretty(&contexts).map_err(|e| format!("Serialisation error: {e}"))
+            serde_json::to_string(&contexts).map_err(|e| format!("Serialisation error: {e}"))
         })
         .await
         .map_err(|e| format!("Internal error: task failed: {e}"))?
@@ -2243,7 +2645,7 @@ impl ClioServer {
 
     /// LLM-classify text into a memory (or queue for review if below threshold).
     #[tool(
-        description = "LLM-classify unstructured text into a structured memory. May queue for review if confidence is low."
+        description = "LLM-classify raw text into a memory; a low-confidence result is queued in the inbox instead. Prefer memory_remember when you can write the title and kind yourself."
     )]
     async fn memory_capture(
         &self,
@@ -2294,18 +2696,14 @@ impl ClioServer {
                     }
                 }
             }
-            serde_json::to_string_pretty(&result).map_err(|e| format!("Serialisation error: {e}"))
+            serde_json::to_string(&result).map_err(|e| format!("Serialisation error: {e}"))
         })
         .await
         .map_err(|e| format!("Internal error: task failed: {e}"))?
     }
 
     #[tool(
-        description = "Distil a session delta and commit it as an exact-once checkpoint keyed by \
-                       source + session_id + cursor. Safe to retry: a completed key replays the \
-                       stored result (memory and review IDs) instead of creating duplicates. An \
-                       empty extraction is a successful checkpoint. Requires a configured capture \
-                       model; returns a configuration error otherwise."
+        description = "Distil a session delta into memories exactly once, keyed by source + session_id + cursor; a retry replays the stored result and an empty extraction is a success. Needs a configured capture model. For session-end hooks; to store one fact use memory_remember."
     )]
     async fn memory_session_checkpoint(
         &self,
@@ -2368,7 +2766,7 @@ impl ClioServer {
                 )
                 .map_err(|e| format_clio_error(&e))?
             } {
-                return serde_json::to_string_pretty(&existing)
+                return serde_json::to_string(&existing)
                     .map_err(|e| format!("Serialisation error: {e}"));
             }
 
@@ -2405,7 +2803,7 @@ impl ClioServer {
                 }
             }
 
-            serde_json::to_string_pretty(&result).map_err(|e| format!("Serialisation error: {e}"))
+            serde_json::to_string(&result).map_err(|e| format!("Serialisation error: {e}"))
         })
         .await
         .map_err(|e| format!("Internal error: task failed: {e}"))?
@@ -2413,9 +2811,7 @@ impl ClioServer {
 
     /// Semantic vector search.
     #[tool(
-        description = "Semantic (vector) search for similar memories. Requires a configured \
-                       embedding backend; returns a configuration error otherwise (use \
-                       memory_recall for keyword search when embeddings are unavailable)."
+        description = "Find memories by meaning: ask a question or describe the topic in your own words. For exact names and identifiers use memory_recall. Needs an embedding backend; without one it returns an error and memory_recall still works."
     )]
     async fn memory_search(
         &self,
@@ -2431,7 +2827,8 @@ impl ClioServer {
         let backend = self.embedding_backend.clone();
         tokio::task::spawn_blocking(move || {
             let be = backend.as_ref().as_ref().ok_or_else(|| {
-                "Embedding backend not available. Ensure embeddings are configured in settings."
+                "Embedding backend not available. Ensure embeddings are configured in settings. \
+                 Use memory_recall (keyword search) meanwhile."
                     .to_string()
             })?;
 
@@ -2498,14 +2895,31 @@ impl ClioServer {
                 count: len,
             };
 
-            Ok(format_recall_response(&result, &params.response_format))
+            let note = (len == 0).then(|| {
+                let mut note = String::from(
+                    "No memories are similar enough to that query. Try memory_recall with \
+                     one or two exact keywords",
+                );
+                if !params.global {
+                    note.push_str(", or `global: true` to search every project");
+                }
+                note.push('.');
+                note
+            });
+            Ok(format_recall_response(
+                &result,
+                &params.response_format,
+                note,
+            ))
         })
         .await
         .map_err(|e| format!("Internal error: task failed: {e}"))?
     }
 
     /// Memory statistics.
-    #[tool(description = "Memory statistics: counts, breakdowns, coverage.")]
+    #[tool(
+        description = "Store statistics: counts by namespace, kind and tag, and embedding coverage."
+    )]
     async fn memory_stats(
         &self,
         Parameters(params): Parameters<StatsParams>,
@@ -2517,9 +2931,8 @@ impl ClioServer {
             let stats = clio_core::stats::memory_stats(&conn, params.namespace.as_deref())
                 .map_err(|e| format_clio_error(&e))?;
 
-            if params.response_format == "json" {
-                serde_json::to_string_pretty(&stats)
-                    .map_err(|e| format!("Serialisation error: {e}"))
+            if params.response_format != "markdown" {
+                serde_json::to_string(&stats).map_err(|e| format!("Serialisation error: {e}"))
             } else {
                 Ok(format_stats_md(&stats))
             }
@@ -2529,7 +2942,9 @@ impl ClioServer {
     }
 
     /// Recent activity feed.
-    #[tool(description = "Recent activity feed.")]
+    #[tool(
+        description = "Feed of recent creates, updates and archives. To browse recent memories, use memory_recall without `query`."
+    )]
     async fn memory_activity(
         &self,
         Parameters(params): Parameters<ActivityParams>,
@@ -2543,9 +2958,8 @@ impl ClioServer {
                 clio_core::stats::recent_activity(&conn, params.namespace.as_deref(), limit)
                     .map_err(|e| format_clio_error(&e))?;
 
-            if params.response_format == "json" {
-                serde_json::to_string_pretty(&entries)
-                    .map_err(|e| format!("Serialisation error: {e}"))
+            if params.response_format != "markdown" {
+                serde_json::to_string(&entries).map_err(|e| format!("Serialisation error: {e}"))
             } else {
                 Ok(format_activity_md(&entries))
             }
@@ -2556,8 +2970,7 @@ impl ClioServer {
 
     /// Suggest links by similarity.
     #[tool(
-        description = "Suggest links based on embedding similarity. Requires a configured \
-                       embedding backend; returns a configuration error otherwise."
+        description = "Suggest links for a memory by embedding similarity. Needs an embedding backend."
     )]
     async fn memory_suggest_links(
         &self,
@@ -2585,7 +2998,7 @@ impl ClioServer {
             )
             .map_err(|e| format_clio_error(&e))?;
 
-            if params.response_format == "json" {
+            if params.response_format != "markdown" {
                 let items: Vec<serde_json::Value> = suggestions
                     .iter()
                     .map(|(mem, sim)| {
@@ -2595,8 +3008,7 @@ impl ClioServer {
                         })
                     })
                     .collect();
-                serde_json::to_string_pretty(&items)
-                    .map_err(|e| format!("Serialisation error: {e}"))
+                serde_json::to_string(&items).map_err(|e| format!("Serialisation error: {e}"))
             } else {
                 Ok(format_suggestions_md(&suggestions))
             }
@@ -2607,7 +3019,7 @@ impl ClioServer {
 
     /// Build a context brief.
     #[tool(
-        description = "Build a scoped context brief combining recent, important, and filtered memories."
+        description = "One themed brief chosen by `preset`: decisions, constraints, recent activity, a person, a ticket handoff or a keyword query. For 'what should I know before this task', use memory_resume."
     )]
     async fn memory_context(
         &self,
@@ -2645,11 +3057,12 @@ impl ClioServer {
             let brief = clio_core::assembly::build_context(&conn, &request)
                 .map_err(|e| format_clio_error(&e))?;
 
-            if params.response_format == "json" {
-                serde_json::to_string_pretty(&brief)
-                    .map_err(|e| format!("Serialisation error: {e}"))
-            } else {
-                Ok(format_brief_md(&brief))
+            match params.response_format.as_str() {
+                "json" => {
+                    serde_json::to_string(&brief).map_err(|e| format!("Serialisation error: {e}"))
+                }
+                "compact" => Ok(compact_brief_json(&brief).to_string()),
+                _ => Ok(format_brief_md(&brief)),
             }
         })
         .await
@@ -2658,10 +3071,7 @@ impl ClioServer {
 
     /// Review the capture inbox: list / approve / reject / edit.
     #[tool(
-        description = "Review the capture inbox (low-confidence memories awaiting review). \
-                       action=\"list\" returns pending items; \"approve\" stores an item; \
-                       \"reject\" discards it; \"edit\" adjusts suggested fields before approval. \
-                       approve/reject/edit require review_id."
+        description = "Review captures queued for approval: list, approve (stores it), reject (discards it) or edit (adjust the suggested fields first). approve/reject/edit require `review_id`."
     )]
     async fn memory_inbox(
         &self,
@@ -2703,13 +3113,13 @@ impl ClioServer {
                 "list" => {
                     let items = clio_core::review::list_pending(&conn, limit)
                         .map_err(|e| format_clio_error(&e))?;
-                    if params.response_format == "json" {
+                    if params.response_format != "markdown" {
                         let result = if params.include_status_scope {
                             serde_json::json!({ "items": items, "includes_edited": true })
                         } else {
                             serde_json::json!(items)
                         };
-                        serde_json::to_string_pretty(&result)
+                        serde_json::to_string(&result)
                             .map_err(|e| format!("Serialisation error: {e}"))
                     } else {
                         Ok(review_list_md(&items))
@@ -2719,15 +3129,13 @@ impl ClioServer {
                     let id = params.review_id.as_deref().expect("validated present");
                     let memory = clio_core::review::approve_review(&conn, id, &settings)
                         .map_err(|e| format_clio_error(&e))?;
-                    serde_json::to_string_pretty(&memory)
-                        .map_err(|e| format!("Serialisation error: {e}"))
+                    serde_json::to_string(&memory).map_err(|e| format!("Serialisation error: {e}"))
                 }
                 "reject" => {
                     let id = params.review_id.as_deref().expect("validated present");
                     let item = clio_core::review::reject_review(&conn, id)
                         .map_err(|e| format_clio_error(&e))?;
-                    serde_json::to_string_pretty(&item)
-                        .map_err(|e| format!("Serialisation error: {e}"))
+                    serde_json::to_string(&item).map_err(|e| format!("Serialisation error: {e}"))
                 }
                 "edit" => {
                     let id = params.review_id.clone().expect("validated present");
@@ -2742,8 +3150,7 @@ impl ClioServer {
                     };
                     let item = clio_core::review::edit_review(&conn, &id, &edits)
                         .map_err(|e| format_clio_error(&e))?;
-                    serde_json::to_string_pretty(&item)
-                        .map_err(|e| format!("Serialisation error: {e}"))
+                    serde_json::to_string(&item).map_err(|e| format!("Serialisation error: {e}"))
                 }
                 _ => unreachable!("action validated above"),
             }
@@ -2753,11 +3160,7 @@ impl ClioServer {
     }
 
     #[tool(
-        description = "Build a resume brief: eligible open work, blocked items, constraints, \
-                       recent decisions, prompt-relevant knowledge and recent activity — each \
-                       with the reason it appears now. Call at session start (no query), and \
-                       again with `query` on the first substantive task prompt. Reads are \
-                       untracked and repeats are suppressed per session_id scope."
+        description = "Start here when beginning or resuming work: one brief of open follow-ups, blockers, constraints, recent decisions and, with `query` (the task in a sentence), relevant knowledge, each with why it is shown. Not counted as use for ranking; with `session_id` it records what it showed, so repeats are suppressed in that session."
     )]
     async fn memory_resume(
         &self,
@@ -2769,17 +3172,12 @@ impl ClioServer {
         tokio::task::spawn_blocking(move || {
             let conn = conn.lock().map_err(|e| format!("lock error: {e}"))?;
             let cwd_path = params.cwd.as_deref().map(std::path::Path::new);
-            let namespace = params.namespace.clone().or_else(|| {
-                if settings.context.auto_detect {
-                    params.clio_namespace.clone().or_else(|| {
-                        cwd_path
-                            .and_then(clio_core::context::detect_namespace)
-                            .map(|ctx| ctx.namespace)
-                    })
-                } else {
-                    None
-                }
-            });
+            let namespace = optional_mcp_namespace(
+                params.namespace.as_deref(),
+                params.clio_namespace.as_deref(),
+                cwd_path,
+                settings.context.auto_detect,
+            );
 
             let request = clio_core::assembly::ResumeRequest {
                 namespace,
@@ -2795,9 +3193,8 @@ impl ClioServer {
 
             let brief = clio_core::assembly::build_resume_brief(&conn, &request)
                 .map_err(|e| format_clio_error(&e))?;
-            if params.response_format == "json" {
-                serde_json::to_string_pretty(&brief)
-                    .map_err(|e| format!("Serialisation error: {e}"))
+            if params.response_format != "markdown" {
+                serde_json::to_string(&brief).map_err(|e| format!("Serialisation error: {e}"))
             } else {
                 Ok(resume_brief_md(&brief))
             }
@@ -2807,15 +3204,7 @@ impl ClioServer {
     }
 
     #[tool(
-        description = "Manage follow-up attention on memories (open loops). Actions: add (open \
-                       attention on new or existing memory), list, eligible (what needs attention \
-                       now, with a machine-readable reason per item), complete (with optional \
-                       evidence memory), snooze (until a time), cancel, attach_external (record a \
-                       verified Things/Linear reference), history (event audit for an item), \
-                       overview (eligible + open items, review depth and consolidation \
-                       freshness in one call). \
-                       Statuses: open, snoozed, resolved, cancelled. Completion never rewrites \
-                       the source memory."
+        description = "Follow-ups (open loops) on memories. Actions: add (new `content` or an existing `memory_id`), list, eligible (what needs attention now, and why), overview (eligible and open items plus review depth), complete (optional `evidence` memory), snooze (`until`), cancel, attach_external (a verified Things/Linear reference), history. Completing never rewrites the source memory."
     )]
     async fn memory_action(
         &self,
@@ -2846,7 +3235,17 @@ impl ClioServer {
                     );
                 }
             }
-            "list" | "eligible" | "overview" => {}
+            "list" => {
+                if let Some(status) = params.status.as_deref() {
+                    if !matches!(status, "open" | "snoozed" | "resolved" | "cancelled") {
+                        return Err(format!(
+                            "Invalid status '{status}'. Must be one of: open, snoozed, \
+                             resolved, cancelled."
+                        ));
+                    }
+                }
+            }
+            "eligible" | "overview" => {}
             other => {
                 return Err(format!(
                     "unknown action '{other}'. Expected add, list, eligible, overview, complete, \
@@ -2861,17 +3260,12 @@ impl ClioServer {
         tokio::task::spawn_blocking(move || {
             let conn = conn.lock().map_err(|e| format!("lock error: {e}"))?;
             let cwd_path = params.cwd.as_deref().map(std::path::Path::new);
-            let detected_namespace = params.namespace.clone().or_else(|| {
-                if settings.context.auto_detect {
-                    params.clio_namespace.clone().or_else(|| {
-                        cwd_path
-                            .and_then(clio_core::context::detect_namespace)
-                            .map(|ctx| ctx.namespace)
-                    })
-                } else {
-                    None
-                }
-            });
+            let detected_namespace = optional_mcp_namespace(
+                params.namespace.as_deref(),
+                params.clio_namespace.as_deref(),
+                cwd_path,
+                settings.context.auto_detect,
+            );
 
             match action.as_str() {
                 "add" => {
@@ -2927,7 +3321,7 @@ impl ClioServer {
                         Ok(item) => {
                             conn.execute_batch("COMMIT")
                                 .map_err(|e| format!("commit error: {e}"))?;
-                            serde_json::to_string_pretty(&item)
+                            serde_json::to_string(&item)
                                 .map_err(|e| format!("Serialisation error: {e}"))
                         }
                         Err(e) => {
@@ -2944,8 +3338,7 @@ impl ClioServer {
                         limit,
                     )
                     .map_err(|e| format_clio_error(&e))?;
-                    serde_json::to_string_pretty(&items)
-                        .map_err(|e| format!("Serialisation error: {e}"))
+                    serde_json::to_string(&items).map_err(|e| format!("Serialisation error: {e}"))
                 }
                 "overview" => {
                     let overview = attention::overview(
@@ -2956,7 +3349,7 @@ impl ClioServer {
                         settings.attention.max_age_days,
                     )
                     .map_err(|e| format_clio_error(&e))?;
-                    serde_json::to_string_pretty(&overview)
+                    serde_json::to_string(&overview)
                         .map_err(|e| format!("Serialisation error: {e}"))
                 }
                 "eligible" => {
@@ -2969,8 +3362,7 @@ impl ClioServer {
                     };
                     let items =
                         attention::eligible(&conn, &context).map_err(|e| format_clio_error(&e))?;
-                    serde_json::to_string_pretty(&items)
-                        .map_err(|e| format!("Serialisation error: {e}"))
+                    serde_json::to_string(&items).map_err(|e| format!("Serialisation error: {e}"))
                 }
                 "complete" => {
                     let id = params.action_id.as_deref().expect("validated present");
@@ -2982,24 +3374,21 @@ impl ClioServer {
                         Some("agent"),
                     )
                     .map_err(|e| format_clio_error(&e))?;
-                    serde_json::to_string_pretty(&item)
-                        .map_err(|e| format!("Serialisation error: {e}"))
+                    serde_json::to_string(&item).map_err(|e| format!("Serialisation error: {e}"))
                 }
                 "snooze" => {
                     let id = params.action_id.as_deref().expect("validated present");
                     let until = params.until.as_deref().expect("validated present");
                     let item = attention::snooze(&conn, id, until, Some("agent"))
                         .map_err(|e| format_clio_error(&e))?;
-                    serde_json::to_string_pretty(&item)
-                        .map_err(|e| format!("Serialisation error: {e}"))
+                    serde_json::to_string(&item).map_err(|e| format!("Serialisation error: {e}"))
                 }
                 "cancel" => {
                     let id = params.action_id.as_deref().expect("validated present");
                     let item =
                         attention::cancel(&conn, id, params.reason.as_deref(), Some("agent"))
                             .map_err(|e| format_clio_error(&e))?;
-                    serde_json::to_string_pretty(&item)
-                        .map_err(|e| format!("Serialisation error: {e}"))
+                    serde_json::to_string(&item).map_err(|e| format!("Serialisation error: {e}"))
                 }
                 "attach_external" => {
                     let id = params.action_id.as_deref().expect("validated present");
@@ -3011,8 +3400,7 @@ impl ClioServer {
                         Some("agent"),
                     )
                     .map_err(|e| format_clio_error(&e))?;
-                    serde_json::to_string_pretty(&item)
-                        .map_err(|e| format!("Serialisation error: {e}"))
+                    serde_json::to_string(&item).map_err(|e| format!("Serialisation error: {e}"))
                 }
                 "history" => {
                     let id = params.action_id.as_deref().expect("validated present");
@@ -3020,8 +3408,7 @@ impl ClioServer {
                         .map_err(|e| format_clio_error(&e))?;
                     let events = clio_core::events::list_events(&conn, &item.memory_id, limit)
                         .map_err(|e| format_clio_error(&e))?;
-                    serde_json::to_string_pretty(&events)
-                        .map_err(|e| format!("Serialisation error: {e}"))
+                    serde_json::to_string(&events).map_err(|e| format!("Serialisation error: {e}"))
                 }
                 _ => unreachable!("action validated above"),
             }
@@ -3032,7 +3419,7 @@ impl ClioServer {
 
     /// Clear all in-memory caches. Individual record reads are always fresh.
     #[tool(
-        description = "Clear bounded recall and namespace caches. Individual memory and embedding reads are not cached. Returns counts of entries cleared."
+        description = "Maintenance: clear this process's small in-memory caches and return the counts cleared."
     )]
     async fn memory_cache_clear(
         &self,
@@ -3040,7 +3427,7 @@ impl ClioServer {
     ) -> Result<String, String> {
         let cache = self.cache.clone();
         let result = cache.clear_all();
-        serde_json::to_string_pretty(&result).map_err(|e| format!("Serialisation error: {e}"))
+        serde_json::to_string(&result).map_err(|e| format!("Serialisation error: {e}"))
     }
 }
 
@@ -3062,44 +3449,7 @@ impl ServerHandler for ClioServer {
                 version: env!("CARGO_PKG_VERSION").into(),
                 ..Default::default()
             },
-            instructions: Some(
-                "Clio: local shared-memory store for AI tools (SQLite-backed).\n\n\
-                 NAMESPACE: memories are scoped per project. Resolution order is \
-                 explicit `namespace` -> auto-detect from `cwd` -> `global`. Always pass \
-                 `cwd` so recall and storage land in the right project.\n\n\
-                 CHOOSING A TOOL:\n\
-                 - memory_recall: keyword/FTS search. Omit `query` for a recent-style listing.\n\
-                 - memory_search: semantic (vector) search; requires a configured embedding \
-                 backend and returns a configuration error if none is set.\n\
-                 - memory_remember: deliberate store. To update in place pass \
-                 `upsert: true` with BOTH `source` and `source_ref`; otherwise a new record \
-                 is inserted.\n\
-                 - memory_capture: LLM-classified store; low-confidence items queue to the \
-                 inbox for review instead of storing immediately.\n\
-                 - memory_context: assemble a scoped brief. Presets: project-brief, \
-                 person-brief, decision-history, active-constraints, recent-activity, handoff, custom. \
-                 The handoff preset requires `query` (a ticket id or topic) and returns a pickup \
-                 brief: relevant memories, active constraints, recent receipts.\n\
-                 - memory_inbox: review queued captures (list/approve/reject/edit via `action`).\n\
-                 - memory_session_checkpoint: distil a session delta exactly once, keyed by \
-                 source + session_id + cursor. Retries replay the stored result; an empty \
-                 extraction is a successful checkpoint. Requires a configured capture model.\n\
-                 - memory_resume: evidence-backed pickup brief (open work, blockers, \
-                 constraints, relevant knowledge — each with why-now). Prefer it over ad hoc \
-                 recall when resuming work; it is untracked and repeat-suppressed per session.\n\
-                 - memory_action: follow-up attention on memories (open loops). When the user \
-                 states an explicit decision or commitment, store it IMMEDIATELY with \
-                 memory_remember or memory_action(add) — do not wait for end-of-session \
-                 distillation, which is only the safety net. Complete with evidence when done. \
-                 action:eligible reports what needs attention now and why.\n\n\
-                 TICKET CONVENTION: when working a tracked issue, tag stored memories \
-                 `ticket:<issue-id>` (lowercase). Tags are FTS-indexed, so a later handoff \
-                 brief for that id finds them.\n\n\
-                 Archive is a soft-delete: archived records are hidden and excluded from recall \
-                 by default. Pass `response_format:\"json\"` for structured processing (cheaper \
-                 tokens); markdown is for human display."
-                    .into(),
-            ),
+            instructions: Some(self.instructions()),
         }
     }
 
@@ -3251,6 +3601,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_writer(std::io::stderr)
         .init();
 
+    let core_only =
+        core_tools_requested(std::env::var(TOOLS_ENV).ok().as_deref()).map_err(|e| {
+            tracing::error!("{e}");
+            e
+        })?;
+
     // Resolve the database path (supports CLIO_DB_PATH env var and platform defaults).
     let db_path = clio_core::config::resolve_db_path(None).map_err(|e| {
         tracing::error!("Failed to resolve database path: {e}");
@@ -3293,7 +3649,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     tracing::info!("Database ready");
 
-    let server = ClioServer::new(db_path, conn, settings, backend);
+    let mut server = ClioServer::new(db_path, conn, settings, backend);
+    if core_only {
+        server = server.core_tools_only();
+        tracing::info!(
+            "{TOOLS_ENV}=core: offering the {} core tools",
+            CORE_TOOLS.len()
+        );
+    }
     let transport = rmcp::transport::io::stdio();
     let service = server.serve(transport).await.inspect_err(|e| {
         tracing::error!("Server failed to start: {e}");
@@ -3698,6 +4061,7 @@ mod concurrency_tests {
                     valid_from: None,
                     valid_until: None,
                     upsert: false,
+                    response_format: "json".into(),
                 }))
                 .await
         });
@@ -3929,5 +4293,548 @@ mod concurrency_tests {
 
         drop(server);
         std::fs::remove_file(db_path).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod surface_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn server_with(memories: &[(&str, &str, &str)]) -> ClioServer {
+        let conn = clio_core::db::open_in_memory().unwrap();
+        let settings = clio_core::settings::Settings::default();
+        for (namespace, title, content) in memories {
+            clio_core::repository::remember(
+                &conn,
+                &RememberInput {
+                    namespace: (*namespace).into(),
+                    kind: "note".into(),
+                    title: Some((*title).into()),
+                    summary: None,
+                    content: (*content).into(),
+                    tags: Vec::new(),
+                    source: None,
+                    source_ref: None,
+                    confidence: None,
+                    importance: 3,
+                    metadata: json!({}),
+                    valid_from: None,
+                    valid_until: None,
+                    upsert: false,
+                },
+                &settings,
+            )
+            .unwrap();
+        }
+        ClioServer::new(PathBuf::from("unused-surface.db"), conn, settings, None)
+    }
+
+    async fn recall(server: &ClioServer, args: serde_json::Value) -> Result<String, String> {
+        server
+            .memory_recall(Parameters(serde_json::from_value(args).unwrap()))
+            .await
+    }
+
+    #[tokio::test]
+    async fn sentence_recall_widens_to_any_word_and_says_so() {
+        let server = server_with(&[
+            (
+                "project:demo",
+                "Release procedure",
+                "Deploy a release by running the ship script on Atlas.",
+            ),
+            ("project:demo", "Lunch", "The canteen closes at two."),
+        ]);
+
+        // Every word present: an ordinary strict result, no note.
+        let strict = recall(
+            &server,
+            json!({"query": "deploy Atlas", "namespace": "project:demo"}),
+        )
+        .await
+        .unwrap();
+        assert!(strict.starts_with("**1 of 1 memories**"), "{strict}");
+
+        // A sentence no single memory contains in full: widened, and said so first.
+        let sentence = json!({
+            "query": "how do we deploy a new release to Atlas",
+            "namespace": "project:demo"
+        });
+        let widened = recall(&server, sentence.clone()).await.unwrap();
+        assert!(
+            widened.starts_with("No memory contains every word"),
+            "{widened}"
+        );
+        assert!(widened.contains("Release procedure"));
+        assert!(!widened.contains("Lunch"));
+
+        let mut as_compact = sentence.clone();
+        as_compact["response_format"] = json!("compact");
+        let widened: serde_json::Value =
+            serde_json::from_str(&recall(&server, as_compact).await.unwrap()).unwrap();
+        assert_eq!(widened["count"], 1);
+        assert!(widened["note"].as_str().unwrap().contains("wider search"));
+
+        // `json` stays the plain core envelope: same widened items, no note.
+        let mut as_json = sentence;
+        as_json["response_format"] = json!("json");
+        let widened: serde_json::Value =
+            serde_json::from_str(&recall(&server, as_json).await.unwrap()).unwrap();
+        assert_eq!(widened["count"], 1);
+        assert!(widened.get("note").is_none());
+
+        // Nothing at all: no bare "0 of 0", and a pointer to the semantic tool.
+        let nothing = recall(
+            &server,
+            json!({"query": "quantum chromodynamics lattice", "namespace": "project:demo"}),
+        )
+        .await
+        .unwrap();
+        assert!(
+            nothing.starts_with("No memories match that query, even"),
+            "{nothing}"
+        );
+        assert!(nothing.contains("memory_search"));
+
+        // A single word is never widened, but still gets the pointer.
+        let single = recall(
+            &server,
+            json!({"query": "zeppelin", "namespace": "project:demo"}),
+        )
+        .await
+        .unwrap();
+        assert!(
+            single.starts_with("No memories match that query. Try"),
+            "{single}"
+        );
+    }
+
+    #[tokio::test]
+    async fn compact_lists_carry_card_fields_on_one_line() {
+        let long = "Deploy notes. ".repeat(100);
+        let server = server_with(&[("project:demo", "Release procedure", &long)]);
+        let args = json!({
+            "query": "deploy",
+            "namespace": "project:demo",
+            "response_format": "compact"
+        });
+
+        let compact = recall(&server, args).await.unwrap();
+        assert!(!compact.contains('\n'), "compact JSON is one line");
+        let value: serde_json::Value = serde_json::from_str(&compact).unwrap();
+        assert_eq!(value["total"], 1);
+        assert_eq!(value["archived_only"], false);
+        let item = value["items"][0].as_object().unwrap();
+        let mut keys: Vec<&str> = item.keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            [
+                "created",
+                "excerpt",
+                "id",
+                "kind",
+                "namespace",
+                "score",
+                "title"
+            ]
+        );
+        assert_eq!(item["excerpt"].as_str().unwrap().chars().count(), 203);
+        assert_eq!(item["created"].as_str().unwrap().len(), 10);
+        // One-memory corpus: BM25 is about zero. Never negative, though.
+        assert!(item["score"].as_f64().unwrap() >= 0.0);
+
+        let brief = server
+            .memory_context(params(json!({
+                "namespace": "project:demo",
+                "response_format": "compact"
+            })))
+            .await
+            .unwrap();
+        assert!(brief.contains("\"excerpt\""), "{brief}");
+        assert!(!brief.contains("\"content\""), "{brief}");
+
+        let unknown = recall(&server, json!({"response_format": "yaml"}))
+            .await
+            .unwrap_err();
+        assert!(
+            unknown.contains("'markdown', 'compact' or 'json'"),
+            "{unknown}"
+        );
+    }
+
+    /// The desktop app's remote mode (`clio-tauri/src/remote.rs`) decodes
+    /// `response_format: "json"` replies, and every write reply, straight into
+    /// these core types. Requests here are the ones that client sends, so a
+    /// change of shape fails this test rather than an installed app.
+    #[tokio::test]
+    async fn json_replies_decode_into_the_core_types_programs_use() {
+        let server = ClioServer::new(
+            PathBuf::from("unused-surface.db"),
+            clio_core::db::open_in_memory().unwrap(),
+            clio_core::settings::Settings::default(),
+            Some(Box::new(ConstantBackend)),
+        );
+        let content = "Run the ship script on Atlas.";
+
+        // memory_remember, as cmd_remember sends it: no response_format at all.
+        let stored: Memory = serde_json::from_str(
+            &server
+                .memory_remember(params(json!({
+                    "namespace": "project:demo",
+                    "kind": "note",
+                    "title": "Release procedure",
+                    "summary": null,
+                    "content": content,
+                    "tags": ["deploy"],
+                    "source": null,
+                    "source_ref": null,
+                    "confidence": null,
+                    "importance": 3,
+                    "metadata": {},
+                    "valid_from": null,
+                    "valid_until": null,
+                    "upsert": false
+                })))
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(stored.content, content);
+        assert_eq!(stored.tags, ["deploy"]);
+
+        // memory_update, as cmd_update sends it: the patch plus memory_id.
+        let mut patch = serde_json::to_value(UpdateInput {
+            title: Some(Some("Release steps".into())),
+            expected_updated_at: Some(stored.updated_at.clone()),
+            ..UpdateInput::default()
+        })
+        .unwrap();
+        patch["memory_id"] = json!(stored.id);
+        let updated: Memory =
+            serde_json::from_str(&server.memory_update(params(patch)).await.unwrap()).unwrap();
+        assert_eq!(updated.title.as_deref(), Some("Release steps"));
+        assert_eq!(updated.content, content);
+
+        // memory_recall, as cmd_recall and cmd_recent send it.
+        let listed: RecallResult = serde_json::from_str(
+            &recall(
+                &server,
+                json!({
+                    "query": "ship",
+                    "namespace": "project:demo",
+                    "global": false,
+                    "kind": null,
+                    "tags": [],
+                    "match_all_tags": true,
+                    "importance_min": null,
+                    "importance_max": null,
+                    "sort_by": "importance_desc",
+                    "include_archived": false,
+                    "archived_only": false,
+                    "limit": 10,
+                    "offset": 0,
+                    "response_format": "json"
+                }),
+            )
+            .await
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(listed.count, 1);
+        assert_eq!(listed.items[0].memory.content, content);
+        assert!(listed.items[0].rank.is_some());
+
+        // memory_search, as cmd_search sends it.
+        let found: RecallResult = serde_json::from_str(
+            &server
+                .memory_search(params(json!({
+                    "query": "shipping",
+                    "namespace": "project:demo",
+                    "global": false,
+                    "include_archived": false,
+                    "limit": 10,
+                    "response_format": "json"
+                })))
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(found.count, 1);
+        assert_eq!(found.items[0].memory.id, stored.id);
+
+        // memory_recent (deprecated, still served).
+        let recent: RecallResult = serde_json::from_str(
+            &server
+                .memory_recent(params(json!({
+                    "namespace": "project:demo",
+                    "limit": 10,
+                    "response_format": "json"
+                })))
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(recent.count, 1);
+        assert_eq!(recent.items[0].memory.content, content);
+
+        // memory_get, as cmd_get sends it.
+        let fetched: Memory = serde_json::from_str(
+            &server
+                .memory_get(params(json!({
+                    "memory_id": stored.id,
+                    "response_format": "json"
+                })))
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(fetched.id, stored.id);
+    }
+
+    #[test]
+    fn instructions_do_not_overstate_json_or_resume() {
+        let server = server_with(&[]);
+        let instructions = server.get_info().instructions.unwrap();
+        assert!(!instructions.contains("cheaper"));
+        assert!(!instructions.contains("untracked"));
+        assert!(instructions.contains("records what it showed"));
+        assert!(instructions.contains("`compact` for structured processing"));
+        assert!(instructions.contains("`json` only when a program needs whole records"));
+    }
+
+    /// Embeds everything to the same vector, so any stored memory is a match.
+    struct ConstantBackend;
+
+    impl clio_core::embeddings::EmbeddingBackend for ConstantBackend {
+        fn model_name(&self) -> &str {
+            "constant-test"
+        }
+
+        fn dimensions(&self) -> usize {
+            1
+        }
+
+        fn embed_one(&self, _text: &str) -> clio_core::error::Result<Vec<f32>> {
+            Ok(vec![1.0])
+        }
+
+        fn embed_batch(&self, texts: &[String]) -> clio_core::error::Result<Vec<Vec<f32>>> {
+            Ok(vec![vec![1.0]; texts.len()])
+        }
+    }
+
+    fn params<T: serde::de::DeserializeOwned>(args: serde_json::Value) -> Parameters<T> {
+        Parameters(serde_json::from_value(args).unwrap())
+    }
+
+    #[tokio::test]
+    async fn compact_writes_return_a_receipt_instead_of_the_record() {
+        let server = server_with(&[]);
+        let stored = json!({
+            "namespace": "project:demo",
+            "title": "Lunch",
+            "content": "The canteen closes at two on Fridays.",
+            "response_format": "compact"
+        });
+
+        let receipt: serde_json::Value =
+            serde_json::from_str(&server.memory_remember(params(stored)).await.unwrap()).unwrap();
+        let mut keys: Vec<&str> = receipt
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        keys.sort_unstable();
+        assert_eq!(keys, ["id", "namespace", "title", "updated_at"]);
+        assert_eq!(receipt["namespace"], "project:demo");
+        assert_eq!(receipt["title"], "Lunch");
+
+        // The receipt carries what the next update needs.
+        let patch = json!({
+            "memory_id": receipt["id"],
+            "expected_updated_at": receipt["updated_at"],
+            "title": "Lunch hours",
+            "response_format": "compact"
+        });
+        let updated: serde_json::Value =
+            serde_json::from_str(&server.memory_update(params(patch)).await.unwrap()).unwrap();
+        assert_eq!(updated["title"], "Lunch hours");
+        assert!(updated.get("content").is_none());
+
+        // An unusable format is refused before anything is written.
+        let refused = server
+            .memory_remember(params(json!({
+                "namespace": "project:demo",
+                "content": "Never stored.",
+                "response_format": "markdown"
+            })))
+            .await
+            .unwrap_err();
+        assert!(refused.contains("'json' or 'compact'"), "{refused}");
+        let listed = recall(&server, json!({"namespace": "project:demo"}))
+            .await
+            .unwrap();
+        assert!(listed.starts_with("**1 of 1 memories**"), "{listed}");
+    }
+
+    #[tokio::test]
+    async fn arguments_that_could_only_fail_silently_are_rejected() {
+        let server = server_with(&[("project:demo", "Lunch", "The canteen closes at two.")]);
+
+        let sort = recall(&server, json!({"sort_by": "newest"}))
+            .await
+            .unwrap_err();
+        assert!(sort.contains("Invalid sort_by 'newest'"), "{sort}");
+        assert!(sort.contains("created_desc"), "{sort}");
+        let recent = server
+            .memory_recent(params(json!({"sort_by": "newest"})))
+            .await
+            .unwrap_err();
+        assert!(recent.contains("created_desc"), "{recent}");
+
+        let importance = recall(&server, json!({"importance_min": 9}))
+            .await
+            .unwrap_err();
+        assert_eq!(importance, "importance_min must be between 1 and 5.");
+
+        let status = server
+            .memory_action(params(json!({"action": "list", "status": "done"})))
+            .await
+            .unwrap_err();
+        assert!(
+            status.contains("open, snoozed, resolved, cancelled"),
+            "{status}"
+        );
+
+        // A valid sort still works.
+        assert!(
+            recall(
+                &server,
+                json!({"sort_by": "created_desc", "namespace": "project:demo"})
+            )
+            .await
+            .unwrap()
+            .contains("Lunch")
+        );
+    }
+
+    #[tokio::test]
+    async fn list_replies_show_when_each_memory_was_created() {
+        let server = server_with(&[(
+            "project:demo",
+            "Staging revision confirmed",
+            "Revision abc123 is on staging.",
+        )]);
+        let today = &clio_core::models::now_utc()[..10];
+
+        let card = recall(&server, json!({"namespace": "project:demo"}))
+            .await
+            .unwrap();
+        assert!(
+            card.contains(&format!("project:demo/note · {today}")),
+            "{card}"
+        );
+
+        let brief = server
+            .memory_resume(params(json!({
+                "namespace": "project:demo",
+                "query": "staging revision"
+            })))
+            .await
+            .unwrap();
+        assert!(brief.contains(&format!(", {today})")), "{brief}");
+    }
+
+    #[tokio::test]
+    async fn a_bare_project_name_reaches_the_same_namespace_in_every_tool() {
+        let conn = clio_core::db::open_in_memory().unwrap();
+        let server = ClioServer::new(
+            PathBuf::from("unused-surface.db"),
+            conn,
+            clio_core::settings::Settings::default(),
+            Some(Box::new(ConstantBackend)),
+        );
+        server
+            .memory_remember(params(json!({
+                "namespace": "project:demo",
+                "title": "Release procedure",
+                "content": "Run the ship script."
+            })))
+            .await
+            .unwrap();
+        server
+            .memory_action(params(json!({
+                "action": "add",
+                "namespace": "project:demo",
+                "content": "Rotate the deploy key."
+            })))
+            .await
+            .unwrap();
+
+        for namespace in ["demo", "project:demo"] {
+            let found = server
+                .memory_search(params(json!({"query": "shipping", "namespace": namespace})))
+                .await
+                .unwrap();
+            assert!(found.contains("Release procedure"), "{namespace}: {found}");
+
+            let follow_ups: serde_json::Value = serde_json::from_str(
+                &server
+                    .memory_action(params(json!({"action": "list", "namespace": namespace})))
+                    .await
+                    .unwrap(),
+            )
+            .unwrap();
+            assert_eq!(follow_ups.as_array().unwrap().len(), 1, "{namespace}");
+        }
+
+        // An empty semantic result points at the keyword tool.
+        let nothing = server
+            .memory_search(params(
+                json!({"query": "shipping", "namespace": "elsewhere"}),
+            ))
+            .await
+            .unwrap();
+        assert!(nothing.contains("memory_recall"), "{nothing}");
+    }
+
+    #[test]
+    fn core_profile_offers_only_the_everyday_tools() {
+        assert_eq!(core_tools_requested(None), Ok(false));
+        assert_eq!(core_tools_requested(Some("")), Ok(false));
+        assert_eq!(core_tools_requested(Some("full")), Ok(false));
+        assert_eq!(core_tools_requested(Some(" core ")), Ok(true));
+        let error = core_tools_requested(Some("minimal")).unwrap_err();
+        assert!(error.contains("'core' or 'full'"), "{error}");
+
+        // The default is unchanged: every tool, every instruction line.
+        let full = server_with(&[]);
+        assert_eq!(full.tool_router.list_all().len(), 29);
+        assert!(full.instructions().contains("- memory_inbox:"));
+
+        let core = server_with(&[]).core_tools_only();
+        let mut offered: Vec<String> = core
+            .tool_router
+            .list_all()
+            .iter()
+            .map(|tool| tool.name.to_string())
+            .collect();
+        offered.sort_unstable();
+        let mut expected = CORE_TOOLS.map(String::from);
+        expected.sort_unstable();
+        assert_eq!(offered, expected);
+
+        // Instructions never point at a tool the profile does not offer.
+        let instructions = core.instructions();
+        for line in instructions.lines().filter(|line| line.starts_with("- ")) {
+            let tool = line[2..].split(':').next().unwrap();
+            assert!(CORE_TOOLS.contains(&tool), "{line}");
+        }
+        assert!(instructions.contains("- memory_recall:"));
+        assert!(!instructions.contains("memory_capture"));
+        assert!(!instructions.contains("memory_inbox"));
     }
 }
