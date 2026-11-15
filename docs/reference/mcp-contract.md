@@ -93,6 +93,10 @@ Every read tool should:
 
 ## Namespace Auto-Detection
 
+Core semantic retrieval, namespace moves, statistics and activity filters accept
+bare project names. The reserved `global` namespace is case-insensitive; names
+with a colon retain their spelling. Migration 018 also normalises global casing.
+
 Several tools accept an optional `cwd` parameter (working directory path). When `cwd` is provided and `namespace` is omitted, the server attempts to detect the project namespace from the directory tree:
 
 1. Search every ancestor from `cwd` for `.clio-namespace`; the nearest valid file supplies the full namespace string (e.g. `project:clio`). This explicit marker wins over any nested package manifest.
@@ -370,6 +374,7 @@ This is the primary write path for AI clients. It should support both one-off wr
 
 ### Validation rules
 
+- `valid_from` and `valid_until` must be ISO-8601 dates or date-times, for example `2026-11-15` or `2026-11-15T12:00:00Z`; update applies the same validation.
 - `content` is required
 - `namespace` must not be empty
 - `kind` must not be empty
@@ -473,6 +478,15 @@ value is rejected before the patch is applied.
 
 ## `memory_recall`
 
+Ordinary recall, recent lists, semantic search and context briefs exclude expired
+memories (including linked expansion). CLI recall/search/recent accept
+`--include-expired`; MCP equivalents accept `include_expired: true` for history.
+Direct ID reads, audit/history and export/import preserve expired records.
+
+Ordinary keyword recall retries an empty multi-word query using any-word matching.
+Scoped recall widens only when both project and global strict results are empty.
+Pagination beyond an existing result set does not widen. JSON envelopes are unchanged.
+
 Search or filter memories.
 
 ### Why it exists
@@ -493,6 +507,7 @@ This is the primary retrieval tool for AI clients. It must handle both semantic-
   "importance_max": 5,
   "sort_by": "importance_desc",
   "include_archived": false,
+  "include_expired": false,
   "archived_only": false,
   "limit": 10,
   "offset": 0,
@@ -511,6 +526,7 @@ This is the primary retrieval tool for AI clients. It must handle both semantic-
 - `importance_max`: null (no upper bound)
 - `sort_by`: null (default: `updated_at DESC`). It orders a listing; with `query` it has no effect, because keyword results are ordered by relevance
 - `include_archived`: `false`
+- `include_expired`: `false` — include expired history when true
 - `archived_only`: `false`
 - `limit`: `10`
 - `offset`: `0`
@@ -649,6 +665,8 @@ Fetch one memory by id.
 - `json`: full memory record
 - `markdown`: detail view including metadata and content
 
+Desktop browse and archive lists request `include_expired: true` in remote mode and include expired records locally. Search continues to hide expired records by default. Omitted server arguments keep their existing defaults, so installed clients remain compatible.
+
 ## `memory_recent`
 
 **Deprecated** — use `memory_recall` with no `query` (it falls through to a
@@ -668,6 +686,7 @@ Return recent memories with optional filtering and sorting.
   "importance_max": 5,
   "sort_by": "importance_desc",
   "include_archived": false,
+  "include_expired": false,
   "archived_only": false,
   "offset": 0,
   "limit": 10,
@@ -694,6 +713,7 @@ Return recent memories with optional filtering and sorting.
 - `importance_max`: null (no upper bound)
 - `sort_by`: null (default: `updated_at DESC`)
 - `include_archived`: `false`
+- `include_expired`: `false` — include expired history when true
 - `archived_only`: `false` (takes precedence over `include_archived`)
 - `offset`: `0`
 - `limit`: `10`
@@ -1013,6 +1033,12 @@ Get all typed links originating from a memory.
 
 ## `memory_capture`
 
+Distillation keeps at most three knowledge items. Explicit commitments take
+priority and may extend this to five non-receipt items, plus one receipt.
+
+Session checkpoint distillation includes the earlier-title digest used by CLI
+checkpoints, preserving corrections while avoiding repeated knowledge.
+
 Accept unstructured text, classify it via an LLM, and store it as a structured memory.
 
 ### Why it exists
@@ -1192,7 +1218,12 @@ Stop-hook capture retries after a lost response, a provider 429 or an outage. Wi
 
 Linked recall (`memory_recall` with `include_links`) likewise returns each linked memory once with a `link_context` array preserving every edge's direction, relationship and metadata.
 
+The recent namespace resource excludes expired records. Desktop remote connections remove the inherited `CLIO_MCP_TOOLS` filter so administrative tools stay available.
+
 ## `memory_resume`
+
+The response namespace is canonicalised, including bare project names and global casing.
+
 
 Build a deterministic, evidence-backed resume brief: what deserves attention now, and why.
 
@@ -1223,6 +1254,8 @@ Handoff and context briefs answer "what is this project?"; resume answers "what 
 5. With `session_id`, default selection records idempotent surfaced events. Attention is suppressed until its state changes. Constraints and decisions are suppressed only on query-bearing requests after acknowledged delivery, and edits make them eligible again. Session starts never suppress these sections. Deferred selection records nothing until acknowledgement; without a session nothing is written.
 6. The character budget counts the serialised representation (title + bounded content + reason); at least one item is always kept
 7. Event-write failure logs a warning and still returns the brief
+8. Constraints select project items first, plus up to two global constraints within the section budget.
+9. Attention reasons are `overdue` (past due date), `reminder_due` (reminder or snooze due), `project_session` (project-session trigger in the same namespace) and `dormant` (untouched beyond the configured interval).
 
 ### Response
 
@@ -1467,6 +1500,7 @@ Find memories by semantic meaning using vector embeddings.
   "namespace": "project:ai",
   "cwd": "/Users/alice/code/my-project",
   "include_archived": false,
+  "include_expired": false,
   "limit": 10,
   "response_format": "json"
 }
@@ -1477,6 +1511,7 @@ Find memories by semantic meaning using vector embeddings.
 - `namespace`: null (auto-detected from `cwd` when provided; otherwise `global`)
 - `cwd`: null (no auto-detection)
 - `include_archived`: `false`
+- `include_expired`: `false` — include expired history when true
 - `limit`: `10`
 - `response_format`: `markdown`
 
@@ -1933,12 +1968,8 @@ The MCP implementation is incorrect if:
 - archived records appear unexpectedly in default recall
 - error messages are opaque enough that an agent cannot recover
 
-Two adapter behaviours are deliberate presentation choices, not different
-semantics: the retry of an empty multi-word `memory_recall` (it calls core's
-any-word search and labels the result), and the `compact` projection of list
-and write replies (`json` still returns the complete core records). The CLI
-does neither yet; the retry is due to move into core so that every adapter
-shares it.
+Ordinary recall widening lives in core and is shared by CLI, MCP and desktop.
+MCP compact projections remain presentation choices; JSON retains complete core records.
 
 ## Acceptance Criteria
 
@@ -1958,22 +1989,3 @@ The MCP contract is ready for implementation when:
 - [Settings Reference](settings.md) — configuration keys and defaults
 - [Architecture](../../context/ARCHITECTURE.md) — system overview and crate boundaries
 - [Documentation Index](../README.md) — all available documentation
-
-Ordinary keyword recall retries an empty multi-word query using any-word matching.
-Scoped recall widens only when both project and global strict results are empty.
-Pagination beyond an existing result set does not widen. JSON envelopes are unchanged.
-
-Ordinary recall, recent lists, semantic search and context briefs exclude expired
-memories (including linked expansion). CLI recall/search/recent accept
-`--include-expired`; MCP equivalents accept `include_expired: true` for history.
-Direct ID reads, audit/history and export/import preserve expired records.
-
-Session checkpoint distillation includes the earlier-title digest used by CLI
-checkpoints, preserving corrections while avoiding repeated knowledge.
-
-Core semantic retrieval, namespace moves, statistics and activity filters accept
-bare project names. The reserved `global` namespace is case-insensitive; names
-with a colon retain their spelling. Migration 018 also normalises global casing.
-
-Distillation keeps at most three knowledge items. Explicit commitments take
-priority and may extend this to five non-receipt items, plus one receipt.

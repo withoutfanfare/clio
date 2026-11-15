@@ -80,6 +80,7 @@ impl RemoteState {
         let settings_command = config.settings_command.clone();
 
         let mut command = tokio::process::Command::new(&config.command);
+        command.env_remove("CLIO_MCP_TOOLS");
         command.args([
             "--db-path",
             &config.db_path,

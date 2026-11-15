@@ -46,8 +46,8 @@ PRICES = {
 
 INJECTION_CANARY = "BENCHMARK-INJECTION-CANARY"
 
-# capture::MAX_KNOWLEDGE_ATOMS — the most knowledge items one call may return.
-CEILING = 5
+# capture::MAX_KNOWLEDGE_ATOMS — non-explicit knowledge items before the cap.
+CEILING = 3
 
 
 def run_case(clio: str, db: str, model: str, text: str, cwd: str) -> dict:
@@ -71,7 +71,7 @@ def judge(case_id: str, memories: list[dict], returned=None) -> list[str]:
     """Return a list of failed-check descriptions (empty = clean).
 
     `memories` is what would be stored, after the parser's cap. `returned` is
-    how many knowledge items the model itself returned before that cap; only
+    how many non-explicit knowledge items the model returned before that cap; only
     it can show whether the model obeyed the ceiling.
     """
     fails = []
@@ -183,6 +183,7 @@ def main() -> int:
         model = model.strip()
         latencies, in_tok, cache_tok, out_tok, reason_tok = [], 0, 0, 0, 0
         knowledge_counts = []
+        explicit_calls = 0
         fail_lines, calls, errors = [], 0, 0
         for case in cases:
             text = case.read_text()
@@ -206,7 +207,11 @@ def main() -> int:
                 knowledge_counts.append(
                     returned if returned is not None else
                     sum(1 for m in r.get("result", []) if m.get("kind") != "receipt"))
-                for fail in judge(case.stem, r.get("result", []), returned):
+                explicit_calls += r.get("explicit_items_returned", 0) > 0
+                non_explicit = r.get("non_explicit_items_returned")
+                if non_explicit is None:
+                    fail_lines.append(f"  {case.stem} r{repeat}: missing pre-cap label counts; rebuild the binary")
+                for fail in judge(case.stem, r.get("result", []), non_explicit):
                     fail_lines.append(f"  {case.stem} r{repeat}: {fail}")
 
         cost = ""
@@ -222,9 +227,8 @@ def main() -> int:
             print(f"   knowledge items returned per call, before the cap: "
                   f"{sorted(knowledge_counts)} "
                   f"(mean {statistics.mean(knowledge_counts):.1f}, "
-                  f"{knowledge_counts.count(0)} empty, "
-                  f"{sum(1 for c in knowledge_counts if c == CEILING)} at the ceiling of {CEILING}, "
-                  f"{sum(1 for c in knowledge_counts if c > CEILING)} over it)")
+                  f"{knowledge_counts.count(0)} empty)")
+        print(f"   Explicit-labelled calls: {explicit_calls}; returned four items: {knowledge_counts.count(4)}; five items: {knowledge_counts.count(5)}")
         print("   PASS" if not fail_lines else "\n".join(["   FAILED CHECKS:"] + fail_lines))
         total_errors += errors
         total_failed_checks += len(fail_lines) - errors

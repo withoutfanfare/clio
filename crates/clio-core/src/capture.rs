@@ -103,8 +103,8 @@ impl DistilledAttention {
 
 /// Days until a point-in-time status note's `valid_until`. Once that has
 /// passed, reads that exclude expired rows leave the note out — today that is
-/// the resume brief, the attention overview and link suggestions; ordinary
-/// recall and search do not exclude expired rows yet. Nothing is deleted.
+/// resume and context briefs, ordinary recall, search, recent lists, the
+/// attention overview and link suggestions. Nothing is deleted.
 pub const STATUS_LIFETIME_DAYS: i64 = 30;
 
 /// How long a distilled memory stays true. Anything the model does not mark
@@ -451,6 +451,11 @@ pub fn distill_with_usage(
     distill_measured(text, config).map(|(memories, usage, _)| (memories, usage))
 }
 
+pub struct DistillationCounts {
+    pub knowledge: usize,
+    pub explicit: usize,
+}
+
 /// Distil text and also report how many knowledge items the model returned
 /// before the cap trimmed them. The capture benchmark needs that figure: the
 /// capped list can never exceed the ceiling, so it cannot show whether the
@@ -459,10 +464,21 @@ pub fn distill_with_usage(
 pub fn distill_measured(
     text: &str,
     config: &CaptureConfig,
-) -> Result<(Vec<DistilledMemory>, CaptureUsage, usize)> {
+) -> Result<(Vec<DistilledMemory>, CaptureUsage, DistillationCounts)> {
     let response = chat_with_usage(DISTILLATION_SYSTEM_PROMPT, text, config, true)?;
     let memories = parse_uncapped(&response.content)?;
-    let returned = memories.iter().filter(|m| m.kind != "receipt").count();
+    let returned = DistillationCounts {
+        knowledge: memories.iter().filter(|m| m.kind != "receipt").count(),
+        explicit: memories
+            .iter()
+            .filter(|m| {
+                m.kind != "receipt"
+                    && m.attention
+                        .as_ref()
+                        .is_some_and(DistilledAttention::is_explicit)
+            })
+            .count(),
+    };
     Ok((cap_distilled_memories(memories), response.usage, returned))
 }
 
@@ -677,9 +693,9 @@ pub const MAX_DISTILLED_MEMORIES: usize = 6;
 
 /// Enforce [`MAX_KNOWLEDGE_ATOMS`] deterministically over the non-receipt
 /// atoms (the single receipt never competes for a knowledge slot and is never
-/// dropped here). Atoms carrying an open loop (`attention`) rank first, then
+/// dropped here). Explicit commitments rank first, then
 /// highest importance with confidence as the tiebreak — so only a
-/// pathological response loses an open loop. Survivors keep their original
+/// pathological response loses an explicit commitment. Survivors keep their original
 /// order so provenance refs stay stable across a retry.
 fn cap_distilled_memories(memories: Vec<DistilledMemory>) -> Vec<DistilledMemory> {
     let knowledge_atoms = memories.iter().filter(|m| m.kind != "receipt").count();
@@ -716,6 +732,12 @@ fn cap_distilled_memories(memories: Vec<DistilledMemory>) -> Vec<DistilledMemory
     keep.extend((0..memories.len()).filter(|&i| memories[i].kind == "receipt"));
     keep.sort_unstable();
 
+    if keep.len() < memories.len() {
+        tracing::warn!(
+            dropped = memories.len() - keep.len(),
+            "distillation cap dropped items"
+        );
+    }
     let mut memories = memories;
     let mut index = 0;
     memories.retain(|_| {
@@ -1089,6 +1111,22 @@ pub(crate) fn propose_revival(
     }
 }
 
+/// Durable evidence revives an expired live twin; status evidence leaves it alone.
+pub(crate) fn revive_expired_twin(
+    conn: &rusqlite::Connection,
+    id: &str,
+    metadata: &serde_json::Value,
+) -> Result<()> {
+    if expiry_from_metadata(metadata).is_none() {
+        conn.execute(
+            "UPDATE memories SET valid_until = NULL WHERE id = ?1
+             AND archived_at IS NULL AND datetime(valid_until) <= datetime('now')",
+            [id],
+        )?;
+    }
+    Ok(())
+}
+
 /// Store a classified memory, or route it to the review queue when its
 /// confidence falls below the configured threshold. Shared by the single-item
 /// capture path, the multi-item distillation path and the checkpoint path so
@@ -1114,12 +1152,8 @@ pub(crate) fn store_or_queue(
     // inbox either.
     if let Some(existing_id) = crate::repository::find_content_duplicate(conn, namespace, content)?
     {
+        revive_expired_twin(conn, &existing_id, metadata)?;
         let memory = crate::repository::get_raw(conn, &existing_id)?;
-        // Repeated exact evidence strengthens the canonical memory: keep one
-        // row, record this sighting's provenance as an occurrence. The stored
-        // record keeps its own `valid_until` whatever lifetime this sighting
-        // carries: seeing a durable fact in a status note must not expire it,
-        // and a replayed old session must not renew a status note.
         crate::occurrences::record_occurrence(conn, &existing_id, Some(source), source_ref, None)?;
         tracing::debug!(
             "capture deduplicated against existing memory {} in {}",
@@ -1440,7 +1474,7 @@ mod tests {
     }
 
     #[test]
-    fn an_exact_live_twin_keeps_its_own_validity_whatever_the_new_sighting_says() {
+    fn durable_sightings_revive_expired_twins_but_status_sightings_do_not() {
         let conn = crate::db::open_in_memory().unwrap();
         let settings = crate::settings::Settings::default();
         let capture = |content: &str, metadata: serde_json::Value| {
@@ -1469,11 +1503,53 @@ mod tests {
         assert_eq!(again.id, first.id);
         assert_eq!(again.valid_until, None);
 
-        // A status note seen again as durable keeps the expiry it was given.
+        let expired = || serde_json::json!({ "valid_until": "2000-01-01T00:00:00Z" });
+        let first = capture("Expired fact", expired());
+        let again = capture("Expired fact", status());
+        assert_eq!(again.id, first.id);
+        assert_eq!(again.valid_until.as_deref(), Some("2000-01-01T00:00:00Z"));
+        let again = capture("Expired fact", durable());
+        assert_eq!(again.id, first.id);
+        assert_eq!(again.valid_until, None);
+
+        // Future expiry stays in place.
+
         let first = capture("PR 12 passed review.", status());
         let again = capture("PR 12 passed review.", durable());
         assert_eq!(again.id, first.id);
         assert_eq!(again.valid_until.as_deref(), Some("2999-01-01T00:00:00Z"));
+    }
+
+    #[test]
+    fn review_approval_revives_only_durable_expired_twins() {
+        for canonical in [false, true] {
+            for status in [false, true] {
+                let conn = crate::db::open_in_memory().unwrap();
+                let settings = crate::settings::Settings::default();
+                let input = serde_json::from_value(serde_json::json!({
+                    "content": "Identical evidence", "namespace": "project:demo",
+                    "valid_until": "2000-01-01"
+                }))
+                .unwrap();
+                let original = crate::repository::remember(&conn, &input, &settings).unwrap();
+                let mut metadata = serde_json::json!({});
+                if canonical {
+                    metadata["canonical_memory_id"] = original.id.clone().into();
+                }
+                if status {
+                    metadata["valid_until"] = "2999-01-01".into();
+                }
+                let review = serde_json::from_value(serde_json::json!({
+                    "content": "Identical evidence", "suggested_namespace": "project:demo",
+                    "metadata": metadata
+                }))
+                .unwrap();
+                let queued = crate::review::queue_for_review(&conn, &review).unwrap();
+                let approved = crate::review::approve_review(&conn, &queued.id, &settings).unwrap();
+                assert_eq!(approved.id, original.id);
+                assert_eq!(approved.valid_until.is_some(), status);
+            }
+        }
     }
 
     #[test]

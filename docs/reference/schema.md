@@ -137,10 +137,12 @@ CREATE TABLE memories (
 
 ### Semantic rules
 
+Dates supplied as `valid_from` or `valid_until` must be ISO-8601 dates or date-times (for example `2026-11-15` or `2026-11-15T12:00:00Z`); core remember and update reject unreadable values. Date-times use uppercase `T`, seconds below 60 and offsets within 14 hours so SQLite can interpret them.
+
 - `content` is the only mandatory human payload field.
 - `title` and `summary` are optional because some clients will store raw findings or notes.
 - `metadata_json` must always decode to an object. Arrays and scalars are invalid.
-- `valid_from` is advisory. `valid_until` is an expiry: once it has passed, the memory is left out of any read that asks to exclude expired rows. Resume briefs, the attention overview and link suggestions ask; ordinary recall, search, recent listings and context briefs do not yet, so an expired memory still appears there. Expiry hides a memory; it never archives or deletes it, and clearing the field brings the memory back.
+- `valid_from` is advisory. `valid_until` is an expiry: once it has passed, the memory is left out of any read that asks to exclude expired rows. Resume briefs, the attention overview, link suggestions, ordinary recall, search, recent listings and context briefs exclude expired records by default. Desktop browse and archive lists include them. Expiry hides a memory; it never archives or deletes it, and clearing the field brings the memory back.
 - Session distillation sets `valid_until` to 30 days ahead (`capture::STATUS_LIFETIME_DAYS`) on memories the model marks `"lifetime": "status"`: point-in-time notes such as a PR having passed or a release having gone out. Durable knowledge, receipts and open loops never get an expiry, and a missing `lifetime` means durable. The same timestamp is kept in `metadata_json.valid_until` so that an item held in the review queue keeps its expiry when approved.
 - `source` and `source_ref` are optional individually, but only meaningful for upsert when both are set.
 
@@ -990,6 +992,10 @@ The export format should be easy for:
 | `017_work_guidance` | receipt-scoped human acceptance and separately stored next-task recommendations |
 | `018_canonical_attention_namespaces` | data only: rewrites a bare `attention_items.namespace` (`Scooda`) to `project:<slug>` when memories already exist under that project namespace, without changing `updated_at`; any other bare name is left as it is |
 
+### Work guidance (migration 017)
+
+`work_acceptances` stores one immutable JSON decision per implementation `receipt_id` (foreign key to `work_reports.id`). `work_recommendations` stores one JSON recommendation per `(project, parent_task)`, with `checked_at` guarding replacement order. Neither table rewrites agent receipts or registers a run. The local CLI owns these explicit writes; the core overview joins acceptance and filters recommendations whose proposed task already reports. See [work reporting](../work-reporting.md#human-acceptance-and-next-task-guidance-local-pilot).
+
 ## Invariants For Implementers
 
 Any implementation is incorrect if it violates these rules:
@@ -1042,23 +1048,3 @@ The schema is ready for coding agents when:
 - [Settings Reference](settings.md) — configuration keys and defaults
 - [Architecture](../../context/ARCHITECTURE.md) — system overview and crate boundaries
 - [Documentation Index](../README.md) — all available documentation
-
-### Work guidance (migration 017)
-
-`work_acceptances` stores one immutable JSON decision per implementation `receipt_id` (foreign key to `work_reports.id`). `work_recommendations` stores one JSON recommendation per `(project, parent_task)`, with `checked_at` guarding replacement order. Neither table rewrites agent receipts or registers a run. The local CLI owns these explicit writes; the core overview joins acceptance and filters recommendations whose proposed task already reports. See [work reporting](../work-reporting.md#human-acceptance-and-next-task-guidance-local-pilot).
-
-Ordinary recall, recent lists, semantic search and context briefs exclude expired
-memories (including linked expansion). CLI recall/search/recent accept
-`--include-expired`; MCP equivalents accept `include_expired: true` for history.
-Direct ID reads, audit/history and export/import preserve expired records.
-
-Core semantic retrieval, namespace moves, statistics and activity filters accept
-bare project names. The reserved `global` namespace is case-insensitive; names
-with a colon retain their spelling. Migration 018 also normalises global casing.
-
-Effectiveness reports sessions with no task-matched item and mean distinct
-task-matched memories per session, using surfaced events labelled `Relevant
-knowledge`. Only sessions with surfaced events are measurable. It also reports
-the fraction of unarchived memories carrying `valid_until` (including expired
-rows). Raw distillation cap-hit and empty-response rates are not available:
-checkpoint envelopes record stored/review IDs, not raw model output counts.

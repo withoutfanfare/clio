@@ -731,6 +731,10 @@ pub fn effectiveness(
             WHERE e.event_type = 'surfaced' AND e.session_id IS NOT NULL
               AND (?1 IS NULL OR COALESCE(m.namespace, e.namespace) = ?1)
             GROUP BY e.session_id
+            HAVING MIN(e.created_at) >= (
+                SELECT MIN(created_at) FROM memory_events
+                WHERE event_type = 'surfaced' AND reason = 'Relevant knowledge'
+            )
         )", [namespace], |row| Ok((row.get(0)?, row.get(1)?)),
     )?;
     let active_expiry_share = conn.query_row(
@@ -832,9 +836,20 @@ mod usage_by_kind_tests {
 
         conn.execute("UPDATE memory_events SET session_id = 'session-a', reason = 'Relevant knowledge' WHERE event_type = 'surfaced'", []).unwrap();
         conn.execute("UPDATE memories SET valid_until = '2000-01-01T00:00:00Z' WHERE id = ?1", [&shown.id]).unwrap();
+        conn.execute("UPDATE memory_events SET created_at = '2026-10-06T00:00:00Z' WHERE event_type = 'surfaced'", []).unwrap();
+        for (session, namespace, date) in [
+            ("old", "project:demo", "2026-10-05T00:00:00Z"),
+            ("unmatched", "project:demo", "2026-10-07T00:00:00Z"),
+            ("other", "project:other", "2026-10-07T00:00:00Z"),
+        ] {
+            conn.execute("INSERT INTO memory_events (id, event_type, session_id, namespace, created_at) VALUES (?1, 'surfaced', ?1, ?2, ?3)", rusqlite::params![session, namespace, date]).unwrap();
+        }
+        let scoped = effectiveness(&conn, Some("project:demo"), 0).unwrap();
+        assert_eq!(scoped.sessions_without_task_match, 1);
+        assert_eq!(scoped.mean_task_matches_per_session, 0.5);
         let report = effectiveness(&conn, None, 0).unwrap();
-        assert_eq!(report.sessions_without_task_match, 0);
-        assert_eq!(report.mean_task_matches_per_session, 1.0);
+        assert_eq!(report.sessions_without_task_match, 2);
+        assert_eq!(report.mean_task_matches_per_session, 1.0 / 3.0);
         assert!((report.active_expiry_share - 1.0 / 3.0).abs() < 0.0001);
         assert_eq!(
             report.by_kind["fact"],

@@ -24,6 +24,9 @@ clio init --namespace project:my-project
 
 ## Remote MCP Bridge
 
+`clio remote-mcp` validates and forwards `CLIO_MCP_TOOLS`: `core`, `full` or empty (full). Unset preserves remote defaults. Desktop connections remove the inherited filter.
+
+
 Forward MCP traffic to a private Clio server over SSH while detecting project
 namespaces on the client computer:
 
@@ -122,6 +125,15 @@ clio remember \
 
 ## Retrieving Memories
 
+Recall JSON adds `widened` to the CLI envelope, preserving existing fields.
+
+| Commands | Flag | Default | Meaning |
+|---|---|---|---|
+| `recall`, `recent`, `search` | `--include-expired` | false | Include expired memories for history |
+Effectiveness task-match figures cover sessions whose first surfaced event is on or after the first recorded `Relevant knowledge` event.
+Bulk namespace moves match the source name literally so legacy names can be repaired; destinations are canonicalised.
+
+
 ```sh
 # Full-text search (keyword matching)
 clio recall --query "redis caching"
@@ -147,6 +159,7 @@ clio show <id>
 --importance-max 5       # maximum importance (1–5)
 --sort importance-desc   # sort order (see below)
 --include-archived
+--include-expired        # include expired history
 --limit 20
 --offset 40
 
@@ -155,6 +168,15 @@ clio recall --query "redis" --json
 ```
 
 **Sort orders:** `updated-desc` (default) `updated-asc` `importance-desc` `importance-asc` `created-desc` `created-asc`
+
+Ordinary keyword recall retries an empty multi-word query using any-word matching.
+Scoped recall widens only when both project and global strict results are empty.
+Pagination beyond an existing result set does not widen. A filler-only query whose retry would be identical does not report widening. CLI recall JSON reports `widened`; MCP JSON retains its core envelope.
+
+Ordinary recall, recent lists, semantic search and context briefs exclude expired
+memories (including linked expansion). CLI recall/search/recent accept
+`--include-expired`; MCP equivalents accept `include_expired: true` for history.
+Direct ID reads, audit/history and export/import preserve expired records.
 
 ### Brief (context assembly)
 
@@ -221,6 +243,11 @@ Capture reports either `Stored` with the memory or `Queued` with a review item
 when confidence is below the configured threshold.
 
 ### Distil (transcript → durable memories)
+
+Distillation `--dry-run --metrics --json` reports pre-cap `knowledge_items_returned`, `explicit_items_returned` and `non_explicit_items_returned`. The benchmark checks the non-explicit ceiling of three and reports explicit-labelled calls and four/five-item calls. Cap drops are logged as warnings.
+
+Distillation keeps at most three knowledge items. Explicit commitments take
+priority and may extend this to five non-receipt items, plus one receipt.
 
 `distill` sends a long body of text — typically a whole session transcript — to
 the LLM and extracts **zero or more** self-contained, durable memories
@@ -359,6 +386,13 @@ clio action history <id>
 
 ### Effectiveness (event-backed usefulness report)
 
+Effectiveness reports sessions with no task-matched item and mean distinct
+task-matched memories per session, using surfaced events labelled `Relevant
+knowledge`. Only sessions beginning on or after the first task-match label are measured. It also reports
+the fraction of unarchived memories carrying `valid_until` (including expired
+rows). Historical raw distillation cap-hit and empty-response rates are not available from effectiveness reports:
+checkpoint envelopes record stored/review IDs, not raw model output counts.
+
 `clio effectiveness` reports whether the memory system is actually working:
 confirmed checkpoints, attention lifecycle counts, stale open items, unique
 automatic surfacings versus deliberate reads, unresolved contradictions,
@@ -385,6 +419,10 @@ clio delete <id>        # permanent delete of a single memory
 ---
 
 ## Namespace Management
+
+Core semantic retrieval, namespace moves, statistics and activity filters accept
+bare project names. The reserved `global` namespace is case-insensitive; names
+with a colon retain their spelling. Migration 018 also normalises global casing.
 
 ```sh
 # Check detected namespace
@@ -646,26 +684,3 @@ Default DB: `~/Library/Application Support/clio/memory.db` (macOS)
 - [Settings Reference](reference/settings.md) — all configuration keys and defaults
 - [Schema Reference](reference/schema.md) — database structure
 - [Documentation Index](README.md) — all available documentation
-
-Ordinary keyword recall retries an empty multi-word query using any-word matching.
-Scoped recall widens only when both project and global strict results are empty.
-Pagination beyond an existing result set does not widen. JSON envelopes are unchanged.
-
-Ordinary recall, recent lists, semantic search and context briefs exclude expired
-memories (including linked expansion). CLI recall/search/recent accept
-`--include-expired`; MCP equivalents accept `include_expired: true` for history.
-Direct ID reads, audit/history and export/import preserve expired records.
-
-Core semantic retrieval, namespace moves, statistics and activity filters accept
-bare project names. The reserved `global` namespace is case-insensitive; names
-with a colon retain their spelling. Migration 018 also normalises global casing.
-
-Distillation keeps at most three knowledge items. Explicit commitments take
-priority and may extend this to five non-receipt items, plus one receipt.
-
-Effectiveness reports sessions with no task-matched item and mean distinct
-task-matched memories per session, using surfaced events labelled `Relevant
-knowledge`. Only sessions with surfaced events are measurable. It also reports
-the fraction of unarchived memories carrying `valid_until` (including expired
-rows). Raw distillation cap-hit and empty-response rates are not available:
-checkpoint envelopes record stored/review IDs, not raw model output counts.

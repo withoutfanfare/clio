@@ -809,6 +809,7 @@ fn build_resume(conn: &Connection, request: &ResumeRequest, record: bool) -> Res
         .namespace
         .clone()
         .filter(|ns| !ns.trim().is_empty())
+        .map(|ns| crate::context::canonical_namespace(&ns))
         .unwrap_or_else(|| "global".to_string());
 
     // 1. Eligible open work (already once-per-scope suppressed by core).

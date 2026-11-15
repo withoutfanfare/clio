@@ -595,7 +595,7 @@ pub fn recall_ordinary(
     };
     let result = run(query)?;
     let widened = result.total == 0 && !query.match_any_term
-        && query.query.as_deref().is_some_and(|q| q.split_whitespace().nth(1).is_some());
+        && query.query.as_deref().is_some_and(|q| q.split_whitespace().nth(1).is_some() && sanitise_fts_query_any(q) != sanitise_fts_query(q));
     if widened {
         // Loose any-word matches are not evidence of use; counting them
         // would feed junk into the access signal that ranking reads.
@@ -1465,7 +1465,6 @@ pub fn move_namespace(conn: &Connection, id: &str, namespace: &str) -> Result<Me
 /// Move all memories in one namespace to another. Returns the number of
 /// memories moved.
 pub fn move_namespace_bulk(conn: &Connection, from: &str, to: &str) -> Result<usize> {
-    let from = &crate::context::canonical_namespace(from);
     let to = &crate::context::canonical_namespace(to);
     if to.is_empty() || to.len() > 120 {
         return Err(ClioError::Validation(
@@ -1924,6 +1923,45 @@ mod tests {
     use super::*;
 
     #[test]
+    fn validity_dates_are_validated_on_remember_and_update() {
+        let conn = crate::db::open_in_memory().unwrap();
+        let settings = crate::settings::Settings::default();
+        for field in ["valid_from", "valid_until"] {
+            for value in ["never", "next Friday", "2999/01/01", "2026-02-30",
+                "2999-01-01t12:00:00z", "2999-01-01T12:00:00+23:00", "2999-01-01T12:00:60Z"] {
+                let mut input = serde_json::json!({"content": "date validation"});
+                input[field] = value.into();
+                let error = remember(&conn, &serde_json::from_value(input).unwrap(), &settings)
+                    .unwrap_err();
+                assert!(error.to_string().contains("2026-11-15"));
+            }
+            for value in [
+                "2999-01-01",
+                "2999-01-01T12:30:00",
+                "2999-01-01T12:30:00.123",
+                "2999-01-01T12:30:00Z",
+                "2999-01-01T12:30:00+01:00",
+            ] {
+                let mut input = serde_json::json!({"content": "valid date"});
+                input[field] = value.into();
+                let memory =
+                    remember(&conn, &serde_json::from_value(input).unwrap(), &settings).unwrap();
+                let mut patch = serde_json::json!({});
+                patch[field] = "never".into();
+                assert!(
+                    update(
+                        &conn,
+                        &memory.id,
+                        &serde_json::from_value(patch).unwrap(),
+                        &settings
+                    )
+                    .is_err()
+                );
+            }
+        }
+    }
+
+    #[test]
     fn expired_retrieval_preserves_history_and_export() {
         let conn = crate::db::open_in_memory().unwrap();
         let input = serde_json::from_value::<RememberInput>(serde_json::json!({
@@ -1951,11 +1989,17 @@ mod tests {
         let (result, widened) = recall_ordinary(&conn, &query, Some("demo")).unwrap();
         assert!(widened);
         assert_eq!(result.total, 1);
-        let query = RecallQuery { query: Some("release".into()), offset: 10, ..query };
+        let query = RecallQuery {
+            query: Some("release procedure".into()),
+            offset: 10,
+            ..query
+        };
         let (result, widened) = recall_ordinary(&conn, &query, Some("demo")).unwrap();
         assert!(!widened);
         assert_eq!(result.total, 1);
         assert!(result.items.is_empty());
+        let query = RecallQuery { query: Some("is it on".into()), ..Default::default() };
+        assert!(!recall_ordinary(&conn, &query, None).unwrap().1);
     }
 
     #[test]
