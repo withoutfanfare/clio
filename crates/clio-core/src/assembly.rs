@@ -594,6 +594,8 @@ pub struct ResumeItem {
     pub content: String,
     pub source: Option<String>,
     pub created_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updated_at: Option<String>,
     /// Attention status (`open`/`snoozed`) or `knowledge`/`activity`.
     pub state: String,
     /// Why this item appears now.
@@ -649,6 +651,7 @@ fn resume_item_from_memory(memory: &Memory, state: &str, reason: String) -> Resu
         content: resume_excerpt(memory),
         source: memory.source.clone(),
         created_at: memory.created_at.clone(),
+        updated_at: (memory.updated_at != memory.created_at).then(|| memory.updated_at.clone()),
         state: state.to_string(),
         reason,
     }
@@ -697,7 +700,7 @@ pub fn build_resume_brief(conn: &Connection, request: &ResumeRequest) -> Result<
         .unwrap_or_else(|| "global".to_string());
 
     // 1. Eligible open work (already once-per-scope suppressed by core).
-    let eligible = attention::eligible(
+    let mut eligible = attention::eligible(
         conn,
         &attention::EligibilityContext {
             namespace: Some(namespace.clone()),
@@ -708,6 +711,7 @@ pub fn build_resume_brief(conn: &Connection, request: &ResumeRequest) -> Result<
         },
     )?;
 
+    eligible.sort_by_key(|e| e.item.due_at.clone().or(e.item.remind_at.clone()).unwrap_or_else(|| "9999".into()));
     let mut surfaced: Vec<(crate::attention::AttentionItem, String)> = Vec::new();
     let mut needs_attention = Vec::new();
     for entry in eligible {
@@ -721,6 +725,8 @@ pub fn build_resume_brief(conn: &Connection, request: &ResumeRequest) -> Result<
         needs_attention.push(resume_item_from_memory(&memory, &entry.item.status, reason));
         surfaced.push((entry.item, entry.reason.as_str().to_string()));
     }
+
+    needs_attention.truncate(3);
 
     // 2. Blocked / waiting items (open, waiting_on set, not already included).
     // Undated waits nobody has touched in weeks are stale, not blocking.
@@ -771,6 +777,7 @@ pub fn build_resume_brief(conn: &Connection, request: &ResumeRequest) -> Result<
             &request.scoring,
         ),
         "active constraint in this project",
+        request.session_id.as_deref(),
     )?;
     if request
         .namespace
@@ -787,6 +794,7 @@ pub fn build_resume_brief(conn: &Connection, request: &ResumeRequest) -> Result<
                 &request.scoring,
             ),
             "global constraint",
+            request.session_id.as_deref(),
         )?);
     }
 
@@ -805,6 +813,7 @@ pub fn build_resume_brief(conn: &Connection, request: &ResumeRequest) -> Result<
             )
         },
         "recent decision in this project",
+        request.session_id.as_deref(),
     )?;
 
     // 5. Prompt-relevant knowledge — abstains without a query.
@@ -817,29 +826,15 @@ pub fn build_resume_brief(conn: &Connection, request: &ResumeRequest) -> Result<
         Some(query) => {
             // The query is usually a whole prompt, so match on any of its
             // meaningful terms; requiring every word would match nothing.
-            let mut items = resume_recall(
+            let items = resume_recall(
                 conn,
                 RecallQuery {
                     match_any_term: true,
                     ..resume_query(Some(&namespace), None, Some(query), 10, &request.scoring)
                 },
-                &format!("matches the current task ({query})"),
+                "matches task terms",
+                request.session_id.as_deref(),
             )?;
-            items.retain(|i| i.kind != "receipt");
-            // Never lead with stale derived truth: drop the consolidated
-            // singleton when its namespace has moved past its watermark.
-            let has_consolidated = items
-                .iter()
-                .any(|i| i.source.as_deref() == Some(crate::consolidate::CONSOLIDATED_SOURCE));
-            if has_consolidated {
-                let stale =
-                    crate::consolidate::consolidation_is_stale(conn, &namespace)?.unwrap_or(true);
-                if stale {
-                    items.retain(|i| {
-                        i.source.as_deref() != Some(crate::consolidate::CONSOLIDATED_SOURCE)
-                    });
-                }
-            }
             items
         }
         None => Vec::new(),
@@ -848,8 +843,9 @@ pub fn build_resume_brief(conn: &Connection, request: &ResumeRequest) -> Result<
     // 6. Recent substantive activity (receipts).
     let activity = resume_recall(
         conn,
-        resume_query(Some(&namespace), Some("receipt"), None, 3, &request.scoring),
+        RecallQuery { sort_by: Some(SortOrder::CreatedDesc), ..resume_query(Some(&namespace), Some("receipt"), None, 3, &request.scoring) },
         "recent session receipt",
+        request.session_id.as_deref(),
     )?
     .into_iter()
     .map(|mut item| {
@@ -858,14 +854,24 @@ pub fn build_resume_brief(conn: &Connection, request: &ResumeRequest) -> Result<
     })
     .collect::<Vec<_>>();
 
-    let ordered = vec![
-        ("Needs attention", needs_attention),
-        ("Waiting on", waiting),
-        ("Active constraints", constraints),
-        ("Recent decisions", decisions),
-        ("Relevant knowledge", knowledge),
-        ("Recent activity", activity),
-    ];
+    let ordered = if request.query.as_deref().is_some_and(|q| !q.trim().is_empty()) {
+        vec![
+            ("Relevant knowledge", knowledge),
+            ("Needs attention", needs_attention),
+            ("Waiting on", waiting),
+            ("Active constraints", constraints),
+            ("Recent decisions", decisions),
+            ("Recent activity", activity),
+        ]
+    } else {
+        vec![
+            ("Recent activity", activity),
+            ("Needs attention", needs_attention),
+            ("Waiting on", waiting),
+            ("Active constraints", constraints),
+            ("Recent decisions", decisions),
+        ]
+    };
 
     let sections = allocate_resume_budget(ordered, request.max_items, request.char_budget);
 
@@ -977,15 +983,36 @@ fn resume_query(
 /// Untracked recall wrapped into resume items with a shared reason.
 fn resume_recall(
     conn: &Connection,
-    recall_query: RecallQuery,
+    mut recall_query: RecallQuery,
     reason: &str,
+    session: Option<&str>,
 ) -> Result<Vec<ResumeItem>> {
-    let result = repository::recall(conn, &recall_query)?;
-    Ok(result
-        .items
-        .into_iter()
-        .map(|ri| resume_item_from_memory(&ri.memory, "knowledge", reason.to_string()))
-        .collect())
+    let limit = recall_query.limit as usize;
+    let knowledge = recall_query.query.is_some();
+    let mut items = Vec::new();
+    recall_query.limit = 50;
+    loop {
+        let result = repository::recall(conn, &recall_query)?;
+        let count = result.items.len();
+        for ri in result.items {
+            let m = ri.memory;
+            if knowledge && (m.kind == "receipt" ||
+                (m.source.as_deref() == Some(crate::consolidate::CONSOLIDATED_SOURCE)
+                 && crate::consolidate::consolidation_is_stale(conn, &m.namespace)?.unwrap_or(true))) {
+                continue;
+            }
+            if let Some(scope) = session {
+                if ["constraint", "decision"].contains(&m.kind.as_str()) && conn.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM memory_events WHERE memory_id = ?1 AND session_id = ?2 AND event_type = 'surfaced')",
+                    rusqlite::params![m.id, scope], |r| r.get::<_, bool>(0))? { continue; }
+            }
+            items.push(resume_item_from_memory(&m, "knowledge", reason.to_string()));
+            if items.len() >= limit { return Ok(items); }
+        }
+        if count < 50 { break; }
+        recall_query.offset += 50;
+    }
+    Ok(items)
 }
 
 /// Deduplicate by memory ID (section priority order), guarantee one slot for
@@ -997,7 +1024,8 @@ fn allocate_resume_budget(
     max_items: u32,
     char_budget: Option<u32>,
 ) -> Vec<ResumeSection> {
-    const CRITICAL: usize = 3; // needs attention, waiting, constraints
+    let critical: Vec<usize> = ordered.iter().enumerate().filter_map(|(i, (h, _))|
+        (["Needs attention", "Waiting on"].contains(h) || (ordered[0].0 == "Recent activity" && ["Recent activity", "Active constraints"].contains(h))).then_some(i)).collect();
 
     // Cross-section dedup, priority order.
     let mut seen = std::collections::HashSet::new();
@@ -1017,7 +1045,7 @@ fn allocate_resume_budget(
     let max_items = max_items.max(1) as usize;
     let mut take: Vec<usize> = vec![0; pools.len()];
     let mut used = 0;
-    for (index, (_, items)) in pools.iter().enumerate().take(CRITICAL) {
+    for (index, (_, items)) in pools.iter().enumerate().filter(|(i, _)| critical.contains(i)) {
         if !items.is_empty() && used < max_items {
             take[index] = 1;
             used += 1;
@@ -1054,7 +1082,7 @@ fn allocate_resume_budget(
         first_kept = true;
         funded.insert(item.memory_id.clone());
     };
-    for (index, (_, items)) in pools.iter().enumerate().take(CRITICAL) {
+    for (index, (_, items)) in pools.iter().enumerate().filter(|(i, _)| critical.contains(i)) {
         if take[index] > 0 {
             if let Some(item) = items.first() {
                 fund(item);
@@ -1063,7 +1091,7 @@ fn allocate_resume_budget(
     }
     for (index, (_, items)) in pools.iter().enumerate() {
         for (position, item) in items.iter().enumerate().take(take[index]) {
-            let is_reserved_critical = index < CRITICAL && position == 0;
+            let is_reserved_critical = critical.contains(&index) && position == 0;
             if is_reserved_critical {
                 continue; // already funded in the first pass
             }
@@ -1771,6 +1799,29 @@ mod tests {
     }
 
     #[test]
+    fn resume_prioritises_task_and_refills_after_suppression() {
+        let conn = test_db();
+        let ns = "project:resume";
+        for i in 0..12 { make_memory(&conn, ns, "decision", &format!("Decision {i}")); }
+        for i in 0..15 { make_memory(&conn, ns, "receipt", &format!("Atomic receipt {i}")); }
+        make_memory(&conn, ns, "fact", "Atomic durability");
+        let mut request = resume_request(ns);
+        request.session_id = Some("refill".into());
+        request.max_items = 5;
+        let first = build_resume_brief(&conn, &request).unwrap();
+        assert!(section(&first, "Recent activity").is_some());
+        let second = build_resume_brief(&conn, &request).unwrap();
+        let old: Vec<_> = section(&first, "Recent decisions").unwrap().items.iter().map(|i| &i.memory_id).collect();
+        assert!(section(&second, "Recent decisions").unwrap().items.iter().all(|i| !old.contains(&&i.memory_id)));
+        request.query = Some("Atomic".into());
+        request.max_items = 1;
+        let task = build_resume_brief(&conn, &request).unwrap();
+        assert_eq!(task.sections[0].heading, "Relevant knowledge");
+        assert_eq!(task.sections[0].items[0].kind, "fact");
+        assert_eq!(task.sections[0].items[0].reason, "matches task terms");
+    }
+
+    #[test]
     fn resume_knowledge_matches_any_term_of_a_natural_language_query() {
         let conn = test_db();
         let ns = "project:resume";
@@ -1951,6 +2002,7 @@ mod tests {
             &conn,
             &RecallQuery {
                 namespace: Some(ns.into()),
+                query: Some("Untracked".into()),
                 ..Default::default()
             },
         )
