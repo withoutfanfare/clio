@@ -1927,7 +1927,8 @@ mod tests {
         let conn = crate::db::open_in_memory().unwrap();
         let settings = crate::settings::Settings::default();
         for field in ["valid_from", "valid_until"] {
-            for value in ["never", "next Friday", "2999/01/01", "2026-02-30"] {
+            for value in ["never", "next Friday", "2999/01/01", "2026-02-30",
+                "2999-01-01t12:00:00z", "2999-01-01T12:00:00+23:00", "2999-01-01T12:00:60Z"] {
                 let mut input = serde_json::json!({"content": "date validation"});
                 input[field] = value.into();
                 let error = remember(&conn, &serde_json::from_value(input).unwrap(), &settings)

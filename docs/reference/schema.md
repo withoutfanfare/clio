@@ -137,7 +137,7 @@ CREATE TABLE memories (
 
 ### Semantic rules
 
-Dates supplied as `valid_from` or `valid_until` must be ISO-8601 dates or date-times (for example `2026-11-15` or `2026-11-15T12:00:00Z`); core remember and update reject unreadable values.
+Dates supplied as `valid_from` or `valid_until` must be ISO-8601 dates or date-times (for example `2026-11-15` or `2026-11-15T12:00:00Z`); core remember and update reject unreadable values. Date-times use uppercase `T`, seconds below 60 and offsets within 14 hours so SQLite can interpret them.
 
 - `content` is the only mandatory human payload field.
 - `title` and `summary` are optional because some clients will store raw findings or notes.
