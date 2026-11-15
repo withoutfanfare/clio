@@ -570,6 +570,17 @@ mod retrieval_tests {
             })).unwrap();
             clio_core::repository::remember(&conn, &input, &Default::default()).unwrap();
         }
+        let expired = serde_json::from_value::<RememberInput>(serde_json::json!({
+            "namespace": "smoke:alpha", "title": "Expired evidence",
+            "content": "Contract orchard expired evidence", "valid_until": "2000-01-01"
+        }))
+        .unwrap();
+        clio_core::repository::remember(&conn, &expired, &Default::default()).unwrap();
+        let browse = RecallQuery {
+            namespace: Some("smoke:alpha".into()),
+            ..Default::default()
+        };
+        assert_eq!(local_recall(&conn, &browse).unwrap().total, 3);
         let cases: serde_json::Value = serde_json::from_str(include_str!("../../../../scripts/fixtures/sentence-recall.json")).unwrap();
         for case in cases.as_array().unwrap() {
             let query = RecallQuery {

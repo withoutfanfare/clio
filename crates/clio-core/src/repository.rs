@@ -1930,16 +1930,31 @@ mod tests {
             for value in ["never", "next Friday", "2999/01/01", "2026-02-30"] {
                 let mut input = serde_json::json!({"content": "date validation"});
                 input[field] = value.into();
-                let error = remember(&conn, &serde_json::from_value(input).unwrap(), &settings).unwrap_err();
+                let error = remember(&conn, &serde_json::from_value(input).unwrap(), &settings)
+                    .unwrap_err();
                 assert!(error.to_string().contains("2026-11-15"));
             }
-            for value in ["2999-01-01", "2999-01-01T12:30:00", "2999-01-01T12:30:00Z", "2999-01-01T12:30:00+01:00"] {
+            for value in [
+                "2999-01-01",
+                "2999-01-01T12:30:00",
+                "2999-01-01T12:30:00Z",
+                "2999-01-01T12:30:00+01:00",
+            ] {
                 let mut input = serde_json::json!({"content": "valid date"});
                 input[field] = value.into();
-                let memory = remember(&conn, &serde_json::from_value(input).unwrap(), &settings).unwrap();
+                let memory =
+                    remember(&conn, &serde_json::from_value(input).unwrap(), &settings).unwrap();
                 let mut patch = serde_json::json!({});
                 patch[field] = "never".into();
-                assert!(update(&conn, &memory.id, &serde_json::from_value(patch).unwrap(), &settings).is_err());
+                assert!(
+                    update(
+                        &conn,
+                        &memory.id,
+                        &serde_json::from_value(patch).unwrap(),
+                        &settings
+                    )
+                    .is_err()
+                );
             }
         }
     }
@@ -1972,7 +1987,11 @@ mod tests {
         let (result, widened) = recall_ordinary(&conn, &query, Some("demo")).unwrap();
         assert!(widened);
         assert_eq!(result.total, 1);
-        let query = RecallQuery { query: Some("release procedure".into()), offset: 10, ..query };
+        let query = RecallQuery {
+            query: Some("release procedure".into()),
+            offset: 10,
+            ..query
+        };
         let (result, widened) = recall_ordinary(&conn, &query, Some("demo")).unwrap();
         assert!(!widened);
         assert_eq!(result.total, 1);

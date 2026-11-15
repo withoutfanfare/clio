@@ -374,6 +374,7 @@ This is the primary write path for AI clients. It should support both one-off wr
 
 ### Validation rules
 
+- `valid_from` and `valid_until` must be ISO-8601 dates or date-times, for example `2026-11-15` or `2026-11-15T12:00:00Z`; update applies the same validation.
 - `content` is required
 - `namespace` must not be empty
 - `kind` must not be empty

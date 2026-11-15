@@ -102,13 +102,20 @@ pub fn remember_input(input: &RememberInput) -> Result<()> {
         }
     }
 
-    for (field, value) in [("valid_from", &input.valid_from), ("valid_until", &input.valid_until)] {
+    for (field, value) in [
+        ("valid_from", &input.valid_from),
+        ("valid_until", &input.valid_until),
+    ] {
         if let Some(value) = value {
             let date_format = time::format_description::parse("[year]-[month]-[day]").unwrap();
-            let datetime_format = time::format_description::parse("[year]-[month]-[day]T[hour]:[minute]:[second]").unwrap();
+            let datetime_format =
+                time::format_description::parse("[year]-[month]-[day]T[hour]:[minute]:[second]")
+                    .unwrap();
             let date = time::Date::parse(value, &date_format).is_ok();
-            let datetime = time::OffsetDateTime::parse(value, &time::format_description::well_known::Rfc3339).is_ok()
-                || time::PrimitiveDateTime::parse(value, &datetime_format).is_ok();
+            let datetime =
+                time::OffsetDateTime::parse(value, &time::format_description::well_known::Rfc3339)
+                    .is_ok()
+                    || time::PrimitiveDateTime::parse(value, &datetime_format).is_ok();
             if !date && !datetime {
                 return Err(ClioError::Validation(format!(
                     "{field} must be an ISO-8601 date or date-time, for example 2026-11-15 or 2026-11-15T12:00:00Z."

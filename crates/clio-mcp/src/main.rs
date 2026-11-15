@@ -3538,12 +3538,15 @@ impl ServerHandler for ClioServer {
             }
 
             if let Some(namespace) = uri.strip_prefix("memory://recent/") {
-                let result = cache.recall(&conn, &RecallQuery {
-                    namespace: Some(namespace.to_string()),
-                    exclude_expired: true,
-                    limit: 10,
-                    ..Default::default()
-                })?;
+                let result = cache.recall(
+                    &conn,
+                    &RecallQuery {
+                        namespace: Some(namespace.to_string()),
+                        exclude_expired: true,
+                        limit: 10,
+                        ..Default::default()
+                    },
+                )?;
                 return Ok(recall_result_md(&result));
             }
 

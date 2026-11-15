@@ -181,11 +181,23 @@ def run(cli_binary, mcp_binary):
 
             with sqlite3.connect(db) as conn:
                 conn.execute("UPDATE memories SET valid_until = '2000-01-01T00:00:00Z' WHERE id = ?", (second,))
-            for result in (cli("recall", "--namespace", alpha), recall(namespace=alpha)):
+            check(cli("recall", "--namespace", alpha, "--query", "first evidence")["widened"] is False,
+                  "Strict matches do not widen")
+            check(cli("recall", "--namespace", alpha, "--query", "first missing")["widened"] is True,
+                  "CLI reports widened matches")
+            for result in (cli("recall", "--namespace", alpha), recall(namespace=alpha),
+                           cli("recall", "--namespace", alpha, "--query", "orchard"),
+                           recall(namespace=alpha, query="orchard"),
+                           cli("recent", "--namespace", alpha),
+                           mcp.tool("memory_recent", namespace=alpha, response_format="json")):
                 check(ids(result) == [first], "Expired memory absent from ordinary recall")
             for result in (cli("recall", "--namespace", alpha, "--include-expired"),
                            recall(namespace=alpha, include_expired=True)):
                 check(set(ids(result)) == {first, second}, "Historical recall retains expired memory")
+            resource = mcp.request("resources/read", {"uri": f"memory://recent/{alpha}"})
+            resource_text = "\n".join(item["text"] for item in resource["contents"])
+            check("Second evidence" not in resource_text and "First evidence" in resource_text,
+                  "Recent resource excludes expired memories")
             passed_check("CLI/MCP expiry and explicit history")
             with sqlite3.connect(db) as conn:
                 conn.execute("UPDATE memories SET valid_until = NULL WHERE id = ?", (second,))

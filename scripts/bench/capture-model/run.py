@@ -227,9 +227,7 @@ def main() -> int:
             print(f"   knowledge items returned per call, before the cap: "
                   f"{sorted(knowledge_counts)} "
                   f"(mean {statistics.mean(knowledge_counts):.1f}, "
-                  f"{knowledge_counts.count(0)} empty, "
-                  f"{sum(1 for c in knowledge_counts if c == CEILING)} at the ceiling of {CEILING}, "
-                  f"{sum(1 for c in knowledge_counts if c > CEILING)} over it)")
+                  f"{knowledge_counts.count(0)} empty)")
         print(f"   Explicit-labelled calls: {explicit_calls}; returned four items: {knowledge_counts.count(4)}; five items: {knowledge_counts.count(5)}")
         print("   PASS" if not fail_lines else "\n".join(["   FAILED CHECKS:"] + fail_lines))
         total_errors += errors

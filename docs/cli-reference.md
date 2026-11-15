@@ -126,6 +126,10 @@ clio remember \
 ## Retrieving Memories
 
 Recall JSON adds `widened` to the CLI envelope, preserving existing fields.
+
+| Commands | Flag | Default | Meaning |
+|---|---|---|---|
+| `recall`, `recent`, `search` | `--include-expired` | false | Include expired memories for history |
 Effectiveness task-match figures cover sessions whose first surfaced event is on or after the first recorded `Relevant knowledge` event.
 Bulk namespace moves match the source name literally so legacy names can be repaired; destinations are canonicalised.
 
@@ -386,7 +390,7 @@ Effectiveness reports sessions with no task-matched item and mean distinct
 task-matched memories per session, using surfaced events labelled `Relevant
 knowledge`. Only sessions beginning on or after the first task-match label are measured. It also reports
 the fraction of unarchived memories carrying `valid_until` (including expired
-rows). Raw distillation cap-hit and empty-response rates are not available:
+rows). Historical raw distillation cap-hit and empty-response rates are not available from effectiveness reports:
 checkpoint envelopes record stored/review IDs, not raw model output counts.
 
 `clio effectiveness` reports whether the memory system is actually working:

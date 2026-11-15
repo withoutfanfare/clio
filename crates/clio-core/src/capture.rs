@@ -469,7 +469,15 @@ pub fn distill_measured(
     let memories = parse_uncapped(&response.content)?;
     let returned = DistillationCounts {
         knowledge: memories.iter().filter(|m| m.kind != "receipt").count(),
-        explicit: memories.iter().filter(|m| m.kind != "receipt" && m.attention.as_ref().is_some_and(DistilledAttention::is_explicit)).count(),
+        explicit: memories
+            .iter()
+            .filter(|m| {
+                m.kind != "receipt"
+                    && m.attention
+                        .as_ref()
+                        .is_some_and(DistilledAttention::is_explicit)
+            })
+            .count(),
     };
     Ok((cap_distilled_memories(memories), response.usage, returned))
 }
@@ -725,7 +733,10 @@ fn cap_distilled_memories(memories: Vec<DistilledMemory>) -> Vec<DistilledMemory
     keep.sort_unstable();
 
     if keep.len() < memories.len() {
-        tracing::warn!(dropped = memories.len() - keep.len(), "distillation cap dropped items");
+        tracing::warn!(
+            dropped = memories.len() - keep.len(),
+            "distillation cap dropped items"
+        );
     }
     let mut memories = memories;
     let mut index = 0;
@@ -1507,6 +1518,38 @@ mod tests {
         let again = capture("PR 12 passed review.", durable());
         assert_eq!(again.id, first.id);
         assert_eq!(again.valid_until.as_deref(), Some("2999-01-01T00:00:00Z"));
+    }
+
+    #[test]
+    fn review_approval_revives_only_durable_expired_twins() {
+        for canonical in [false, true] {
+            for status in [false, true] {
+                let conn = crate::db::open_in_memory().unwrap();
+                let settings = crate::settings::Settings::default();
+                let input = serde_json::from_value(serde_json::json!({
+                    "content": "Identical evidence", "namespace": "project:demo",
+                    "valid_until": "2000-01-01"
+                }))
+                .unwrap();
+                let original = crate::repository::remember(&conn, &input, &settings).unwrap();
+                let mut metadata = serde_json::json!({});
+                if canonical {
+                    metadata["canonical_memory_id"] = original.id.clone().into();
+                }
+                if status {
+                    metadata["valid_until"] = "2999-01-01".into();
+                }
+                let review = serde_json::from_value(serde_json::json!({
+                    "content": "Identical evidence", "suggested_namespace": "project:demo",
+                    "metadata": metadata
+                }))
+                .unwrap();
+                let queued = crate::review::queue_for_review(&conn, &review).unwrap();
+                let approved = crate::review::approve_review(&conn, &queued.id, &settings).unwrap();
+                assert_eq!(approved.id, original.id);
+                assert_eq!(approved.valid_until.is_some(), status);
+            }
+        }
     }
 
     #[test]
