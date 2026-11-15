@@ -283,7 +283,8 @@ def render(brief, seen, start=False):
         for item in kept:
             title = item.get("title") or "(untitled)"
             suffix = "" if start else f" ({item['memory_id']})"
-            lines.append(f"- [{item.get('kind', 'note')}] **{title}**{suffix}")
+            dated = f" · {item['created_at'][:10]}" if item.get("created_at") else ""
+            lines.append(f"- [{item.get('kind', 'note')}{dated}] **{title}**{suffix}")
             if item.get("reason"):
                 lines.append(f"  why: {item['reason']}")
             if item.get("content"):
