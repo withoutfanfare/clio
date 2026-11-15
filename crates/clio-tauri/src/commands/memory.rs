@@ -194,8 +194,7 @@ pub async fn cmd_recall(
         match_any_term: false,
     };
 
-    let (result, _) = clio_core::repository::recall_ordinary(&app.conn, &q, None)?;
-    Ok(result)
+    local_recall(&app.conn, &q)
 }
 
 #[tauri::command]
@@ -549,4 +548,38 @@ pub fn cmd_import_memories(
         skipped: result.skipped,
         errors: result.errors,
     })
+}
+
+fn local_recall(conn: &rusqlite::Connection, query: &RecallQuery) -> Result<RecallResult, CommandError> {
+    Ok(clio_core::repository::recall_ordinary(conn, query, None)?.0)
+}
+
+#[cfg(test)]
+mod retrieval_tests {
+    use super::*;
+
+    #[test]
+    fn desktop_local_sentence_matrix() {
+        let conn = clio_core::db::open_in_memory().unwrap();
+        for title in ["First evidence", "Second evidence"] {
+            let input = serde_json::from_value::<RememberInput>(serde_json::json!({
+                "namespace": "smoke:alpha", "title": title,
+                "content": format!("Contract orchard {title}")
+            })).unwrap();
+            clio_core::repository::remember(&conn, &input, &Default::default()).unwrap();
+        }
+        let cases: serde_json::Value = serde_json::from_str(include_str!("../../../../scripts/fixtures/sentence-recall.json")).unwrap();
+        for case in cases.as_array().unwrap() {
+            let query = RecallQuery {
+                namespace: Some("smoke:alpha".into()),
+                query: Some(case["query"].as_str().unwrap().into()),
+                exclude_expired: true,
+                ..Default::default()
+            };
+            let result = local_recall(&conn, &query).unwrap();
+            let mut titles: Vec<_> = result.items.iter().map(|i| i.memory.title.as_deref().unwrap()).collect();
+            titles.sort();
+            assert_eq!(serde_json::json!(titles), case["titles"], "{}", case["query"]);
+        }
+    }
 }
