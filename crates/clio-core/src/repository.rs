@@ -1055,12 +1055,13 @@ fn recall_fts(conn: &Connection, fts_query: &str, q: &RecallQuery) -> Result<Rec
     if let Some(scoring) = scoring_opt {
         let decay_idx = param_values.len() + 1;
         let boost_idx = param_values.len() + 2;
+        let importance = crate::scoring::importance_sql(scoring);
         sql.push_str(&format!(
             " ORDER BY \
              ((-bm25(memory_fts, 4.0, 2.0, 1.0, 0.5)) \
               * exp(-?{decay_idx} * (julianday('now') - julianday(COALESCE(m.last_accessed_at, m.updated_at)))) \
               * (1.0 + min(0.5, ?{boost_idx} * ln(1.0 + CAST(m.access_count AS REAL)))) \
-              * (CAST(m.importance AS REAL) / 3.0) \
+              * {importance} \
              ) DESC"
         ));
         param_values.push(Box::new(scoring.decay_lambda));
@@ -1143,11 +1144,12 @@ fn recall_recent(conn: &Connection, q: &RecallQuery) -> Result<RecallResult> {
     } else if let Some(scoring) = q.scoring.as_ref().filter(|s| s.decay_lambda > 0.0) {
         let decay_idx = param_values.len() + 1;
         let boost_idx = param_values.len() + 2;
+        let importance = crate::scoring::importance_sql(scoring);
         sql.push_str(&format!(
             " ORDER BY \
              (exp(-?{decay_idx} * (julianday('now') - julianday(COALESCE(m.last_accessed_at, m.updated_at)))) \
               * (1.0 + min(0.5, ?{boost_idx} * ln(1.0 + CAST(m.access_count AS REAL)))) \
-              * (CAST(m.importance AS REAL) / 3.0) \
+              * {importance} \
              ) DESC"
         ));
         param_values.push(Box::new(scoring.decay_lambda));
@@ -1981,6 +1983,37 @@ mod tests {
         assert!(!widened);
         assert_eq!(result.total, 1);
         assert!(result.items.is_empty());
+    }
+
+    #[test]
+    fn importance_clamp_reaches_the_recall_ordering() {
+        let conn = crate::db::open_in_memory().unwrap();
+        let store = |content: &str, importance: i32| {
+            let input = serde_json::from_value::<RememberInput>(serde_json::json!({
+                "content": content, "importance": importance
+            }))
+            .unwrap();
+            remember(&conn, &input, &crate::settings::Settings::default()).unwrap()
+        };
+        // The better text match is rated low, the weaker one high.
+        let better = store("lease expiry", 1);
+        let weaker = store("lease expiry and a good deal of other words besides", 5);
+        let first = |clamp: f64, decay_lambda: f64| {
+            let query = RecallQuery {
+                query: Some("lease expiry".into()),
+                scoring: Some(crate::settings::ScoringConfig {
+                    decay_lambda,
+                    importance_clamp: clamp,
+                    ..Default::default()
+                }),
+                skip_access_tracking: true,
+                ..Default::default()
+            };
+            recall(&conn, &query).unwrap().items[0].memory.id.clone()
+        };
+        assert_eq!(first(3.0, 0.01), weaker.id, "full weight: importance wins");
+        assert_eq!(first(1.0, 0.01), better.id, "off: the text match wins");
+        assert_eq!(first(3.0, 0.0), better.id, "decay off keeps plain BM25 order");
     }
 
     #[test]

@@ -148,6 +148,7 @@ unless the app also implements their full validation and recovery workflows.
 | `fusion_budget_ms` | int | `1000` | Time allowed for embedding the query and scanning the vectors. Past it, fused retrieval returns the keyword result. `0` removes the limit |
 | `quiet_similarity` | float | `0.40` | Fused retrieval returns nothing for a namespace when the most similar memory in it is below this cosine similarity. Any-word matching always finds something; with nothing close in meaning, that something is noise. Applies only when the semantic side ran and compared at least one memory, so keyword-only fallbacks and stores without embeddings are unaffected. `0.0` never stays quiet |
 | `dedup_similarity` | float | `0.85` | While a resume brief chooses its Relevant knowledge, a candidate is skipped when it has the same title as an item already chosen or its stored embedding is at least this similar to one, and the next candidate takes the slot. Uses stored vectors only; a memory without one can only repeat by title. `0.0` keeps copies |
+| `importance_clamp` | float | `3.0` | Bound on how far importance moves a ranking score. The importance multiplier is `importance / 3` (0.33 for importance 1, 1.67 for importance 5); it is clamped to `1/x ..= x`. `3.0` leaves it whole, `1.25` holds it to 0.8–1.25, `1.0` (or less) ignores importance. Applies wherever the composite score is used: keyword recall, recent listings and semantic results. Has no effect when `decay_lambda` is `0.0`, which disables the whole composite |
 
 ## daemon
 

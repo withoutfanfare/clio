@@ -13,8 +13,10 @@ use time::OffsetDateTime;
 /// keyword recall, cosine similarity for semantic recall):
 ///
 /// ```text
-/// decay(age) * (1 + access_boost) * (importance / 3)
+/// decay(age) * (1 + access_boost) * clamp(importance / 3)
 /// ```
+///
+/// The importance term is clamped to [`importance_band`].
 ///
 /// `age` decays from `COALESCE(last_accessed_at, updated_at)` — matching the
 /// FTS SQL exactly. Returns `1.0` (neutral) when `decay_lambda <= 0.0`.
@@ -37,9 +39,29 @@ pub fn composite_multiplier(memory: &Memory, scoring: &ScoringConfig, now: Offse
     let decay = (-scoring.decay_lambda * age_days).exp();
     let access =
         1.0 + 0.5_f64.min(scoring.access_boost_weight * (1.0 + memory.access_count as f64).ln());
-    let importance = memory.importance as f64 / 3.0;
+    let (low, high) = importance_band(scoring);
+    let importance = (memory.importance as f64 / 3.0).clamp(low, high);
 
     decay * access * importance
+}
+
+/// The range the importance multiplier is held to: `1/x ..= x` for
+/// `importance_clamp = x`. The default 3.0 contains every value `importance /
+/// 3` can take, so it changes nothing; 1.0 makes importance neutral.
+pub(crate) fn importance_band(scoring: &ScoringConfig) -> (f64, f64) {
+    let high = if scoring.importance_clamp.is_finite() {
+        scoring.importance_clamp.max(1.0)
+    } else {
+        3.0
+    };
+    (1.0 / high, high)
+}
+
+/// The importance term for the recall SQL, clamped exactly as
+/// [`composite_multiplier`] clamps it.
+pub(crate) fn importance_sql(scoring: &ScoringConfig) -> String {
+    let (low, high) = importance_band(scoring);
+    format!("max({low:.6}, min({high:.6}, CAST(m.importance AS REAL) / 3.0))")
 }
 
 #[cfg(test)]
@@ -116,6 +138,37 @@ mod tests {
             hi > lo,
             "importance 5 ({hi}) should outscore importance 1 ({lo})"
         );
+    }
+
+    #[test]
+    fn importance_clamp_narrows_or_removes_the_importance_term() {
+        let now = OffsetDateTime::now_utc();
+        let at = |importance: i32, clamp: f64| {
+            let s = ScoringConfig {
+                decay_lambda: 0.01,
+                access_boost_weight: 0.0,
+                importance_clamp: clamp,
+                ..Default::default()
+            };
+            composite_multiplier(&mem_at(importance, 0, &now_str(now)), &s, now)
+        };
+        // The default leaves the whole 0.33 to 1.67 range in place.
+        assert!((at(1, 3.0) - 1.0 / 3.0).abs() < 1e-3);
+        assert!((at(5, 3.0) - 5.0 / 3.0).abs() < 1e-3);
+        // Narrow: held to 0.8 to 1.25, importance 3 untouched.
+        assert!((at(1, 1.25) - 0.8).abs() < 1e-3);
+        assert!((at(5, 1.25) - 1.25).abs() < 1e-3);
+        assert!((at(3, 1.25) - 1.0).abs() < 1e-3);
+        // Off: importance plays no part. Values below 1 mean off as well.
+        assert!((at(1, 1.0) - at(5, 1.0)).abs() < 1e-9);
+        assert!((at(1, 0.2) - at(5, 0.2)).abs() < 1e-9);
+        // With decay disabled the multiplier stays neutral whatever the clamp.
+        let neutral = ScoringConfig {
+            decay_lambda: 0.0,
+            importance_clamp: 1.25,
+            ..Default::default()
+        };
+        assert_eq!(composite_multiplier(&mem_at(5, 0, &now_str(now)), &neutral, now), 1.0);
     }
 
     #[test]

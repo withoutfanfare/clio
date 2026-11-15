@@ -49,6 +49,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A resume brief no longer spends two Relevant knowledge slots on one fact: a
   near-copy of an item already chosen is skipped and the next candidate takes
   the slot (`scoring.dedup_similarity`, default 0.85).
+- `scoring.importance_clamp` bounds how far importance moves a ranking score,
+  so its weight can be measured. The default (3.0) leaves ranking as it was.
 
 **Deployment notes:** deploy compatible server and CLI binaries before using new
 flags or tool profiles. Existing hooks and desktop JSON envelopes are preserved.

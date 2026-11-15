@@ -54,6 +54,12 @@ pub struct ScoringConfig {
     /// title is the same), and takes the next candidate. `0.0` = keep copies.
     #[serde(default = "default_dedup_similarity")]
     pub dedup_similarity: f64,
+
+    /// Bound on the importance multiplier (`importance / 3`, 0.33 to 1.67):
+    /// it is clamped to `1/x ..= x`. `3.0` leaves it whole, `1.25` narrows it
+    /// to 0.8–1.25, `1.0` ignores importance in ranking.
+    #[serde(default = "default_importance_clamp")]
+    pub importance_clamp: f64,
 }
 
 fn default_decay_lambda() -> f64 {
@@ -80,6 +86,10 @@ fn default_dedup_similarity() -> f64 {
     0.85
 }
 
+fn default_importance_clamp() -> f64 {
+    3.0
+}
+
 impl Default for ScoringConfig {
     fn default() -> Self {
         Self {
@@ -91,6 +101,7 @@ impl Default for ScoringConfig {
             fusion_budget_ms: default_fusion_budget_ms(),
             quiet_similarity: default_quiet_similarity(),
             dedup_similarity: default_dedup_similarity(),
+            importance_clamp: default_importance_clamp(),
         }
     }
 }
