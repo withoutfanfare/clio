@@ -95,11 +95,29 @@ where
 /// filter by kind or tag must not pass an embedding. Each leg is ordered the
 /// way its own search orders it today. If the semantic leg fails or overruns
 /// the embedding's deadline, the keyword results are returned on their own.
+///
+/// Nothing is returned when the most similar memory searched is below
+/// `scoring.quiet_similarity`: any-word matching always finds something, and
+/// with nothing close in meaning that something is noise. The rule needs the
+/// semantic leg to have compared at least one memory, so a store with no
+/// usable embeddings keeps its keyword results.
 pub fn fused_recall(
     conn: &Connection,
     base: &RecallQuery,
     embedding: Option<&QueryEmbedding>,
 ) -> Result<Vec<FusedItem>> {
+    let (semantic, nearest) = match embedding {
+        Some(e) => semantic_leg(conn, base, e).unwrap_or_else(|err| {
+            tracing::warn!("semantic leg failed, using keywords alone: {err}");
+            (Vec::new(), None)
+        }),
+        None => (Vec::new(), None),
+    };
+    let quiet = base.scoring.as_ref().map_or(0.0, |s| s.quiet_similarity);
+    if nearest.is_some_and(|similarity| similarity < quiet) {
+        return Ok(Vec::new());
+    }
+
     let keyword = crate::repository::recall(
         conn,
         &RecallQuery {
@@ -112,14 +130,6 @@ pub fn fused_recall(
         },
     )?
     .items;
-
-    let semantic = match embedding {
-        Some(e) => semantic_leg(conn, base, e).unwrap_or_else(|err| {
-            tracing::warn!("semantic leg failed, using keywords alone: {err}");
-            Vec::new()
-        }),
-        None => Vec::new(),
-    };
 
     let mut fused: HashMap<String, (f64, FusedItem)> = HashMap::new();
     for (position, item) in keyword.into_iter().enumerate() {
@@ -225,13 +235,18 @@ pub fn search(
     Ok(fused.into_iter().map(|f| f.item).collect())
 }
 
+/// Memories with their cosine similarity, and the similarity of the nearest
+/// memory compared.
+type SemanticLeg = (Vec<(Memory, f64)>, Option<f64>);
+
 /// The semantic leg: nearest memories above the similarity floor, ordered as
-/// semantic search orders them (cosine times the composite multiplier).
+/// semantic search orders them (cosine times the composite multiplier), and
+/// the similarity of the nearest memory compared, floor or not.
 fn semantic_leg(
     conn: &Connection,
     base: &RecallQuery,
     embedding: &QueryEmbedding,
-) -> Result<Vec<(Memory, f64)>> {
+) -> Result<SemanticLeg> {
     let namespace = base
         .namespace
         .as_deref()
@@ -246,6 +261,7 @@ fn semantic_leg(
         POOL,
         embedding.deadline,
     )?;
+    let nearest = hits.first().map(|h| h.similarity);
     let scoring = base.scoring.as_ref();
     if let Some(floor) = scoring.map(|s| s.min_similarity).filter(|f| *f > 0.0) {
         hits.retain(|h| h.similarity >= floor);
@@ -270,10 +286,11 @@ fn semantic_leg(
             .unwrap_or(std::cmp::Ordering::Equal)
             .then_with(|| a.1.id.cmp(&b.1.id))
     });
-    Ok(scored
+    let ordered = scored
         .into_iter()
         .map(|(_, memory, cosine)| (memory, cosine))
-        .collect())
+        .collect();
+    Ok((ordered, nearest))
 }
 
 #[cfg(test)]
@@ -352,6 +369,39 @@ mod tests {
         let fused = fused_recall(&conn, &query("lease expiry"), Some(&late)).unwrap();
         assert_eq!(fused.len(), 1);
         assert_eq!(fused[0].item.memory.id, named.id);
+    }
+
+    #[test]
+    fn stays_quiet_when_nothing_searched_is_close_in_meaning() {
+        let conn = crate::db::open_in_memory().unwrap();
+        // Shares a word with the query, means something else (cosine 0.3).
+        store(&conn, "project:x", "lease the office car", &[0.3, 0.954]);
+        let q = query("lease expiry for agents");
+        let near = embedding(&[1.0, 0.0]);
+        assert!(fused_recall(&conn, &q, Some(&near)).unwrap().is_empty());
+
+        // The keyword match returns once the rule is off, or with no vector.
+        let off = RecallQuery {
+            scoring: Some(ScoringConfig {
+                decay_lambda: 0.0,
+                quiet_similarity: 0.0,
+                ..Default::default()
+            }),
+            ..q.clone()
+        };
+        assert_eq!(fused_recall(&conn, &off, Some(&near)).unwrap().len(), 1);
+        assert_eq!(fused_recall(&conn, &q, None).unwrap().len(), 1);
+
+        // No memory with a comparable embedding: the rule has no evidence.
+        let other_model = QueryEmbedding {
+            model: "another-model".into(),
+            ..near.clone()
+        };
+        assert_eq!(fused_recall(&conn, &q, Some(&other_model)).unwrap().len(), 1);
+
+        // Something close in meaning lets the keyword match through as well.
+        store(&conn, "project:x", "tokens time out after an hour", &[0.9, 0.436]);
+        assert_eq!(fused_recall(&conn, &q, Some(&near)).unwrap().len(), 2);
     }
 
     #[test]

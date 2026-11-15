@@ -1216,7 +1216,7 @@ Handoff and context briefs answer "what is this project?"; resume answers "what 
 
 ### Behaviour
 
-0. Relevant knowledge is fused retrieval (`scoring.fusion`, on by default): any-word keyword search and semantic search over the project namespace, merged by rank position. An item only the semantic side found carries the reason `similar in meaning to the task`; the rest keep `matches task terms`. With no embedding backend, a failed embedding or an overrun of `scoring.fusion_budget_ms`, the section is the keyword result alone and the call still succeeds
+0. Relevant knowledge is fused retrieval (`scoring.fusion`, on by default): any-word keyword search and semantic search over the project namespace, merged by rank position. An item only the semantic side found carries the reason `similar in meaning to the task`; the rest keep `matches task terms`. With no embedding backend, a failed embedding or an overrun of `scoring.fusion_budget_ms`, the section is the keyword result alone and the call still succeeds. The section is empty when the most similar memory in the namespace is below `scoring.quiet_similarity`: nothing there is about the task
 1. Prompt briefs prioritise Relevant knowledge, then Needs attention, Waiting on, Active constraints, Recent decisions and Recent activity. Session starts put one recent receipt first, followed by attention, waiting, constraints and decisions.
 2. Empty sections release capacity. Attention and waiting reserve slots; constraints also reserve a slot at session start. Small prompt budgets can omit constraints.
 3. Items are deduplicated across sections by memory ID; archived, expired, resolved and cancelled records never appear
@@ -1493,6 +1493,7 @@ Find memories by semantic meaning using vector embeddings.
 - compute cosine similarity only against stored embeddings with the active model name and matching vector dimensions, dropping matches below `scoring.min_similarity`
 - run any-word keyword search over the same memories and merge the top 30 of each by rank position (reciprocal rank fusion, constant 60): an item scores `1 / (60 + position)` in each list that holds it. The exact-phrase keyword boost this replaces never matched a sentence
 - if the backend is missing, the embedding fails or `scoring.fusion_budget_ms` is overrun, return the keyword matches alone; the reply's note says so. There is no error
+- return nothing from a namespace whose most similar memory is below `scoring.quiet_similarity` (0.40), keyword matches included. Scoped search applies this to the project and to `global` separately
 - with `scoring.fusion` off: vectors alone, ranked by cosine similarity adjusted by the phrase boost and the configured scoring, and an error when no backend is available
 - when `namespace` is explicitly provided, filter to that namespace; a bare project name is canonicalised first, as in `memory_recall`
 - when `cwd` is provided and `namespace` is omitted, use scoped recall: search detected namespace first, then fill remaining slots from `global`; project-scoped results appear before global results

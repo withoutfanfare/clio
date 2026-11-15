@@ -146,6 +146,7 @@ unless the app also implements their full validation and recovery workflows.
 | `scoped_terms` | bool | `true` | A long any-word query keeps its 12 rarest terms, counted across the whole store. `true` first drops the words that match none of the memories the search covers (namespace, archive and expiry filters applied). `false` keeps them, which lets filler that is rare everywhere but absent from the project push the project's own words out |
 | `fusion` | bool | `true` | Fused retrieval for a resume brief's Relevant knowledge and for semantic search (`memory_search`, `clio search`): the top 30 of any-word keyword search and the top 30 of semantic search are merged by rank position (reciprocal rank fusion, constant 60), so neither a BM25 score nor a cosine needs scaling. Without a usable embedding backend the keyword results are returned on their own, with no error. `false` restores keywords alone in the brief and vectors alone in search |
 | `fusion_budget_ms` | int | `1000` | Time allowed for embedding the query and scanning the vectors. Past it, fused retrieval returns the keyword result. `0` removes the limit |
+| `quiet_similarity` | float | `0.40` | Fused retrieval returns nothing for a namespace when the most similar memory in it is below this cosine similarity. Any-word matching always finds something; with nothing close in meaning, that something is noise. Applies only when the semantic side ran and compared at least one memory, so keyword-only fallbacks and stores without embeddings are unaffected. `0.0` never stays quiet |
 
 ## daemon
 

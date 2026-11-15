@@ -43,6 +43,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `scoring.fusion_budget_ms` (1,000 ms) spent, the keyword result is returned
   alone; `memory_search` no longer errors without a backend. Its `rank` is now
   a fused rank score, not a similarity.
+- Fused retrieval stays quiet when nothing it searched is close in meaning to
+  the query (`scoring.quiet_similarity`, default 0.40), instead of returning
+  whatever shares a word with it.
 
 **Deployment notes:** deploy compatible server and CLI binaries before using new
 flags or tool profiles. Existing hooks and desktop JSON envelopes are preserved.

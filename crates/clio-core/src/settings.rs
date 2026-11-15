@@ -42,6 +42,12 @@ pub struct ScoringConfig {
     /// retrieval returns the keyword result on its own. `0` = no limit.
     #[serde(default = "default_fusion_budget_ms")]
     pub fusion_budget_ms: u64,
+
+    /// Fused retrieval returns nothing when the most similar memory it
+    /// searched is below this cosine similarity: nothing there is about the
+    /// query, so any-word matches would be noise. `0.0` = never stay quiet.
+    #[serde(default = "default_quiet_similarity")]
+    pub quiet_similarity: f64,
 }
 
 fn default_decay_lambda() -> f64 {
@@ -60,6 +66,10 @@ fn default_fusion_budget_ms() -> u64 {
     1000
 }
 
+fn default_quiet_similarity() -> f64 {
+    0.40
+}
+
 impl Default for ScoringConfig {
     fn default() -> Self {
         Self {
@@ -69,6 +79,7 @@ impl Default for ScoringConfig {
             scoped_terms: true,
             fusion: true,
             fusion_budget_ms: default_fusion_budget_ms(),
+            quiet_similarity: default_quiet_similarity(),
         }
     }
 }
