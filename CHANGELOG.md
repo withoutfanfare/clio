@@ -51,6 +51,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the slot (`scoring.dedup_similarity`, default 0.85).
 - `scoring.importance_clamp` bounds how far importance moves a ranking score,
   so its weight can be measured. The default (3.0) leaves ranking as it was.
+- Keyword search in a large namespace no longer spends over a second counting
+  its matches: the full-text index is pinned as the outer loop of the join.
+  A prompt-time `clio resume` in a 7,500-memory namespace went from about 1.5 s
+  to about 0.1 s, embedding the query included.
 
 **Deployment notes:** deploy compatible server and CLI binaries before using new
 flags or tool profiles. Existing hooks and desktop JSON envelopes are preserved.

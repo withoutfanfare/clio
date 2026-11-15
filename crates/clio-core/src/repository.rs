@@ -1029,6 +1029,10 @@ fn recall_fts(conn: &Connection, fts_query: &str, q: &RecallQuery) -> Result<Rec
         sanitise_fts_query(fts_query)
     };
 
+    // CROSS JOIN pins the full-text index as the outer loop. Left to choose,
+    // the planner walks the namespace's rows for the count query below and
+    // restarts the match for each one: 1.4 s of a 1.45 s resume in a
+    // namespace of 7,500 memories.
     let mut sql = String::from(
         "SELECT m.id, m.namespace, m.kind, m.title, m.summary, m.content, m.tags_text,
                 m.source, m.source_ref, m.confidence, m.importance, m.metadata_json,
@@ -1036,7 +1040,7 @@ fn recall_fts(conn: &Connection, fts_query: &str, q: &RecallQuery) -> Result<Rec
                 m.last_accessed_at, m.access_count,
                 bm25(memory_fts, 4.0, 2.0, 1.0, 0.5) AS rank
          FROM memory_fts
-         JOIN memories m ON m.rowid = memory_fts.rowid
+         CROSS JOIN memories m ON m.rowid = memory_fts.rowid
          WHERE memory_fts MATCH ?1",
     );
 
