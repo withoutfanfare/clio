@@ -607,7 +607,7 @@ pub fn recall(conn: &Connection, query: &RecallQuery) -> Result<RecallResult> {
 
     // Fire-and-forget access tracking for all returned items. Automatic
     // surfacing (resume briefs) opts out so it cannot train its own ranking.
-    if !query.skip_access_tracking {
+    if !query.skip_access_tracking && query.query.as_deref().is_some_and(|q| !q.trim().is_empty()) {
         let ids: Vec<&str> = result.items.iter().map(|i| i.memory.id.as_str()).collect();
         if let Err(e) = touch_accessed(conn, &ids) {
             tracing::warn!("access tracking failed in recall: {e}");
@@ -925,9 +925,58 @@ fn sanitise_fts_query_any(raw: &str) -> String {
     terms.join(" OR ")
 }
 
+/// Select across a bounded prompt, retaining identifiers and rare corpus terms.
+fn informative_query(conn: &Connection, raw: &str) -> Result<String> {
+    let bounded: String = raw.chars().take(1000).collect();
+    let bounded = bounded
+        .split_whitespace()
+        .filter(|t| !t.contains('/'))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let mut seen = std::collections::HashSet::new();
+    let mut terms: Vec<String> = bounded
+        .split_whitespace()
+        .map(|t| {
+            t.trim_matches(|c: char| !c.is_alphanumeric())
+                .replace('"', " ")
+                .trim()
+                .to_lowercase()
+        })
+        .filter(|t| t.chars().count() >= 3 && !FTS_STOPWORDS.contains(&t.as_str()))
+        .filter(|t| seen.insert(t.clone()))
+        .collect();
+    if terms.len() <= 12 {
+        return Ok(bounded);
+    }
+    let mut counts =
+        conn.prepare_cached("SELECT count(*) FROM memory_fts WHERE memory_fts MATCH ?1")?;
+    let mut ranked = Vec::new();
+    for (position, term) in terms.drain(..).enumerate() {
+        let count: i64 = counts.query_row([sanitise_fts_query(&term)], |r| r.get(0))?;
+        let identifier = term.chars().next().is_some_and(|c| c.is_alphabetic())
+            && (term.contains('_')
+                || term.contains("::")
+                || (term.contains('-') && term.chars().any(|c| c.is_ascii_digit())));
+        // Unknown prose is not rare evidence; known identifiers remain useful.
+        ranked.push((
+            !identifier,
+            if count == 0 { i64::MAX } else { count },
+            position,
+            term,
+        ));
+    }
+    ranked.sort_by(|a, b| (&a.0, &a.1, &a.2).cmp(&(&b.0, &b.1, &b.2)));
+    Ok(ranked
+        .into_iter()
+        .take(12)
+        .map(|r| r.3)
+        .collect::<Vec<_>>()
+        .join(" "))
+}
+
 fn recall_fts(conn: &Connection, fts_query: &str, q: &RecallQuery) -> Result<RecallResult> {
     let safe_query = if q.match_any_term {
-        sanitise_fts_query_any(fts_query)
+        sanitise_fts_query_any(&informative_query(conn, fts_query)?)
     } else {
         sanitise_fts_query(fts_query)
     };
@@ -1266,7 +1315,7 @@ pub fn recall_scoped(
         .take(query.limit as usize)
         .collect();
 
-    if !query.skip_access_tracking {
+    if !query.skip_access_tracking && query.query.as_deref().is_some_and(|q| !q.trim().is_empty()) {
         let ids: Vec<&str> = paged.iter().map(|i| i.memory.id.as_str()).collect();
         if let Err(e) = touch_accessed(conn, &ids) {
             tracing::warn!("access tracking failed in scoped recall: {e}");
@@ -1869,6 +1918,68 @@ mod tests {
             sanitise_fts_query_any("the it"),
             sanitise_fts_query("the it"),
             "short or stopword-only queries keep the all-terms form"
+        );
+    }
+}
+
+#[cfg(test)]
+mod delivery_query_tests {
+    #[test]
+    fn term_counts_use_stemming_and_accents_on_read_only_connections() {
+        let conn = crate::db::open_in_memory().unwrap();
+        for i in 0..4 {
+            let input = serde_json::from_value(serde_json::json!({"content":format!("common ordinary generic frequent repeated broad general context request implementation memory system {i}")})).unwrap();
+            super::remember(&conn, &input, &crate::settings::Settings::default()).unwrap();
+        }
+        let input =
+            serde_json::from_value(serde_json::json!({"content":"verifications cafe"})).unwrap();
+        super::remember(&conn, &input, &crate::settings::Settings::default()).unwrap();
+        conn.execute_batch("PRAGMA query_only = ON").unwrap();
+        let query = super::informative_query(&conn, "common ordinary generic frequent repeated broad general context request implementation memory system verification café /tmp/fix-123/code.rs 2026-11-14 CLIO-123").unwrap();
+        assert!(query.contains("verification"));
+        assert!(query.contains("café"));
+        assert!(query.contains("clio-123"));
+        assert!(!query.contains("system"));
+        assert!(!query.contains("/"));
+        assert!(!query.contains("2026-11-14"));
+        assert_eq!(
+            super::informative_query(&conn, "/tmp/code.rs atomic").unwrap(),
+            "atomic"
+        );
+    }
+
+    #[test]
+    fn queryless_recall_and_scoped_recall_do_not_track_access() {
+        let conn = crate::db::open_in_memory().unwrap();
+        let input = serde_json::from_value(serde_json::json!({"namespace":"project:read", "kind":"fact", "content":"Browsing fixture"})).unwrap();
+        let m = super::remember(&conn, &input, &crate::settings::Settings::default()).unwrap();
+        let q = crate::models::RecallQuery {
+            kind: Some("fact".into()),
+            ..Default::default()
+        };
+        super::recall(&conn, &q).unwrap();
+        super::recall_scoped(&conn, &q, "project:read").unwrap();
+        let after = super::get_raw(&conn, &m.id).unwrap();
+        assert_eq!(after.access_count, 0);
+        assert!(after.last_accessed_at.is_none());
+    }
+
+    #[test]
+    fn long_queries_keep_identifiers_and_rare_terms() {
+        let conn = crate::db::open_in_memory().unwrap();
+        for i in 0..3 {
+            let input = serde_json::from_value(serde_json::json!({"content":format!("common ordinary generic frequent repeated broad general context request implementation memory system {i}")})).unwrap();
+            super::remember(&conn, &input, &crate::settings::Settings::default()).unwrap();
+        }
+        let input = serde_json::from_value(serde_json::json!({"content":"rareword"})).unwrap();
+        super::remember(&conn, &input, &crate::settings::Settings::default()).unwrap();
+        let query = super::informative_query(&conn, "common ordinary generic frequent repeated broad general context request implementation memory system rareword CLIO-123 touch_accessed").unwrap();
+        assert!(query.contains("rareword"));
+        assert!(query.contains("clio-123"));
+        assert!(query.contains("touch_accessed"));
+        assert_eq!(
+            super::informative_query(&conn, "spool atomic rename").unwrap(),
+            "spool atomic rename"
         );
     }
 }

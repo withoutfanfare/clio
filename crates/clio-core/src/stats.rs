@@ -576,8 +576,8 @@ pub fn effectiveness(
     let mut events = std::collections::BTreeMap::new();
     {
         let mut stmt = conn.prepare(&format!(
-            "SELECT event_type, COUNT(*) FROM memory_events WHERE 1=1{} GROUP BY event_type",
-            ns_clause("namespace")
+            "SELECT event_type, COUNT(*) FROM memory_events e LEFT JOIN memories m ON m.id = e.memory_id WHERE 1=1{} GROUP BY event_type",
+            ns_clause("COALESCE(m.namespace, e.namespace)")
         ))?;
         let rows = stmt.query_map(refs.as_slice(), |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
@@ -590,9 +590,10 @@ pub fn effectiveness(
 
     let surfaced_unique: i64 = conn.query_row(
         &format!(
-            "SELECT COUNT(DISTINCT idempotency_key) FROM memory_events
+            "SELECT COUNT(DISTINCT e.idempotency_key) FROM memory_events e
+             LEFT JOIN memories m ON m.id = e.memory_id
              WHERE event_type = 'surfaced' AND idempotency_key IS NOT NULL{}",
-            ns_clause("namespace")
+            ns_clause("COALESCE(m.namespace, e.namespace)")
         ),
         refs.as_slice(),
         |row| row.get(0),
@@ -767,11 +768,33 @@ mod usage_by_kind_tests {
         crate::events::log_event(
             &conn,
             &crate::events::EventInput {
+                idempotency_key: Some("shown-test".into()),
                 memory_id: Some(shown.id.clone()),
                 event_type: crate::events::EVENT_SURFACED.into(),
                 ..Default::default()
             },
         );
+        let event = crate::events::list_events(&conn, &shown.id, 10).unwrap();
+        assert_eq!(event[0].namespace.as_deref(), Some("project:demo"));
+        assert_eq!(
+            effectiveness(&conn, Some("project:demo"), 0)
+                .unwrap()
+                .surfaced_unique,
+            1
+        );
+        conn.execute("UPDATE memory_events SET namespace = NULL", [])
+            .unwrap();
+        assert_eq!(
+            effectiveness(&conn, Some("project:demo"), 0)
+                .unwrap()
+                .surfaced_unique,
+            1
+        );
+        conn.execute("UPDATE memory_events SET namespace = 'demo'", [])
+            .unwrap();
+        let scoped = effectiveness(&conn, Some("project:demo"), 0).unwrap();
+        assert_eq!(scoped.surfaced_unique, 1);
+        assert_eq!(scoped.events.get("surfaced"), Some(&1));
         repository::get(&conn, &shown.id).unwrap();
         crate::events::record_feedback(&conn, &shown.id, "useful", Some("s1"), None).unwrap();
         assert!(crate::events::record_feedback(&conn, &shown.id, "great", None, None).is_err());
