@@ -1713,6 +1713,83 @@ fn memory_detail_md(m: &Memory) -> String {
 /// What a keyword recall should say before its results: that the search was
 /// widened to any word, or where to look next when nothing matched at all.
 /// `None` for an ordinary result.
+type SharedBackend = Arc<Option<Box<dyn clio_core::embeddings::EmbeddingBackend>>>;
+
+/// The query vector for fused retrieval from the server's loaded backend.
+/// `None` (keywords alone) when fusion is off or the backend is absent, fails
+/// or overruns the budget.
+fn fused_query_embedding(
+    scoring: &clio_core::settings::ScoringConfig,
+    query: Option<&str>,
+    backend: SharedBackend,
+) -> Option<clio_core::fusion::QueryEmbedding> {
+    clio_core::fusion::query_embedding(scoring, query, move |q| {
+        let be = backend.as_ref().as_ref().ok_or_else(|| {
+            clio_core::error::ClioError::Config("embedding backend not available".into())
+        })?;
+        Ok((be.embed_one(q)?, be.model_name().to_string()))
+    })
+}
+
+/// `memory_search` with `scoring.fusion` on: keyword and semantic results
+/// merged in core. Without a usable backend the keyword results stand alone.
+fn search_fused(
+    conn: &Mutex<rusqlite::Connection>,
+    settings: &clio_core::settings::Settings,
+    backend: SharedBackend,
+    params: SearchParams,
+    limit: u32,
+) -> Result<String, String> {
+    let embedding = fused_query_embedding(&settings.scoring, Some(&params.query), backend);
+    let conn = conn.lock().map_err(|e| format!("lock error: {e}"))?;
+    let cwd_path = params.cwd.as_deref().map(std::path::Path::new);
+    let detected_ns = resolve_mcp_namespace(
+        params.namespace.as_deref(),
+        params.clio_namespace.as_deref(),
+        cwd_path,
+        settings.context.auto_detect,
+    );
+    let explicit = !params.global && params.namespace.is_some();
+    let base = RecallQuery {
+        query: Some(params.query),
+        namespace: explicit.then(|| detected_ns.clone()),
+        include_archived: params.include_archived,
+        exclude_expired: !params.include_expired,
+        limit,
+        scoring: Some(settings.scoring.clone()),
+        ..Default::default()
+    };
+    let scope = (!params.global && !explicit).then_some(detected_ns.as_str());
+    let items = clio_core::fusion::search(&conn, &base, scope, embedding.as_ref())
+        .map_err(|e| format_clio_error(&e))?;
+
+    let len = items.len() as u32;
+    let result = RecallResult {
+        archived_only: false,
+        items,
+        total: len,
+        limit,
+        offset: 0,
+        count: len,
+    };
+    let note = if len == 0 {
+        let mut note = String::from(
+            "No memories match that query by meaning or by key words. Try memory_recall \
+             with one or two exact keywords",
+        );
+        if !params.global {
+            note.push_str(", or `global: true` to search every project");
+        }
+        note.push('.');
+        Some(note)
+    } else {
+        embedding.is_none().then(|| {
+            "Semantic search was unavailable, so these are keyword matches only.".to_string()
+        })
+    };
+    Ok(format_recall_response(&result, &params.response_format, note))
+}
+
 fn recall_note(
     result: &RecallResult,
     searched: bool,
@@ -2805,7 +2882,7 @@ impl ClioServer {
 
     /// Semantic vector search.
     #[tool(
-        description = "Find memories by meaning: ask a question or describe the topic in your own words. For exact names and identifiers use memory_recall. Needs an embedding backend; without one it returns an error and memory_recall still works."
+        description = "Find memories by meaning: ask a question or describe the topic in your own words. Any-word keyword matches are merged in. For exact names and identifiers use memory_recall. Without an embedding backend it returns the keyword matches alone and says so."
     )]
     async fn memory_search(
         &self,
@@ -2819,6 +2896,13 @@ impl ClioServer {
         let conn = self.conn.clone();
         let settings = self.settings()?;
         let backend = self.embedding_backend.clone();
+        if settings.scoring.fusion {
+            return tokio::task::spawn_blocking(move || {
+                search_fused(&conn, &settings, backend, params, limit)
+            })
+            .await
+            .map_err(|e| format!("Internal error: task failed: {e}"))?;
+        }
         tokio::task::spawn_blocking(move || {
             let be = backend.as_ref().as_ref().ok_or_else(|| {
                 "Embedding backend not available. Ensure embeddings are configured in settings. \
@@ -3163,7 +3247,14 @@ impl ClioServer {
         validate_response_format(&params.response_format)?;
         let conn = self.conn.clone();
         let settings = self.settings()?;
+        let backend = self.embedding_backend.clone();
         tokio::task::spawn_blocking(move || {
+            // Embedded before the lock: other tool calls need not wait on it.
+            let query_embedding = fused_query_embedding(
+                &settings.scoring,
+                params.query.as_deref(),
+                backend,
+            );
             let conn = conn.lock().map_err(|e| format!("lock error: {e}"))?;
             let cwd_path = params.cwd.as_deref().map(std::path::Path::new);
             let namespace = optional_mcp_namespace(
@@ -3180,6 +3271,7 @@ impl ClioServer {
                 max_items: cap_limit(params.max_items),
                 char_budget: params.char_budget,
                 scoring: Some(settings.scoring.clone()),
+                query_embedding,
                 dormant_days: settings.attention.dormant_days,
                 max_age_days: settings.attention.max_age_days,
                 now: None,
@@ -4809,6 +4901,31 @@ mod surface_tests {
             .await
             .unwrap();
         assert!(nothing.contains("memory_recall"), "{nothing}");
+    }
+
+    #[tokio::test]
+    async fn search_and_resume_answer_with_keywords_when_no_backend_is_loaded() {
+        let server = server_with(&[(
+            "project:demo",
+            "Release procedure",
+            "Run the ship script before a release.",
+        )]);
+        let found = server
+            .memory_search(params(
+                json!({"query": "how do I cut a release", "namespace": "demo"}),
+            ))
+            .await
+            .unwrap();
+        assert!(found.contains("Release procedure"), "{found}");
+        assert!(found.contains("keyword matches only"), "{found}");
+
+        let brief = server
+            .memory_resume(params(
+                json!({"namespace": "demo", "query": "how do I cut a release"}),
+            ))
+            .await
+            .unwrap();
+        assert!(brief.contains("Release procedure"), "{brief}");
     }
 
     #[test]

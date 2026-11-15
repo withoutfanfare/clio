@@ -31,6 +31,17 @@ pub struct ScoringConfig {
     /// keeps them, as before.
     #[serde(default = "default_true")]
     pub scoped_terms: bool,
+
+    /// Merge any-word keyword search with semantic search by rank position
+    /// for a resume brief's relevant knowledge and for semantic search.
+    /// `false` keeps keywords alone in the brief and vectors alone in search.
+    #[serde(default = "default_true")]
+    pub fusion: bool,
+
+    /// Milliseconds the query embedding and vector scan may take before fused
+    /// retrieval returns the keyword result on its own. `0` = no limit.
+    #[serde(default = "default_fusion_budget_ms")]
+    pub fusion_budget_ms: u64,
 }
 
 fn default_decay_lambda() -> f64 {
@@ -45,6 +56,10 @@ fn default_min_similarity() -> f64 {
     0.35
 }
 
+fn default_fusion_budget_ms() -> u64 {
+    1000
+}
+
 impl Default for ScoringConfig {
     fn default() -> Self {
         Self {
@@ -52,6 +67,8 @@ impl Default for ScoringConfig {
             access_boost_weight: default_access_boost(),
             min_similarity: default_min_similarity(),
             scoped_terms: true,
+            fusion: true,
+            fusion_budget_ms: default_fusion_budget_ms(),
         }
     }
 }

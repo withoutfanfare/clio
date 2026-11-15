@@ -126,7 +126,7 @@ clio remember \
 # Full-text search (keyword matching)
 clio recall --query "redis caching"
 
-# Semantic search (meaning-based)
+# Semantic search (meaning-based, with any-word keyword matches merged in)
 clio search --query "database performance optimisation"
 
 # Recent memories (supports all filters)
@@ -295,6 +295,13 @@ an acknowledged delivery of the current memory revision in that session.
 Selection-time events do not qualify. Session starts always reconsider them,
 including restarts and compaction. The knowledge section refills after filtering
 receipts and stale consolidation, within one bounded window of 50 candidates.
+
+Relevant knowledge is fused retrieval: any-word keyword search and semantic
+search over the project namespace, merged by rank position. `clio search` uses
+the same merge. Each one-shot call loads the embedding model to embed the query;
+if there is no backend, it fails, or it takes longer than
+`scoring.fusion_budget_ms` (1,000 ms), the keyword result is returned alone and
+the command still succeeds. `scoring.fusion` switches the merge off.
 
 ```sh
 clio resume                                  # session-start context

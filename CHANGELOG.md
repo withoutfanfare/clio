@@ -35,6 +35,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Long any-word queries drop words that match none of the memories the search
   covers before choosing their 12 rarest terms, so a chatty prompt no longer
   loses its topic to filler (`scoring.scoped_terms`, default on).
+- A resume brief's Relevant knowledge and semantic search (`memory_search`,
+  `clio search`) are one fused retrieval: any-word keyword results and semantic
+  results merged by rank position (`scoring.fusion`, default on). It replaces
+  the exact-phrase boost in semantic search, which never matched a sentence.
+  With no embedding backend, a failed embedding or more than
+  `scoring.fusion_budget_ms` (1,000 ms) spent, the keyword result is returned
+  alone; `memory_search` no longer errors without a backend. Its `rank` is now
+  a fused rank score, not a similarity.
 
 **Deployment notes:** deploy compatible server and CLI binaries before using new
 flags or tool profiles. Existing hooks and desktop JSON envelopes are preserved.

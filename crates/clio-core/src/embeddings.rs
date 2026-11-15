@@ -355,6 +355,13 @@ pub fn create_backend(config: &EmbeddingConfig) -> Result<Box<dyn EmbeddingBacke
     }
 }
 
+/// Embed one text with a backend created for the call: the vector and the
+/// model that produced it. For one-shot callers with no backend loaded.
+pub fn embed_with_config(config: &EmbeddingConfig, text: &str) -> Result<(Vec<f32>, String)> {
+    let backend = create_backend(config)?;
+    Ok((backend.embed_one(text)?, backend.model_name().to_string()))
+}
+
 // ---------------------------------------------------------------------------
 // Passage construction
 // ---------------------------------------------------------------------------
@@ -531,6 +538,31 @@ pub fn semantic_search(
     exclude_expired: bool,
     limit: u32,
 ) -> Result<Vec<SemanticResult>> {
+    semantic_search_until(
+        conn,
+        query_embedding,
+        model_name,
+        namespace,
+        include_archived,
+        exclude_expired,
+        limit,
+        None,
+    )
+}
+
+/// [`semantic_search`] that stops with an error once `deadline` passes, so a
+/// caller with a time budget can fall back to another result.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn semantic_search_until(
+    conn: &Connection,
+    query_embedding: &[f32],
+    model_name: &str,
+    namespace: Option<&str>,
+    include_archived: bool,
+    exclude_expired: bool,
+    limit: u32,
+    deadline: Option<std::time::Instant>,
+) -> Result<Vec<SemanticResult>> {
     let filter = namespace.map_or(NamespaceFilter::All, NamespaceFilter::Exact);
     semantic_search_filtered(
         conn,
@@ -540,9 +572,11 @@ pub fn semantic_search(
         include_archived,
         exclude_expired,
         limit,
+        deadline,
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn semantic_search_filtered(
     conn: &Connection,
     query_embedding: &[f32],
@@ -551,6 +585,7 @@ fn semantic_search_filtered(
     include_archived: bool,
     exclude_expired: bool,
     limit: u32,
+    deadline: Option<std::time::Instant>,
 ) -> Result<Vec<SemanticResult>> {
     let mut sql = String::from(
         "SELECT e.memory_id, e.embedding
@@ -596,6 +631,11 @@ fn semantic_search_filtered(
         std::collections::BinaryHeap::with_capacity(capacity + 1);
 
     for row_result in rows {
+        if deadline.is_some_and(|d| std::time::Instant::now() >= d) {
+            return Err(ClioError::Storage(
+                "semantic search overran its time budget".into(),
+            ));
+        }
         let (memory_id, blob) = row_result?;
         let embedding = decode_embedding(&blob)?;
         let similarity = cosine_similarity(query_embedding, &embedding)?;

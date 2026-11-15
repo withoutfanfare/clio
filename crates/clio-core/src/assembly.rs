@@ -552,6 +552,12 @@ pub struct ResumeRequest {
     #[serde(skip)]
     pub scoring: Option<ScoringConfig>,
 
+    /// The query's vector, from `fusion::query_embedding`. With it, relevant
+    /// knowledge is fused keyword and semantic retrieval; without it,
+    /// keywords alone.
+    #[serde(skip)]
+    pub query_embedding: Option<crate::fusion::QueryEmbedding>,
+
     /// Dormancy policy from `AttentionConfig`.
     #[serde(default)]
     pub dormant_days: u32,
@@ -576,6 +582,7 @@ impl Default for ResumeRequest {
             max_items: default_max_items(),
             char_budget: None,
             scoring: None,
+            query_embedding: None,
             dormant_days: 0,
             max_age_days: 0,
             now: None,
@@ -911,6 +918,7 @@ fn build_resume(conn: &Connection, request: &ResumeRequest, record: bool) -> Res
         ),
         "active constraint in this project",
         suppression_scope,
+        None,
     )?;
     if request
         .namespace
@@ -928,6 +936,7 @@ fn build_resume(conn: &Connection, request: &ResumeRequest, record: bool) -> Res
             ),
             "global constraint",
             suppression_scope,
+            None,
         )?);
     }
 
@@ -947,6 +956,7 @@ fn build_resume(conn: &Connection, request: &ResumeRequest, record: bool) -> Res
         },
         "recent decision in this project",
         suppression_scope,
+        None,
     )?;
 
     // 5. Prompt-relevant knowledge — abstains without a query.
@@ -959,6 +969,7 @@ fn build_resume(conn: &Connection, request: &ResumeRequest, record: bool) -> Res
         Some(query) => {
             // The query is usually a whole prompt, so match on any of its
             // meaningful terms; requiring every word would match nothing.
+            // With a query vector, semantic results are fused in.
             resume_recall(
                 conn,
                 RecallQuery {
@@ -967,6 +978,7 @@ fn build_resume(conn: &Connection, request: &ResumeRequest, record: bool) -> Res
                 },
                 "matches task terms",
                 suppression_scope,
+                request.query_embedding.as_ref(),
             )?
         }
         None => Vec::new(),
@@ -981,6 +993,7 @@ fn build_resume(conn: &Connection, request: &ResumeRequest, record: bool) -> Res
         },
         "recent session receipt",
         suppression_scope,
+        None,
     )?
     .into_iter()
     .map(|mut item| {
@@ -1134,12 +1147,15 @@ fn resume_query(
     }
 }
 
-/// Untracked recall wrapped into resume items with a shared reason.
+/// Untracked recall wrapped into resume items with a shared reason. With an
+/// `embedding`, the recall is fused and an item only the semantic leg found
+/// says so.
 fn resume_recall(
     conn: &Connection,
     mut recall_query: RecallQuery,
     reason: &str,
     session: Option<&str>,
+    embedding: Option<&crate::fusion::QueryEmbedding>,
 ) -> Result<Vec<ResumeItem>> {
     let limit = recall_query.limit as usize;
     let knowledge = recall_query.query.is_some();
@@ -1148,9 +1164,25 @@ fn resume_recall(
         recall_query.limit = 50;
     }
     {
-        let result = repository::recall(conn, &recall_query)?;
-        for ri in result.items {
-            let m = ri.memory;
+        let found: Vec<(Memory, &str)> = match embedding {
+            Some(_) => crate::fusion::fused_recall(conn, &recall_query, embedding)?
+                .into_iter()
+                .map(|f| {
+                    let why = if f.keyword {
+                        reason
+                    } else {
+                        "similar in meaning to the task"
+                    };
+                    (f.item.memory, why)
+                })
+                .collect(),
+            None => repository::recall(conn, &recall_query)?
+                .items
+                .into_iter()
+                .map(|ri| (ri.memory, reason))
+                .collect(),
+        };
+        for (m, reason) in found {
             if knowledge
                 && (m.kind == "receipt"
                     || (m.source.as_deref() == Some(crate::consolidate::CONSOLIDATED_SOURCE)
@@ -2178,6 +2210,7 @@ mod tests {
             },
             "test",
             None,
+            None,
         )
         .unwrap();
         assert!(
@@ -2335,6 +2368,48 @@ mod tests {
                 .any(|i| i.content.contains("bananas")),
             "memories sharing no term are still omitted"
         );
+    }
+
+    #[test]
+    fn resume_knowledge_fuses_in_what_only_meaning_finds() {
+        let conn = test_db();
+        let ns = "project:resume";
+        let named = make_memory(&conn, ns, "fact", "The spool uses atomic renames");
+        let meant = make_memory(&conn, ns, "fact", "Writes survive a power cut");
+        let far = make_memory(&conn, ns, "fact", "Bananas are yellow");
+        for (memory, vector) in [(&named, [0.0, 1.0]), (&meant, [1.0, 0.0]), (&far, [-1.0, 0.0])] {
+            crate::embeddings::store_embedding(&conn, &memory.id, "test", 2, &vector).unwrap();
+        }
+
+        let mut request = resume_request(ns);
+        request.query = Some("is the spool durable".into());
+        request.scoring = Some(ScoringConfig::default());
+        let reasons =|request: &ResumeRequest| -> Vec<(String, String)> {
+            let brief = build_resume_brief(&conn, request).unwrap();
+            section(&brief, "Relevant knowledge")
+                .map(|s| {
+                    s.items
+                        .iter()
+                        .map(|i| (i.memory_id.clone(), i.reason.clone()))
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        // Keywords alone: only the memory that shares a word.
+        assert_eq!(
+            reasons(&request),
+            vec![(named.id.clone(), "matches task terms".to_string())]
+        );
+
+        request.query_embedding = Some(crate::fusion::QueryEmbedding {
+            vector: vec![1.0, 0.0],
+            model: "test".into(),
+            deadline: None,
+        });
+        let fused = reasons(&request);
+        assert_eq!(fused.len(), 2, "the unrelated memory stays out: {fused:?}");
+        assert!(fused.contains(&(named.id, "matches task terms".to_string())));
+        assert!(fused.contains(&(meant.id, "similar in meaning to the task".to_string())));
     }
 
     #[test]

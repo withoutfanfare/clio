@@ -1,0 +1,400 @@
+//! One fused retrieval for task-matched knowledge.
+//!
+//! Any-word keyword search finds what names the same things as the query;
+//! semantic search finds what means the same. Each misses what the other
+//! finds, so both run and their results are merged by rank position
+//! (reciprocal rank fusion), which needs no scaling between a BM25 score and a
+//! cosine. Without a query vector the keyword leg stands alone.
+
+use std::collections::HashMap;
+use std::time::{Duration, Instant};
+
+use rusqlite::Connection;
+
+use crate::error::Result;
+use crate::models::{Memory, RecallItem, RecallQuery};
+use crate::settings::ScoringConfig;
+
+/// Results each leg contributes before merging.
+const POOL: u32 = 30;
+
+/// Reciprocal rank fusion constant: an item scores `1 / (RRF_K + rank)` in
+/// each leg that returned it. 60 is the value the method was published with.
+const RRF_K: f64 = 60.0;
+
+/// A query vector, the model that produced it, and when the semantic leg must
+/// have finished by.
+#[derive(Debug, Clone)]
+pub struct QueryEmbedding {
+    pub vector: Vec<f32>,
+    pub model: String,
+    pub deadline: Option<Instant>,
+}
+
+/// One fused result with the evidence it was chosen on.
+#[derive(Debug, Clone)]
+pub struct FusedItem {
+    pub item: RecallItem,
+    /// Found by the keyword leg.
+    pub keyword: bool,
+    /// Raw cosine similarity when the semantic leg found it.
+    pub similarity: Option<f64>,
+}
+
+/// Embed `query` for fused retrieval within `scoring.fusion_budget_ms`.
+///
+/// `None` means "use keywords alone": fusion is off, the query is empty, or
+/// `embed` failed or overran the budget. `embed` runs on its own thread so a
+/// slow model load or provider call cannot hold the caller; when it overruns
+/// it is left to finish unobserved.
+pub fn query_embedding<F>(
+    scoring: &ScoringConfig,
+    query: Option<&str>,
+    embed: F,
+) -> Option<QueryEmbedding>
+where
+    F: FnOnce(&str) -> Result<(Vec<f32>, String)> + Send + 'static,
+{
+    if !scoring.fusion {
+        return None;
+    }
+    let query = query.map(str::trim).filter(|q| !q.is_empty())?.to_string();
+    let budget = Duration::from_millis(scoring.fusion_budget_ms);
+    let deadline = (scoring.fusion_budget_ms > 0).then(|| Instant::now() + budget);
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(embed(&query));
+    });
+    let embedded = if deadline.is_some() {
+        rx.recv_timeout(budget).ok()
+    } else {
+        rx.recv().ok()
+    };
+    match embedded {
+        Some(Ok((vector, model))) => Some(QueryEmbedding {
+            vector,
+            model,
+            deadline,
+        }),
+        Some(Err(e)) => {
+            tracing::debug!("no query embedding, using keywords alone: {e}");
+            None
+        }
+        None => {
+            tracing::warn!("query embedding overran its budget, using keywords alone");
+            None
+        }
+    }
+}
+
+/// Fused recall over the memories `base` covers.
+///
+/// `base` supplies the query text, namespace, archive and expiry flags,
+/// scoring and limit. The keyword leg honours every other filter on it; the
+/// semantic leg knows only namespace, archive and expiry, so callers that
+/// filter by kind or tag must not pass an embedding. Each leg is ordered the
+/// way its own search orders it today. If the semantic leg fails or overruns
+/// the embedding's deadline, the keyword results are returned on their own.
+pub fn fused_recall(
+    conn: &Connection,
+    base: &RecallQuery,
+    embedding: Option<&QueryEmbedding>,
+) -> Result<Vec<FusedItem>> {
+    let keyword = crate::repository::recall(
+        conn,
+        &RecallQuery {
+            match_any_term: true,
+            include_links: false,
+            limit: POOL.max(base.limit),
+            offset: 0,
+            skip_access_tracking: true,
+            ..base.clone()
+        },
+    )?
+    .items;
+
+    let semantic = match embedding {
+        Some(e) => semantic_leg(conn, base, e).unwrap_or_else(|err| {
+            tracing::warn!("semantic leg failed, using keywords alone: {err}");
+            Vec::new()
+        }),
+        None => Vec::new(),
+    };
+
+    let mut fused: HashMap<String, (f64, FusedItem)> = HashMap::new();
+    for (position, item) in keyword.into_iter().enumerate() {
+        let score = 1.0 / (RRF_K + position as f64 + 1.0);
+        fused.insert(
+            item.memory.id.clone(),
+            (
+                score,
+                FusedItem {
+                    item,
+                    keyword: true,
+                    similarity: None,
+                },
+            ),
+        );
+    }
+    for (position, (memory, similarity)) in semantic.into_iter().enumerate() {
+        let score = 1.0 / (RRF_K + position as f64 + 1.0);
+        let entry = fused.entry(memory.id.clone()).or_insert_with(|| {
+            (
+                0.0,
+                FusedItem {
+                    item: RecallItem {
+                        memory,
+                        rank: None,
+                        linked_from: None,
+                        link_context: Vec::new(),
+                    },
+                    keyword: false,
+                    similarity: None,
+                },
+            )
+        });
+        entry.0 += score;
+        entry.1.similarity = Some(similarity);
+    }
+
+    let mut merged: Vec<(f64, FusedItem)> = fused.into_values().collect();
+    merged.sort_by(|a, b| {
+        b.0.partial_cmp(&a.0)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.1.item.memory.id.cmp(&b.1.item.memory.id))
+    });
+    let items: Vec<FusedItem> = merged
+        .into_iter()
+        .take(base.limit as usize)
+        .map(|(score, mut fused)| {
+            fused.item.rank = Some(score);
+            fused
+        })
+        .collect();
+
+    if !base.skip_access_tracking {
+        let ids: Vec<&str> = items.iter().map(|f| f.item.memory.id.as_str()).collect();
+        if let Err(e) = crate::repository::touch_accessed(conn, &ids) {
+            tracing::warn!("access tracking failed in fused recall: {e}");
+        }
+    }
+    Ok(items)
+}
+
+/// Fused recall in the detected namespace, then remaining slots from `global`,
+/// as scoped keyword and semantic recall do. A detected `global` stays global.
+pub fn fused_recall_scoped(
+    conn: &Connection,
+    base: &RecallQuery,
+    detected_namespace: &str,
+    embedding: Option<&QueryEmbedding>,
+) -> Result<Vec<FusedItem>> {
+    let namespace = crate::context::canonical_namespace(detected_namespace);
+    let within = |namespace: &str, limit: u32| {
+        fused_recall(
+            conn,
+            &RecallQuery {
+                namespace: Some(namespace.to_string()),
+                limit,
+                ..base.clone()
+            },
+            embedding,
+        )
+    };
+    let mut items = within(&namespace, base.limit)?;
+    let remaining = base.limit.saturating_sub(items.len() as u32);
+    if namespace != "global" && remaining > 0 {
+        items.extend(within("global", remaining)?);
+    }
+    Ok(items)
+}
+
+/// Fused search as the `search` command and `memory_search` tool run it:
+/// scoped to `scope` then `global` when given, otherwise over
+/// `base.namespace` (one namespace, or every namespace when `None`).
+pub fn search(
+    conn: &Connection,
+    base: &RecallQuery,
+    scope: Option<&str>,
+    embedding: Option<&QueryEmbedding>,
+) -> Result<Vec<RecallItem>> {
+    let fused = match scope {
+        Some(namespace) => fused_recall_scoped(conn, base, namespace, embedding)?,
+        None => fused_recall(conn, base, embedding)?,
+    };
+    Ok(fused.into_iter().map(|f| f.item).collect())
+}
+
+/// The semantic leg: nearest memories above the similarity floor, ordered as
+/// semantic search orders them (cosine times the composite multiplier).
+fn semantic_leg(
+    conn: &Connection,
+    base: &RecallQuery,
+    embedding: &QueryEmbedding,
+) -> Result<Vec<(Memory, f64)>> {
+    let namespace = base
+        .namespace
+        .as_deref()
+        .map(crate::context::canonical_namespace);
+    let mut hits = crate::embeddings::semantic_search_until(
+        conn,
+        &embedding.vector,
+        &embedding.model,
+        namespace.as_deref(),
+        base.include_archived,
+        base.exclude_expired,
+        POOL,
+        embedding.deadline,
+    )?;
+    let scoring = base.scoring.as_ref();
+    if let Some(floor) = scoring.map(|s| s.min_similarity).filter(|f| *f > 0.0) {
+        hits.retain(|h| h.similarity >= floor);
+    }
+    let similarity: HashMap<String, f64> = hits
+        .iter()
+        .map(|h| (h.memory_id.clone(), h.similarity))
+        .collect();
+    let ids: Vec<String> = hits.into_iter().map(|h| h.memory_id).collect();
+    let now = time::OffsetDateTime::now_utc();
+    let mut scored: Vec<(f64, Memory, f64)> = crate::repository::get_many_pub(conn, &ids)?
+        .into_iter()
+        .map(|memory| {
+            let cosine = similarity.get(&memory.id).copied().unwrap_or(0.0);
+            let multiplier =
+                scoring.map_or(1.0, |s| crate::scoring::composite_multiplier(&memory, s, now));
+            (cosine * multiplier, memory, cosine)
+        })
+        .collect();
+    scored.sort_by(|a, b| {
+        b.0.partial_cmp(&a.0)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.1.id.cmp(&b.1.id))
+    });
+    Ok(scored
+        .into_iter()
+        .map(|(_, memory, cosine)| (memory, cosine))
+        .collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::embeddings::store_embedding;
+    use crate::models::RememberInput;
+
+    fn store(conn: &Connection, namespace: &str, content: &str, vector: &[f32]) -> Memory {
+        let input: RememberInput =
+            serde_json::from_value(serde_json::json!({"namespace": namespace, "content": content}))
+                .unwrap();
+        let memory =
+            crate::repository::remember(conn, &input, &crate::settings::Settings::default())
+                .unwrap();
+        store_embedding(conn, &memory.id, "test", vector.len(), vector).unwrap();
+        memory
+    }
+
+    fn query(text: &str) -> RecallQuery {
+        RecallQuery {
+            query: Some(text.into()),
+            namespace: Some("project:x".into()),
+            scoring: Some(ScoringConfig {
+                decay_lambda: 0.0,
+                ..Default::default()
+            }),
+            skip_access_tracking: true,
+            ..Default::default()
+        }
+    }
+
+    fn embedding(vector: &[f32]) -> QueryEmbedding {
+        QueryEmbedding {
+            vector: vector.to_vec(),
+            model: "test".into(),
+            deadline: None,
+        }
+    }
+
+    #[test]
+    fn fusion_keeps_what_either_leg_alone_would_miss_and_ranks_agreement_first() {
+        let conn = crate::db::open_in_memory().unwrap();
+        // Names the identifier, means something else.
+        let named = store(&conn, "project:x", "SCO-123 rollout checklist", &[0.0, 1.0]);
+        // Means the same, shares no word with the query.
+        let meant = store(&conn, "project:x", "card payments declined at checkout", &[1.0, 0.0]);
+        // Both: shares a word and the meaning.
+        let both = store(&conn, "project:x", "stripe SCO-123 webhook", &[0.9, 0.1]);
+        store(&conn, "project:x", "unrelated gardening note", &[-1.0, 0.0]);
+
+        let q = query("SCO-123 stripe signature failing");
+        let fused = fused_recall(&conn, &q, Some(&embedding(&[1.0, 0.0]))).unwrap();
+        let ids: Vec<&str> = fused.iter().map(|f| f.item.memory.id.as_str()).collect();
+        assert_eq!(ids[0], both.id, "found by both legs ranks first");
+        assert!(ids.contains(&named.id.as_str()) && ids.contains(&meant.id.as_str()));
+        assert_eq!(ids.len(), 3, "the unrelated note is below the similarity floor");
+        let meant_item = fused.iter().find(|f| f.item.memory.id == meant.id).unwrap();
+        assert!(!meant_item.keyword && meant_item.similarity.is_some());
+
+        // No vector: exactly the keyword result, no error.
+        let keywords = fused_recall(&conn, &q, None).unwrap();
+        let ids: Vec<&str> = keywords.iter().map(|f| f.item.memory.id.as_str()).collect();
+        assert!(ids.contains(&named.id.as_str()) && !ids.contains(&meant.id.as_str()));
+    }
+
+    #[test]
+    fn an_overrun_or_failed_semantic_leg_falls_back_to_keywords() {
+        let conn = crate::db::open_in_memory().unwrap();
+        let named = store(&conn, "project:x", "lease expiry rules", &[0.0, 1.0]);
+        store(&conn, "project:x", "something similar in meaning", &[1.0, 0.0]);
+        let late = QueryEmbedding {
+            deadline: Some(Instant::now() - Duration::from_secs(1)),
+            ..embedding(&[1.0, 0.0])
+        };
+        let fused = fused_recall(&conn, &query("lease expiry"), Some(&late)).unwrap();
+        assert_eq!(fused.len(), 1);
+        assert_eq!(fused[0].item.memory.id, named.id);
+    }
+
+    #[test]
+    fn query_embedding_respects_the_switch_the_budget_and_failure() {
+        let on = ScoringConfig {
+            fusion_budget_ms: 50,
+            ..Default::default()
+        };
+        let ok = |_: &str| Ok((vec![1.0_f32], "test".to_string()));
+        assert!(query_embedding(&on, Some("task"), ok).is_some());
+        assert!(query_embedding(&on, Some("  "), ok).is_none());
+        assert!(query_embedding(&on, None, ok).is_none());
+        let off = ScoringConfig {
+            fusion: false,
+            ..on.clone()
+        };
+        assert!(query_embedding(&off, Some("task"), ok).is_none());
+        let failing =
+            |_: &str| Err(crate::error::ClioError::Config("embeddings are disabled".into()));
+        assert!(query_embedding(&on, Some("task"), failing).is_none());
+        let slow = |_: &str| {
+            std::thread::sleep(Duration::from_millis(400));
+            Ok((vec![1.0_f32], "test".to_string()))
+        };
+        assert!(query_embedding(&on, Some("task"), slow).is_none());
+    }
+
+    #[test]
+    fn scoped_fusion_fills_from_global_after_the_project() {
+        let conn = crate::db::open_in_memory().unwrap();
+        let project = store(&conn, "project:x", "lease expiry rules", &[1.0, 0.0]);
+        let global = store(&conn, "global", "lease etiquette everywhere", &[1.0, 0.0]);
+        let fused = fused_recall_scoped(
+            &conn,
+            &RecallQuery {
+                namespace: None,
+                ..query("lease")
+            },
+            "x",
+            Some(&embedding(&[1.0, 0.0])),
+        )
+        .unwrap();
+        let ids: Vec<&str> = fused.iter().map(|f| f.item.memory.id.as_str()).collect();
+        assert_eq!(ids, vec![project.id.as_str(), global.id.as_str()]);
+    }
+}

@@ -1216,6 +1216,7 @@ Handoff and context briefs answer "what is this project?"; resume answers "what 
 
 ### Behaviour
 
+0. Relevant knowledge is fused retrieval (`scoring.fusion`, on by default): any-word keyword search and semantic search over the project namespace, merged by rank position. An item only the semantic side found carries the reason `similar in meaning to the task`; the rest keep `matches task terms`. With no embedding backend, a failed embedding or an overrun of `scoring.fusion_budget_ms`, the section is the keyword result alone and the call still succeeds
 1. Prompt briefs prioritise Relevant knowledge, then Needs attention, Waiting on, Active constraints, Recent decisions and Recent activity. Session starts put one recent receipt first, followed by attention, waiting, constraints and decisions.
 2. Empty sections release capacity. Attention and waiting reserve slots; constraints also reserve a slot at session start. Small prompt budgets can omit constraints.
 3. Items are deduplicated across sections by memory ID; archived, expired, resolved and cancelled records never appear
@@ -1457,7 +1458,7 @@ Find memories by semantic meaning using vector embeddings.
 
 ### Why it exists
 
-`memory_recall` uses full-text search (keyword matching via FTS5). `memory_search` uses cosine similarity over stored embedding vectors to find conceptually related memories even when query terms do not appear in the content. Requires embeddings to be enabled in `clio-settings.json` and memories to have been embedded.
+`memory_recall` uses full-text search (keyword matching via FTS5). `memory_search` uses cosine similarity over stored embedding vectors to find conceptually related memories even when query terms do not appear in the content, and merges in any-word keyword matches so a query that names an identifier still finds it. Semantic results need embeddings to be enabled in `clio-settings.json` and memories to have been embedded; without them the keyword matches are returned alone.
 
 ### Input
 
@@ -1489,13 +1490,16 @@ Find memories by semantic meaning using vector embeddings.
 ### Behaviour
 
 - embed the query text using the active embedding backend
-- compute cosine similarity only against stored embeddings with the active model name and matching vector dimensions
+- compute cosine similarity only against stored embeddings with the active model name and matching vector dimensions, dropping matches below `scoring.min_similarity`
+- run any-word keyword search over the same memories and merge the top 30 of each by rank position (reciprocal rank fusion, constant 60): an item scores `1 / (60 + position)` in each list that holds it. The exact-phrase keyword boost this replaces never matched a sentence
+- if the backend is missing, the embedding fails or `scoring.fusion_budget_ms` is overrun, return the keyword matches alone; the reply's note says so. There is no error
+- with `scoring.fusion` off: vectors alone, ranked by cosine similarity adjusted by the phrase boost and the configured scoring, and an error when no backend is available
 - when `namespace` is explicitly provided, filter to that namespace; a bare project name is canonicalised first, as in `memory_recall`
 - when `cwd` is provided and `namespace` is omitted, use scoped recall: search detected namespace first, then fill remaining slots from `global`; project-scoped results appear before global results
 - when detection falls back to `global`, search only `global` unless `global: true` requests all namespaces
 - exclude archived memories by default
-- return results sorted by similarity descending
-- the ranking value is returned as `score` in a compact item and as `rank` in a `json` record; higher is a better match. It is the cosine similarity adjusted by the keyword boost and the configured scoring, so it is not confined to 0.0–1.0
+- return results best first
+- the ranking value is returned as `score` in a compact item and as `rank` in a `json` record; higher is a better match. It is the fused rank score (at most `2/61`, about 0.033), not a similarity
 
 ### Response
 
@@ -1915,7 +1919,7 @@ The MCP implementation should be validated for:
 - suggest-links flow (above threshold returned, already-linked excluded)
 - validation errors
 - resource lookup
-- embedding disabled error from `memory_search` and `memory_suggest_links`
+- keyword-only fallback from `memory_search` and the embedding disabled error from `memory_suggest_links`
 - embedding model/dimension isolation and stale-vector backfill
 - cross-connection freshness for individual memory reads
 - non-empty `json` replies from `memory_recall`, `memory_search`,
