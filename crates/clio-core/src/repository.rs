@@ -955,15 +955,48 @@ fn any_terms(raw: &str) -> Vec<String> {
         .collect()
 }
 
-/// The most any-word terms of `q`'s query that any one of `ids` matches: how
-/// far the query's words agree on a single memory, as opposed to each turning
-/// up somewhere.
-pub(crate) fn term_agreement(conn: &Connection, q: &RecallQuery, ids: &[&str]) -> Result<usize> {
-    let Some(raw) = q.query.as_deref() else {
-        return Ok(0);
-    };
+/// Ticket and code identifiers, such as `SCO-123`, `touch_accessed` or
+/// `fusion::search`. Dates and plain hyphenated words are not.
+pub(crate) fn is_identifier(term: &str) -> bool {
+    let term = term.trim_matches('"');
+    term.chars().next().is_some_and(|c| c.is_alphabetic())
+        && (term.contains('_')
+            || term.contains("::")
+            || (term.contains('-') && term.chars().any(|c| c.is_ascii_digit())))
+}
+
+/// Any-word recall that also returns the quoted terms it matched on, so a
+/// caller can weigh the matches without choosing the terms a second time.
+/// Untracked, and `q.namespace` must already be canonical.
+pub(crate) fn recall_any_terms(
+    conn: &Connection,
+    q: &RecallQuery,
+) -> Result<(Vec<RecallItem>, Vec<String>)> {
+    let raw = q.query.as_deref().unwrap_or_default();
     let scoped = q.scoring.as_ref().is_none_or(|s| s.scoped_terms);
     let terms = any_terms(&informative_query(conn, raw, scoped.then_some(q))?);
+    let safe_query = if terms.is_empty() {
+        sanitise_fts_query(raw)
+    } else {
+        terms.join(" OR ")
+    };
+    Ok((recall_fts_matching(conn, safe_query, q)?.items, terms))
+}
+
+/// For each of `ids` that matches any of `terms`: how many of them it
+/// matches, and whether one of those is an identifier. The count says how far
+/// a query's words agree on one memory, as opposed to each turning up
+/// somewhere.
+pub(crate) fn term_evidence(
+    conn: &Connection,
+    q: &RecallQuery,
+    terms: &[String],
+    ids: &[&str],
+) -> Result<std::collections::HashMap<String, (usize, bool)>> {
+    let mut matched = std::collections::HashMap::new();
+    if terms.is_empty() || ids.is_empty() {
+        return Ok(matched);
+    }
     let mut sql = String::from(
         "SELECT m.id FROM memory_fts CROSS JOIN memories m ON m.rowid = memory_fts.rowid \
          WHERE memory_fts MATCH ?1",
@@ -971,19 +1004,21 @@ pub(crate) fn term_agreement(conn: &Connection, q: &RecallQuery, ids: &[&str]) -
     let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = vec![Box::new(String::new())];
     append_filters(&mut sql, &mut params, q);
     let mut stmt = conn.prepare(&sql)?;
-    let mut matched: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
     for term in terms {
-        params[0] = Box::new(term);
+        let identifier = is_identifier(term);
+        params[0] = Box::new(term.clone());
         let refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
         let rows = stmt.query_map(refs.as_slice(), |row| row.get::<_, String>(0))?;
         for id in rows {
             let id = id?;
             if ids.contains(&id.as_str()) {
-                *matched.entry(id).or_default() += 1;
+                let entry: &mut (usize, bool) = matched.entry(id).or_default();
+                entry.0 += 1;
+                entry.1 |= identifier;
             }
         }
     }
-    Ok(matched.into_values().max().unwrap_or(0))
+    Ok(matched)
 }
 
 /// Select across a bounded prompt, retaining identifiers and rare corpus terms.
@@ -1038,10 +1073,7 @@ fn informative_query(conn: &Connection, raw: &str, scope: Option<&RecallQuery>) 
                 continue;
             }
         }
-        let identifier = term.chars().next().is_some_and(|c| c.is_alphabetic())
-            && (term.contains('_')
-                || term.contains("::")
-                || (term.contains('-') && term.chars().any(|c| c.is_ascii_digit())));
+        let identifier = is_identifier(&term);
         // A term that occurs nowhere matches nothing, identifier or not, so
         // it goes last; among the rest, identifiers lead, then rarer terms.
         ranked.push((count == 0, !identifier, count, position, term));
@@ -1062,7 +1094,16 @@ fn recall_fts(conn: &Connection, fts_query: &str, q: &RecallQuery) -> Result<Rec
     } else {
         sanitise_fts_query(fts_query)
     };
+    recall_fts_matching(conn, safe_query, q)
+}
 
+/// Run an already sanitised full-text expression with `q`'s filters, scoring
+/// and paging.
+fn recall_fts_matching(
+    conn: &Connection,
+    safe_query: String,
+    q: &RecallQuery,
+) -> Result<RecallResult> {
     // CROSS JOIN pins the full-text index as the outer loop. Left to choose,
     // the planner walks the namespace's rows for the count query below and
     // restarts the match for each one: 1.4 s of a 1.45 s resume in a

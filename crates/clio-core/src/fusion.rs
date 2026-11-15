@@ -4,7 +4,8 @@
 //! semantic search finds what means the same. Each misses what the other
 //! finds, so both run and their results are merged by rank position
 //! (reciprocal rank fusion), which needs no scaling between a BM25 score and a
-//! cosine. Without a query vector the keyword leg stands alone.
+//! cosine: an item scores `1 / (scoring.fusion_k + position)` in each leg that
+//! returned it. Without a query vector the keyword leg stands alone.
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
@@ -17,10 +18,6 @@ use crate::settings::ScoringConfig;
 
 /// Results each leg contributes before merging.
 const POOL: u32 = 30;
-
-/// Reciprocal rank fusion constant: an item scores `1 / (RRF_K + rank)` in
-/// each leg that returned it. 60 is the value the method was published with.
-const RRF_K: f64 = 60.0;
 
 /// Chosen query terms one keyword match must share for the keyword leg to
 /// count as evidence by itself. One or two shared words turn up by chance.
@@ -143,6 +140,11 @@ where
 /// way its own search orders it today. If the semantic leg fails or overruns
 /// the embedding's deadline, the keyword results are returned on their own.
 ///
+/// A keyword match containing an identifier the query names ranks ahead of
+/// the merged order (`scoring.identifiers_first`): rank fusion would
+/// otherwise put the one memory that names the ticket below every memory
+/// both legs half-agree on.
+///
 /// Nothing is returned when the most similar memory searched is below
 /// `scoring.quiet_similarity` and no keyword match shares
 /// [`AGREEING_TERMS`] of the query's terms: any-word matching always finds
@@ -154,6 +156,14 @@ pub fn fused_recall(
     base: &RecallQuery,
     embedding: Option<&QueryEmbedding>,
 ) -> Result<Vec<FusedItem>> {
+    let canonical = RecallQuery {
+        namespace: base
+            .namespace
+            .as_deref()
+            .map(crate::context::canonical_namespace),
+        ..base.clone()
+    };
+    let base = &canonical;
     let (semantic, nearest) = match embedding {
         Some(e) => semantic_leg(conn, base, e).unwrap_or_else(|err| {
             tracing::warn!("semantic leg failed, using keywords alone: {err}");
@@ -169,19 +179,31 @@ pub fn fused_recall(
         skip_access_tracking: true,
         ..base.clone()
     };
-    let keyword = crate::repository::recall(conn, &keyword_query)?.items;
+    let (keyword, terms) = crate::repository::recall_any_terms(conn, &keyword_query)?;
 
+    // How the query's terms sit on the keyword matches: every term when the
+    // quiet rule needs their agreement, otherwise only its identifiers.
+    let defaults = ScoringConfig::default();
+    let scoring = base.scoring.as_ref().unwrap_or(&defaults);
     let quiet = base.scoring.as_ref().map_or(0.0, |s| s.quiet_similarity);
-    if nearest.is_some_and(|similarity| similarity < quiet) {
-        let ids: Vec<&str> = keyword.iter().map(|i| i.memory.id.as_str()).collect();
-        if crate::repository::term_agreement(conn, &keyword_query, &ids)? < AGREEING_TERMS {
-            return Ok(Vec::new());
-        }
+    let far = nearest.is_some_and(|similarity| similarity < quiet);
+    let weighed: Vec<String> = terms
+        .into_iter()
+        .filter(|t| far || (scoring.identifiers_first && crate::repository::is_identifier(t)))
+        .collect();
+    let ids: Vec<&str> = keyword.iter().map(|i| i.memory.id.as_str()).collect();
+    let evidence = crate::repository::term_evidence(conn, &keyword_query, &weighed, &ids)?;
+    if far && evidence.values().all(|(shared, _)| *shared < AGREEING_TERMS) {
+        return Ok(Vec::new());
     }
+    let names_identifier = |id: &str| {
+        scoring.identifiers_first && evidence.get(id).is_some_and(|(_, named)| *named)
+    };
 
+    let k = scoring.fusion_k.max(0.0);
     let mut fused: HashMap<String, (f64, FusedItem)> = HashMap::new();
     for (position, item) in keyword.into_iter().enumerate() {
-        let score = 1.0 / (RRF_K + position as f64 + 1.0);
+        let score = 1.0 / (k + position as f64 + 1.0);
         fused.insert(
             item.memory.id.clone(),
             (
@@ -194,7 +216,7 @@ pub fn fused_recall(
         );
     }
     for (position, memory) in semantic.into_iter().enumerate() {
-        let score = 1.0 / (RRF_K + position as f64 + 1.0);
+        let score = 1.0 / (k + position as f64 + 1.0);
         let entry = fused.entry(memory.id.clone()).or_insert_with(|| {
             (
                 0.0,
@@ -214,8 +236,9 @@ pub fn fused_recall(
 
     let mut merged: Vec<(f64, FusedItem)> = fused.into_values().collect();
     merged.sort_by(|a, b| {
-        b.0.partial_cmp(&a.0)
-            .unwrap_or(std::cmp::Ordering::Equal)
+        names_identifier(&b.1.item.memory.id)
+            .cmp(&names_identifier(&a.1.item.memory.id))
+            .then_with(|| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal))
             .then_with(|| a.1.item.memory.id.cmp(&b.1.item.memory.id))
     });
     let items: Vec<FusedItem> = merged
@@ -292,15 +315,11 @@ fn semantic_leg(
     base: &RecallQuery,
     embedding: &QueryEmbedding,
 ) -> Result<SemanticLeg> {
-    let namespace = base
-        .namespace
-        .as_deref()
-        .map(crate::context::canonical_namespace);
     let mut hits = crate::embeddings::semantic_search_until(
         conn,
         &embedding.vector,
         &embedding.model,
-        namespace.as_deref(),
+        base.namespace.as_deref(),
         base.include_archived,
         base.exclude_expired,
         POOL,
@@ -414,6 +433,34 @@ mod tests {
         let fused = fused_recall(&conn, &query("lease expiry"), Some(&late)).unwrap();
         assert_eq!(fused.len(), 1);
         assert_eq!(fused[0].item.memory.id, named.id);
+    }
+
+    #[test]
+    fn a_memory_naming_the_querys_identifier_ranks_first() {
+        let conn = crate::db::open_in_memory().unwrap();
+        // Both legs half-agree on these; neither names the ticket.
+        let agreed: Vec<Memory> = (0..3)
+            .map(|i| store(&conn, "project:x", &format!("stripe webhook retries {i}"), &[1.0, 0.0]))
+            .collect();
+        let named = store(&conn, "project:x", "SCO-123 was closed as a duplicate", &[0.0, 1.0]);
+        let q = query("SCO-123 stripe webhook retries");
+        let near = embedding(&[1.0, 0.0]);
+
+        let fused = fused_recall(&conn, &q, Some(&near)).unwrap();
+        assert_eq!(fused[0].item.memory.id, named.id);
+        assert_eq!(fused.len(), 4);
+
+        let plain = RecallQuery {
+            scoring: Some(ScoringConfig {
+                decay_lambda: 0.0,
+                identifiers_first: false,
+                ..Default::default()
+            }),
+            ..q.clone()
+        };
+        let fused = fused_recall(&conn, &plain, Some(&near)).unwrap();
+        assert!(agreed.iter().any(|m| m.id == fused[0].item.memory.id));
+        assert_eq!(fused[3].item.memory.id, named.id);
     }
 
     #[test]

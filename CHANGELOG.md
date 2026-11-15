@@ -42,7 +42,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   With no embedding backend, a failed embedding or more than
   `scoring.fusion_budget_ms` (1,000 ms) spent, the keyword result is returned
   alone; `memory_search` no longer errors without a backend. Its `rank` is now
-  a fused rank score, not a similarity.
+  a fused rank score, not a similarity. A keyword match that contains an
+  identifier the query names ranks first (`scoring.identifiers_first`), and
+  `scoring.fusion_k` sets the fusion constant.
 - Fused retrieval stays quiet when nothing it searched is close in meaning to
   the query (`scoring.quiet_similarity`, default 0.45) and no keyword match
   shares three of its chosen terms, instead of returning whatever shares a

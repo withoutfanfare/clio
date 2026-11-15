@@ -43,6 +43,18 @@ pub struct ScoringConfig {
     #[serde(default = "default_fusion_budget_ms")]
     pub fusion_budget_ms: u64,
 
+    /// Reciprocal rank fusion constant: an item scores `1 / (k + position)`
+    /// in each list that holds it. At 60 an item in both lists outranks every
+    /// item in only one; smaller values let a list's top results compete.
+    #[serde(default = "default_fusion_k")]
+    pub fusion_k: f64,
+
+    /// In fused retrieval, rank a keyword match that contains an identifier
+    /// the query names (a ticket id, a function name) ahead of everything
+    /// else: a memory that names it is about it.
+    #[serde(default = "default_true")]
+    pub identifiers_first: bool,
+
     /// Fused retrieval returns nothing when the most similar memory it
     /// searched is below this cosine similarity and no keyword match shares
     /// three of the query's terms: nothing there is about the query, so
@@ -79,6 +91,10 @@ fn default_fusion_budget_ms() -> u64 {
     1000
 }
 
+fn default_fusion_k() -> f64 {
+    60.0
+}
+
 fn default_quiet_similarity() -> f64 {
     0.45
 }
@@ -100,6 +116,8 @@ impl Default for ScoringConfig {
             scoped_terms: true,
             fusion: true,
             fusion_budget_ms: default_fusion_budget_ms(),
+            fusion_k: default_fusion_k(),
+            identifiers_first: true,
             quiet_similarity: default_quiet_similarity(),
             dedup_similarity: default_dedup_similarity(),
             importance_clamp: default_importance_clamp(),
