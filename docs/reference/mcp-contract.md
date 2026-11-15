@@ -74,7 +74,7 @@ Under `core` the other tools are absent from `tools/list` and calling one is an
 unknown-tool error. Tool behaviour is identical in both profiles. The server
 instructions describe only the tools on offer. Resources are unaffected. The
 full list measures about 28,200 characters of definitions and the core list
-about 14,700.
+about 14,800.
 
 ## Tool Design Rules
 
@@ -185,13 +185,16 @@ Canonical structured response for search/list operations:
 }
 ```
 
-A `note` string is added when the reply needs explaining (a widened or empty
-`memory_recall`).
+This is the shape of `response_format: "json"`, unchanged since it was first
+published: programs decode it into core's `RecallResult`. The `compact` format
+uses the same envelope with [compact items](#compact-item), and adds a `note`
+string when the reply needs explaining (a widened or empty `memory_recall`, an
+empty `memory_search`).
 
 ### Compact item
 
-What each entry of `items` holds in a JSON list reply, unless the caller passes
-`full: true`:
+What each entry of `items` holds in a list reply with
+`response_format: "compact"`:
 
 ```json
 {
@@ -216,27 +219,36 @@ What each entry of `items` holds in a JSON list reply, unless the caller passes
 
 ### Response formats
 
-Allowed values:
+Allowed values on read and list tools:
 
-- `markdown` (default)
-- `json`
+| Value | Use it for | What it returns |
+|---|---|---|
+| `markdown` (default) | reading | cards: id, namespace, kind, creation date, tags, title and a short excerpt |
+| `compact` | structured processing by a model | the same fields as one-line JSON ([compact items](#compact-item)), about the size of the Markdown reply |
+| `json` | a program that needs whole records | the complete memory records, several times larger |
 
-Semantics:
+Rules:
 
-- `markdown`: readable cards, the cheapest form for a model to read
-- `json`: the same information for parsing. Every JSON reply is a single line
-  (not pretty-printed). List tools (`memory_recall`, `memory_recent`,
-  `memory_search`, `memory_context`) return compact items, about the size of
-  the Markdown reply
-- `full: true` with `json` on `memory_recall`, `memory_search` and
-  `memory_context` returns complete memory records instead of compact items,
-  several times larger. The deprecated `memory_recent` is compact only. The desktop app's remote
-  mode uses it, because it deserialises whole records. `full` with `markdown`
-  is rejected rather than ignored. For one complete record, use `memory_get`
+- `json` is a compatibility contract. It returns exactly the field set it
+  always has, for every tool, because existing programs decode it into core
+  types: the desktop app's remote mode reads `memory_recall`, `memory_search`
+  and `memory_get` replies as `RecallResult` and `Memory`. Fields may be added
+  to core records; none may be removed or renamed, and the default shape of a
+  tool's `json` reply never changes. A new, smaller shape gets a new format
+  value, as `compact` did
+- `compact` has its own shape on the list tools (`memory_recall`,
+  `memory_recent`, `memory_search`, `memory_context`). On a tool with only one
+  JSON shape (`memory_get`, `memory_resume`, `memory_stats`, `memory_activity`,
+  `memory_suggest_links`, `memory_inbox`) it returns that shape
+- the write tools `memory_remember` and `memory_update` take `json` (default:
+  the whole stored record, which the desktop app decodes as `Memory`) or
+  `compact` (a short receipt). They have no Markdown reply
+- no JSON reply is pretty-printed; every one is a single line
+- for one complete record, use `memory_get`
 
-Measured on a 27,000-memory store, the same ten results were 3,388 characters
-as Markdown, 3,617 as compact JSON and 14,003 as full JSON (16,283 when JSON was
-still pretty-printed and the only JSON shape).
+Measured on a 27,000-memory store, the same ten `memory_recall` results were
+3,388 characters as `markdown`, 3,616 as `compact` and 14,004 as `json`
+(16,283 while `json` was still pretty-printed).
 
 ## Tool Definitions
 
@@ -354,7 +366,7 @@ This is the primary write path for AI clients. It should support both one-off wr
 - `importance`: `3`
 - `metadata`: `{}`
 - `upsert`: `false`
-- `full`: `false`
+- `response_format`: `json`
 
 ### Validation rules
 
@@ -374,16 +386,20 @@ This is the primary write path for AI clients. It should support both one-off wr
 
 ### Response
 
-A one-line JSON receipt. The caller already holds the content it sent, so it
-is not echoed back:
+`response_format: "json"` (the default) returns the complete stored memory
+record, on one line. The desktop app decodes it as `Memory`, so this default
+must not change.
+
+`response_format: "compact"` returns a receipt instead, because the caller
+already holds the content it sent:
 
 ```json
 {"id":"01954d70-cf20-7d42-bb3b-ff2f0f0de123","namespace":"project:ai","title":"Use SQLite","updated_at":"2026-03-02T19:15:00Z"}
 ```
 
 `updated_at` is the value a later `memory_update` needs as
-`expected_updated_at`. `title` is `null` when the memory has none. Pass
-`full: true` to receive the complete stored memory record instead.
+`expected_updated_at`. `title` is `null` when the memory has none. Any other
+`response_format` is rejected before anything is stored.
 
 ### Failure cases
 
@@ -435,14 +451,15 @@ Patchable fields are `namespace`, `kind`, `title`, `summary`, `content`,
 - attempts to regenerate the embedding when server-side `auto_embed` is enabled;
   an embedding failure is logged and does not roll back the stored edit
 - the Tauri editor sends only changed fields with the last observed
-  `updated_at` and `full: true`, then refreshes its local record from the
-  response
+  `updated_at`, then refreshes its local record from the response
 
 ### Response
 
-The same one-line receipt as `memory_remember` (`id`, `namespace`, `title`,
-`updated_at`), with the new `updated_at` ready for the next patch. Pass
-`full: true` to receive the complete updated memory record instead.
+`response_format: "json"` (the default) returns the complete updated memory
+record. `response_format: "compact"` returns the same receipt as
+`memory_remember` (`id`, `namespace`, `title`, `updated_at`), with the new
+`updated_at` ready for the next patch. Any other value is rejected before the
+patch is applied.
 
 ### Failure cases
 
@@ -496,7 +513,6 @@ This is the primary retrieval tool for AI clients. It must handle both semantic-
 - `limit`: `10`
 - `offset`: `0`
 - `response_format`: `markdown`
-- `full`: `false` (JSON only: complete records instead of compact items)
 
 ### Sort orders
 
@@ -515,12 +531,14 @@ This is the primary retrieval tool for AI clients. It must handle both semantic-
 - if that strict search finds nothing and `query` has more than one word, retry
   once with core's any-word search (`RecallQuery.match_any_term`, the search
   resume briefs use) under the same filters. The reply then opens with a note
-  saying a wider search was used (the first line in Markdown, a `note` field in
-  JSON), so a sentence such as "how do we deploy a new release to Atlas" is
-  never answered with a bare zero
+  saying a wider search was used (the first line in `markdown`, a `note` field
+  in `compact`), so a sentence such as "how do we deploy a new release to
+  Atlas" is never answered with a bare zero. `json` returns the widened items
+  in its usual envelope, with no extra field
 - if a query still matches nothing, the reply is a one-line note that suggests
-  `memory_search` and fewer or different keywords (Markdown), or an empty
-  envelope carrying that `note` (JSON)
+  `memory_search` and fewer or different keywords (`markdown`), an empty
+  envelope carrying that `note` (`compact`), or the plain empty envelope
+  (`json`)
 - if `query` is absent, return recent records subject to filters
 - by default, archived records are excluded
 - support namespace, kind, and tags filters
@@ -533,16 +551,17 @@ This is the primary retrieval tool for AI clients. It must handle both semantic-
 
 ### Structured response
 
-`response_format: "json"` returns the recall envelope with
+`response_format: "compact"` returns the recall envelope with
 [compact items](#compact-item), on one line:
 
 ```json
 {"total":1,"count":1,"offset":0,"limit":10,"archived_only":false,"items":[{"id":"01954d70-cf20-7d42-bb3b-ff2f0f0de123","namespace":"project:ai","kind":"decision","title":"Use SQLite","excerpt":"SQLite is the default shared local store.","created":"2026-03-02","score":7.813}]}
 ```
 
-With `full: true` each item is the complete memory record plus the core `rank`
-(BM25 for a keyword query: negative, lower is better; `null` for a listing).
-Shown indented here; the reply itself is one line:
+`response_format: "json"` returns the same envelope with each item the complete
+memory record plus the core `rank` (BM25 for a keyword query: negative, lower
+is better; `null` for a listing). This is what `RecallResult` decodes. Shown
+indented here; the reply itself is one line:
 
 ```json
 {
@@ -591,13 +610,12 @@ A count line, then one card per item:
   current) and tags
 - the summary, or the first 200 characters of the content
 
-Rank and full timestamps are left out; they are in the `full: true` JSON.
+Rank and full timestamps are left out; they are in the `json` reply.
 
 ### Failure cases
 
 - unknown `sort_by` → `Invalid sort_by '<value>'. Must be one of: updated_desc, updated_asc, importance_desc, importance_asc, created_desc, created_asc.` (it is never silently ignored)
 - `importance_min` or `importance_max` outside 1–5 → `<field> must be between 1 and 5.`
-- `full: true` without `response_format: "json"`
 - invalid pagination values
 - invalid response format
 - storage failure
@@ -679,8 +697,7 @@ Return recent memories with optional filtering and sorting.
 - `limit`: `10`
 - `response_format`: `markdown`
 
-JSON replies carry compact items only; use `memory_recall` with `full: true`
-for complete records.
+`compact` and `json` behave as in `memory_recall`.
 
 ## `memory_link`
 
@@ -1460,13 +1477,12 @@ Find memories by semantic meaning using vector embeddings.
 - `include_archived`: `false`
 - `limit`: `10`
 - `response_format`: `markdown`
-- `full`: `false` (JSON only: complete records instead of compact items)
 
 ### Validation rules
 
 - `query` is required and must not be empty
 - `limit` must be a positive integer
-- `response_format` must be `json` or `markdown`
+- `response_format` must be `markdown`, `compact` or `json`
 
 ### Behaviour
 
@@ -1477,13 +1493,13 @@ Find memories by semantic meaning using vector embeddings.
 - when detection falls back to `global`, search only `global` unless `global: true` requests all namespaces
 - exclude archived memories by default
 - return results sorted by similarity descending
-- the ranking value is returned as `score` in a compact item and as `rank` in a full record; higher is a better match. It is the cosine similarity adjusted by the keyword boost and the configured scoring, so it is not confined to 0.0–1.0
+- the ranking value is returned as `score` in a compact item and as `rank` in a `json` record; higher is a better match. It is the cosine similarity adjusted by the keyword boost and the configured scoring, so it is not confined to 0.0–1.0
 
 ### Response
 
 Returns a recall envelope identical in shape to `memory_recall`:
-[compact items](#compact-item) by default, complete records with `full: true`.
-The full shape, shown indented:
+[compact items](#compact-item) with `compact`, complete records with `json`.
+The `json` shape, shown indented:
 
 ```json
 {
@@ -1523,7 +1539,7 @@ The full shape, shown indented:
 - embedding backend not available at compile time → configuration error
 - embedding backend unreachable (e.g. OpenAI API key missing) → configuration error
 - no embedding backend in this process → `Embedding backend not available. Ensure embeddings are configured in settings. Use memory_recall (keyword search) meanwhile.`
-- nothing similar enough, or no memories embedded yet → no error; the reply is a one-line note suggesting `memory_recall` with exact keywords (Markdown), or an empty envelope carrying that `note` (JSON)
+- nothing similar enough, or no memories embedded yet → no error; the reply is a one-line note suggesting `memory_recall` with exact keywords (`markdown`), an empty envelope carrying that `note` (`compact`), or the plain empty envelope (`json`)
 - memories embedded with another model or dimensionality are ignored until `clio embed backfill` replaces them
 - storage failure
 
@@ -1649,7 +1665,6 @@ The `handoff` preset requires `query` (a ticket id or topic) and assembles a pic
 - `max_items`: `20`
 - `include_links`: `false`
 - `response_format`: `markdown`
-- `full`: `false` (JSON only: complete records instead of compact items)
 
 ### Available presets
 
@@ -1680,8 +1695,8 @@ The `handoff` preset requires `query` (a ticket id or topic) and assembles a pic
 }
 ```
 
-Each entry of `items` is a [compact item](#compact-item) without `score`, or a
-complete memory record with `full: true`. The reply is one line.
+With `json` each entry of `items` is a complete memory record; with `compact`
+it is a [compact item](#compact-item) without `score`. The reply is one line.
 
 ### Failure cases
 
@@ -1817,9 +1832,10 @@ Rules:
 - honour `limit`
 - do not dump large datasets by default
 - for Markdown responses, prefer concise summaries to full raw content lists
-- JSON list responses are compact by the same rule; never pretty-print JSON
-- full content is appropriate for `memory_get`, the item resource, and a list
-  call that asks for it with `full: true`
+- `compact` list responses follow the same rule; never pretty-print JSON
+- full content is appropriate for `memory_get`, the item resource, and any call
+  that asks for `json`
+- never shrink what `json` returns; add a format value instead
 
 ## Compatibility Rules
 
@@ -1900,6 +1916,10 @@ The MCP implementation should be validated for:
 - embedding disabled error from `memory_search` and `memory_suggest_links`
 - embedding model/dimension isolation and stale-vector backfill
 - cross-connection freshness for individual memory reads
+- non-empty `json` replies from `memory_recall`, `memory_search`,
+  `memory_recent`, `memory_remember`, `memory_update` and `memory_get` decoding
+  into the core `RecallResult` and `Memory` types, from the requests the desktop
+  app sends (`json_replies_decode_into_the_core_types_programs_use`)
 
 ## Invariants For Implementers
 
@@ -1913,9 +1933,10 @@ The MCP implementation is incorrect if:
 
 Two adapter behaviours are deliberate presentation choices, not different
 semantics: the retry of an empty multi-word `memory_recall` (it calls core's
-any-word search and labels the result), and the compact JSON projection of
-list replies (the complete core records remain available with `full: true`).
-The CLI does neither yet.
+any-word search and labels the result), and the `compact` projection of list
+and write replies (`json` still returns the complete core records). The CLI
+does neither yet; the retry is due to move into core so that every adapter
+shares it.
 
 ## Acceptance Criteria
 

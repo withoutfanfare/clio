@@ -29,7 +29,6 @@ pub async fn cmd_search(
                         "include_archived": include_archived.unwrap_or(false),
                         "limit": limit.unwrap_or(10),
                         "response_format": "json",
-                        "full": true,
                     }),
                 )
                 .await;

@@ -555,7 +555,7 @@ Run `clio setup generic` to get a ready-to-paste JSON block with your exact bina
 
 ## MCP Tools Reference
 
-Once connected, AI agents have access to Clio's MCP tools. Each read or list tool returns either Markdown or JSON where its contract exposes `response_format`. Markdown is the default and the cheapest to read. JSON is for parsing: list tools return the same compact fields (id, namespace, kind, title, excerpt, creation date, score) on one line, at about the same size. To read a whole memory, call `memory_get`; `full: true` on a JSON list returns every complete record and is several times larger.
+Once connected, AI agents have access to Clio's MCP tools. Each read or list tool returns either Markdown or JSON where its contract exposes `response_format`. There are three values. `markdown` is the default and the one to read: cards of id, namespace, kind, creation date, title and a short excerpt. `compact` is for structured processing: the same fields as one-line JSON, at about the same size. `json` returns whole records and is several times larger; use it only when a program needs them (the desktop app does). To read one whole memory, call `memory_get`.
 
 ### A smaller tool list (`CLIO_MCP_TOOLS`)
 
@@ -591,8 +591,8 @@ The variable is read by `clio-mcp` itself. Through the SSH bridge (`clio remote-
 
 | Tool | Purpose | Key parameters |
 |---|---|---|
-| `memory_remember` | Store or upsert a memory; returns a short receipt (`id`, `namespace`, `title`, `updated_at`) | `content` (required), `kind`, `title`, `summary`, `tags`, `namespace`, `cwd`, `importance`, `upsert`, `source`, `source_ref` |
-| `memory_update` | Patch a known memory while rejecting stale edits; returns the same receipt | `memory_id`, `expected_updated_at`, changed fields |
+| `memory_remember` | Store or upsert a memory. Returns the whole record; pass `response_format: "compact"` for a short receipt (`id`, `namespace`, `title`, `updated_at`) | `content` (required), `kind`, `title`, `summary`, `tags`, `namespace`, `cwd`, `importance`, `upsert`, `source`, `source_ref` |
+| `memory_update` | Patch a known memory while rejecting stale edits; `compact` returns the same receipt | `memory_id`, `expected_updated_at`, changed fields |
 | `memory_capture` | Classify text, then return a `Stored` or `Queued` outcome | `text` (required), `namespace`, `cwd` |
 | `memory_session_checkpoint` | Distil one session delta with exact-once replay | `text`, `source`, `session_id`, `cursor`, `namespace`, `cwd` |
 | `memory_link` | Create a typed directional link between two memories | `from_memory_id`, `to_memory_id`, `relationship` |

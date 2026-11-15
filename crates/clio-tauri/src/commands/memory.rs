@@ -45,7 +45,6 @@ pub async fn cmd_remember(
                     "valid_from": valid_from,
                     "valid_until": valid_until,
                     "upsert": upsert.unwrap_or(false),
-                    "full": true,
                 }),
             )
             .await;
@@ -104,12 +103,10 @@ pub async fn cmd_update(
 
     if let Some(remote) = state.remote() {
         let mut arguments = serde_json::to_value(&patch)?;
-        let fields = arguments
+        arguments
             .as_object_mut()
-            .expect("UpdateInput serialises as an object");
-        fields.insert("memory_id".into(), memory_id.into());
-        // The editor refreshes from the whole record, not the short receipt.
-        fields.insert("full".into(), true.into());
+            .expect("UpdateInput serialises as an object")
+            .insert("memory_id".into(), memory_id.into());
         return remote.call_json("memory_update", arguments).await;
     }
 
@@ -170,7 +167,6 @@ pub async fn cmd_recall(
                     "limit": limit.unwrap_or(10),
                     "offset": offset.unwrap_or(0),
                     "response_format": "json",
-                    "full": true,
                 }),
             )
             .await;
@@ -256,7 +252,6 @@ pub async fn cmd_recent(
                     "limit": limit.unwrap_or(10),
                     "offset": offset.unwrap_or(0),
                     "response_format": "json",
-                    "full": true,
                 }),
             )
             .await;
