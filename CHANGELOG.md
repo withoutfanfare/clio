@@ -31,6 +31,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Effectiveness reports task-matching and expiry coverage; capture and resume
   benchmarks exercise selectivity and retrieval relevance.
 
+**Retrieval, round two (2026-11-15)**
+- Long any-word queries drop words that match none of the memories the search
+  covers before choosing their 12 rarest terms, so a chatty prompt no longer
+  loses its topic to filler (`scoring.scoped_terms`, default on).
+- A resume brief's Relevant knowledge and semantic search (`memory_search`,
+  `clio search`) are one fused retrieval: any-word keyword results and semantic
+  results merged by rank position (`scoring.fusion`, default on). It replaces
+  the exact-phrase boost in semantic search, which never matched a sentence.
+  With no embedding backend, a failed embedding or more than
+  `scoring.fusion_budget_ms` (1,000 ms) spent, the keyword result is returned
+  alone; `memory_search` no longer errors without a backend. Its `rank` is now
+  a fused rank score, not a similarity. A keyword match that contains an
+  identifier the query names ranks first (`scoring.identifiers_first`), and
+  `scoring.fusion_k` sets the fusion constant.
+- Fused retrieval stays quiet when nothing it searched is close in meaning to
+  the query (`scoring.quiet_similarity`, default 0.45) and no keyword match
+  shares three of its chosen terms (all of them, when it has fewer), instead
+  of returning whatever shares a word with it. A memory that contains an
+  identifier the query names is never quietened, and `0` switches the rule
+  off. When some keyword matches agree and others do not, only the agreeing
+  ones are returned. A prompt brief with little or nothing matched no longer hands the
+  unused slots to constraints, decisions and receipts; only follow-ups may
+  take them.
+- A resume brief no longer spends two Relevant knowledge slots on one fact: a
+  near-copy of an item already chosen is skipped and the next candidate takes
+  the slot (`scoring.dedup_similarity`, default 0.85). Vectors are compared
+  only within one embedding model. Receipts are left out before candidates
+  are cut, and one wider fetch (100 candidates) follows when filtering leaves
+  slots empty.
+- The desktop app's local search uses the same fused search as `memory_search`
+  and `clio search`, including keyword matches while the embedding backend is
+  absent or still loading.
+- `scoring.importance_clamp` bounds how far importance moves a ranking score,
+  so its weight can be measured. The default (3.0) leaves ranking as it was.
+- Keyword search in a large namespace no longer spends over a second counting
+  its matches: the full-text index is pinned as the outer loop of the join.
+  A prompt-time `clio resume` in a 7,500-memory namespace went from about 1.5 s
+  to about 0.1 s, embedding the query included.
+
 **Deployment notes:** deploy compatible server and CLI binaries before using new
 flags or tool profiles. Existing hooks and desktop JSON envelopes are preserved.
 Delivery acknowledgement needs caller adoption; current hooks remain supported.

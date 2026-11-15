@@ -552,6 +552,12 @@ pub struct ResumeRequest {
     #[serde(skip)]
     pub scoring: Option<ScoringConfig>,
 
+    /// The query's vector, from `fusion::query_embedding`. With it, relevant
+    /// knowledge is fused keyword and semantic retrieval; without it,
+    /// keywords alone.
+    #[serde(skip)]
+    pub query_embedding: Option<crate::fusion::QueryEmbedding>,
+
     /// Dormancy policy from `AttentionConfig`.
     #[serde(default)]
     pub dormant_days: u32,
@@ -576,6 +582,7 @@ impl Default for ResumeRequest {
             max_items: default_max_items(),
             char_budget: None,
             scoring: None,
+            query_embedding: None,
             dormant_days: 0,
             max_age_days: 0,
             now: None,
@@ -912,6 +919,7 @@ fn build_resume(conn: &Connection, request: &ResumeRequest, record: bool) -> Res
         ),
         "active constraint in this project",
         suppression_scope,
+        None,
     )?;
     if request
         .namespace
@@ -929,6 +937,7 @@ fn build_resume(conn: &Connection, request: &ResumeRequest, record: bool) -> Res
             ),
             "global constraint",
             suppression_scope,
+            None,
         )?);
     }
 
@@ -948,6 +957,7 @@ fn build_resume(conn: &Connection, request: &ResumeRequest, record: bool) -> Res
         },
         "recent decision in this project",
         suppression_scope,
+        None,
     )?;
 
     // 5. Prompt-relevant knowledge — abstains without a query.
@@ -960,14 +970,22 @@ fn build_resume(conn: &Connection, request: &ResumeRequest, record: bool) -> Res
         Some(query) => {
             // The query is usually a whole prompt, so match on any of its
             // meaningful terms; requiring every word would match nothing.
+            // With a query vector, semantic results are fused in.
             resume_recall(
                 conn,
                 RecallQuery {
                     match_any_term: true,
-                    ..resume_query(Some(&namespace), None, Some(query), 10, &request.scoring)
+                    ..resume_query(
+                        Some(&namespace),
+                        None,
+                        Some(query),
+                        KNOWLEDGE_SLOTS,
+                        &request.scoring,
+                    )
                 },
                 "matches task terms",
                 suppression_scope,
+                request.query_embedding.as_ref(),
             )?
         }
         None => Vec::new(),
@@ -982,6 +1000,7 @@ fn build_resume(conn: &Connection, request: &ResumeRequest, record: bool) -> Res
         },
         "recent session receipt",
         suppression_scope,
+        None,
     )?
     .into_iter()
     .map(|mut item| {
@@ -990,6 +1009,9 @@ fn build_resume(conn: &Connection, request: &ResumeRequest, record: bool) -> Res
     })
     .collect::<Vec<_>>();
 
+    // A constraint that matches the task leads its section, so the section's
+    // reserved slot funds it and not whichever constraint ranks first.
+    constraints.sort_by_key(|c| !knowledge.iter().any(|k| k.memory_id == c.memory_id));
     // Keep attention reasons when the same memory also matches the task, and
     // keep a matching constraint in its own section, which has a reserved slot.
     knowledge.retain(|k| {
@@ -1135,40 +1157,119 @@ fn resume_query(
     }
 }
 
-/// Untracked recall wrapped into resume items with a shared reason.
+/// Slots Relevant knowledge may fill on a prompt call.
+const KNOWLEDGE_SLOTS: u32 = 10;
+
+/// Candidate windows for fused relevant knowledge, as (merged candidates,
+/// candidates per leg). Receipts are left out before either leg is cut. The
+/// second window is fetched only when eligibility and near-copy filtering
+/// leave slots empty after a full first one, and it is the hard cap: nothing
+/// past the 100th merged candidate is considered.
+const KNOWLEDGE_WINDOWS: [(u32, u32); 2] = [(50, 30), (100, 60)];
+
+/// Untracked recall wrapped into resume items with a shared reason. With an
+/// `embedding`, the recall is fused and an item only the semantic leg found
+/// says so. Keyword-only knowledge reads one window of 50 candidates.
 fn resume_recall(
     conn: &Connection,
     mut recall_query: RecallQuery,
     reason: &str,
     session: Option<&str>,
+    embedding: Option<&crate::fusion::QueryEmbedding>,
 ) -> Result<Vec<ResumeItem>> {
     let limit = recall_query.limit as usize;
     let knowledge = recall_query.query.is_some();
-    let mut items = Vec::new();
     if knowledge {
         recall_query.limit = 50;
     }
-    {
-        let result = repository::recall(conn, &recall_query)?;
-        for ri in result.items {
-            let m = ri.memory;
-            if knowledge
-                && (m.kind == "receipt"
-                    || (m.source.as_deref() == Some(crate::consolidate::CONSOLIDATED_SOURCE)
-                        && crate::consolidate::consolidation_is_stale(conn, &m.namespace)?
-                            .unwrap_or(true)))
-            {
-                continue;
-            }
-            if let Some(scope) = session {
-                if ["constraint", "decision"].contains(&m.kind.as_str()) && conn.query_row(
-                    "SELECT EXISTS(SELECT 1 FROM memory_events WHERE memory_id = ?1 AND session_id = ?2 AND event_type = 'surfaced' AND actor = 'resume:ack' AND created_at >= ?3 AND json_extract(metadata_json, '$.memory_updated_at') = ?3)",
-                    rusqlite::params![m.id, scope, m.updated_at], |r| r.get::<_, bool>(0))? { continue; }
-            }
-            items.push(resume_item_from_memory(&m, "knowledge", reason.to_string()));
-            if items.len() >= limit {
-                return Ok(items);
-            }
+    let (Some(text), Some(_)) = (recall_query.query.clone(), embedding) else {
+        let found = repository::recall(conn, &recall_query)?
+            .items
+            .into_iter()
+            .map(|ri| (ri.memory, reason))
+            .collect();
+        return resume_eligible(conn, found, &recall_query, session, limit);
+    };
+    let mut items = Vec::new();
+    for (window, pool) in KNOWLEDGE_WINDOWS {
+        let found = crate::fusion::fused_recall(
+            conn,
+            &crate::fusion::FusedQuery {
+                query: text.clone(),
+                namespace: recall_query.namespace.clone(),
+                include_archived: recall_query.include_archived,
+                exclude_expired: recall_query.exclude_expired,
+                exclude_kinds: vec!["receipt".into()],
+                limit: window,
+                pool,
+                scoring: recall_query.scoring.clone(),
+                skip_access_tracking: true,
+            },
+            embedding,
+        )?;
+        let found = found
+            .into_iter()
+            .map(|f| {
+                let why = if f.keyword {
+                    reason
+                } else {
+                    "similar in meaning to the task"
+                };
+                (f.item.memory, why)
+            })
+            .collect();
+        items = resume_eligible(conn, found, &recall_query, session, limit)?;
+        // A short first window does not prove there is nothing more: the
+        // semantic side is cut below the window, so always try the wider one.
+        if items.len() >= limit {
+            break;
+        }
+    }
+    Ok(items)
+}
+
+/// The first `limit` of `found` a resume section may show. Knowledge leaves
+/// out receipts, a stale consolidation and near-copies of an item already
+/// kept; every section leaves out a constraint or decision acknowledged in
+/// this session since its last edit.
+fn resume_eligible(
+    conn: &Connection,
+    found: Vec<(Memory, &str)>,
+    recall_query: &RecallQuery,
+    session: Option<&str>,
+    limit: usize,
+) -> Result<Vec<ResumeItem>> {
+    let knowledge = recall_query.query.is_some();
+    // Two slots are not spent on one fact: a near-copy is skipped and the
+    // next candidate takes its place.
+    let mut copies = crate::embeddings::NearCopies::new(
+        recall_query
+            .scoring
+            .as_ref()
+            .filter(|_| knowledge)
+            .map_or(0.0, |s| s.dedup_similarity),
+    );
+    let mut items = Vec::new();
+    for (m, reason) in found {
+        if knowledge
+            && (m.kind == "receipt"
+                || (m.source.as_deref() == Some(crate::consolidate::CONSOLIDATED_SOURCE)
+                    && crate::consolidate::consolidation_is_stale(conn, &m.namespace)?
+                        .unwrap_or(true)))
+        {
+            continue;
+        }
+        if let Some(scope) = session {
+            if ["constraint", "decision"].contains(&m.kind.as_str()) && conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM memory_events WHERE memory_id = ?1 AND session_id = ?2 AND event_type = 'surfaced' AND actor = 'resume:ack' AND created_at >= ?3 AND json_extract(metadata_json, '$.memory_updated_at') = ?3)",
+                rusqlite::params![m.id, scope, m.updated_at], |r| r.get::<_, bool>(0))? { continue; }
+        }
+        if copies.repeats(conn, &m)? {
+            continue;
+        }
+        items.push(resume_item_from_memory(&m, "knowledge", reason.to_string()));
+        if items.len() >= limit {
+            break;
         }
     }
     Ok(items)
@@ -1177,7 +1278,9 @@ fn resume_recall(
 /// Deduplicate by memory ID (section priority order), guarantee one slot for
 /// each non-empty critical section, fill remaining capacity in section order,
 /// then apply the character budget over the serialised representation. Empty
-/// sections are dropped so they release capacity rather than reserving it.
+/// sections are dropped so they release capacity rather than reserving it,
+/// except that on a prompt call the capacity Relevant knowledge does not use
+/// is released to follow-ups alone.
 fn allocate_resume_budget(
     ordered: Vec<(&str, Vec<ResumeItem>)>,
     max_items: u32,
@@ -1222,10 +1325,33 @@ fn allocate_resume_budget(
             used += 1;
         }
     }
-    for (index, (_, items)) in pools.iter().enumerate() {
-        while take[index] < items.len() && used < max_items {
+    // On a prompt call Relevant knowledge is allocated as if it were full.
+    // The slots it leaves empty may go to follow-ups only: when little or
+    // nothing matches the task the brief stays quiet, rather than padding
+    // itself with constraints, decisions and receipts the task did not ask
+    // for. Those sections get what they would have had beside a full one.
+    let mut spare = 0;
+    for (index, (heading, items)) in pools.iter().enumerate() {
+        let wanted = if !session_start && heading == "Relevant knowledge" {
+            items.len().max(KNOWLEDGE_SLOTS as usize)
+        } else {
+            items.len()
+        };
+        while take[index] < wanted && used < max_items {
             take[index] += 1;
             used += 1;
+        }
+        if take[index] > items.len() {
+            spare += take[index] - items.len();
+            take[index] = items.len();
+        }
+    }
+    for (index, (heading, items)) in pools.iter().enumerate() {
+        if ["Needs attention", "Waiting on"].contains(&heading.as_str()) {
+            while take[index] < items.len() && spare > 0 {
+                take[index] += 1;
+                spare -= 1;
+            }
         }
     }
 
@@ -2179,6 +2305,7 @@ mod tests {
             },
             "test",
             None,
+            None,
         )
         .unwrap();
         assert!(
@@ -2336,6 +2463,249 @@ mod tests {
                 .any(|i| i.content.contains("bananas")),
             "memories sharing no term are still omitted"
         );
+    }
+
+    #[test]
+    fn resume_knowledge_fuses_in_what_only_meaning_finds() {
+        let conn = test_db();
+        let ns = "project:resume";
+        let named = make_memory(&conn, ns, "fact", "The spool uses atomic renames");
+        let meant = make_memory(&conn, ns, "fact", "Writes survive a power cut");
+        let far = make_memory(&conn, ns, "fact", "Bananas are yellow");
+        for (memory, vector) in [
+            (&named, [0.0, 1.0]),
+            (&meant, [1.0, 0.0]),
+            (&far, [-1.0, 0.0]),
+        ] {
+            crate::embeddings::store_embedding(&conn, &memory.id, "test", 2, &vector).unwrap();
+        }
+
+        let mut request = resume_request(ns);
+        request.query = Some("is the spool durable".into());
+        request.scoring = Some(ScoringConfig::default());
+        let reasons = |request: &ResumeRequest| -> Vec<(String, String)> {
+            let brief = build_resume_brief(&conn, request).unwrap();
+            section(&brief, "Relevant knowledge")
+                .map(|s| {
+                    s.items
+                        .iter()
+                        .map(|i| (i.memory_id.clone(), i.reason.clone()))
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        // Keywords alone: only the memory that shares a word.
+        assert_eq!(
+            reasons(&request),
+            vec![(named.id.clone(), "matches task terms".to_string())]
+        );
+
+        request.query_embedding = Some(crate::fusion::QueryEmbedding {
+            vector: vec![1.0, 0.0],
+            model: "test".into(),
+            deadline: None,
+        });
+        let fused = reasons(&request);
+        assert_eq!(fused.len(), 2, "the unrelated memory stays out: {fused:?}");
+        assert!(fused.contains(&(named.id, "matches task terms".to_string())));
+        assert!(fused.contains(&(meant.id, "similar in meaning to the task".to_string())));
+    }
+
+    #[test]
+    fn resume_knowledge_skips_near_copies_and_refills() {
+        let conn = test_db();
+        let ns = "project:resume";
+        let first = make_memory(&conn, ns, "fact", "Deploys run the ship script");
+        let copy = make_memory(&conn, ns, "fact", "Deploys always run the ship script");
+        let other = make_memory(
+            &conn,
+            ns,
+            "fact",
+            "Deploys need a clean tree and a green build before anything else happens",
+        );
+        for (memory, vector) in [
+            (&first, [1.0, 0.0]),
+            (&copy, [0.99, 0.141]),
+            (&other, [0.0, 1.0]),
+        ] {
+            crate::embeddings::store_embedding(&conn, &memory.id, "test", 2, &vector).unwrap();
+        }
+        let mut request = resume_request(ns);
+        request.query = Some("deploys".into());
+        request.max_items = 2;
+        let shown = |request: &ResumeRequest| -> Vec<String> {
+            let brief = build_resume_brief(&conn, request).unwrap();
+            let knowledge = section(&brief, "Relevant knowledge").unwrap();
+            knowledge
+                .items
+                .iter()
+                .map(|i| i.memory_id.clone())
+                .collect()
+        };
+
+        request.scoring = Some(ScoringConfig::default());
+        let deduped = shown(&request);
+        assert_eq!(deduped.len(), 2);
+        assert!(deduped.contains(&other.id), "the freed slot is refilled");
+        assert!(
+            deduped.contains(&first.id) != deduped.contains(&copy.id),
+            "one of the two copies, not both: {deduped:?}"
+        );
+
+        request.scoring = Some(ScoringConfig {
+            dedup_similarity: 0.0,
+            ..Default::default()
+        });
+        let kept = shown(&request);
+        assert!(
+            kept.contains(&first.id) && kept.contains(&copy.id),
+            "{kept:?}"
+        );
+    }
+
+    #[test]
+    fn near_copy_detection_does_not_compare_across_embedding_models() {
+        let conn = test_db();
+        let ns = "project:resume";
+        // Identical numbers from two different models say nothing about each
+        // other, although the vectors are the same size.
+        for (content, model) in [
+            ("lease expiry alpha", "model-a"),
+            ("lease expiry beta", "model-b"),
+        ] {
+            let memory = make_memory(&conn, ns, "fact", content);
+            crate::embeddings::store_embedding(&conn, &memory.id, model, 2, &[1.0, 0.0]).unwrap();
+        }
+        let same = make_memory(&conn, ns, "fact", "lease expiry gamma");
+        crate::embeddings::store_embedding(&conn, &same.id, "model-a", 2, &[1.0, 0.0]).unwrap();
+
+        let mut request = resume_request(ns);
+        request.query = Some("lease expiry".into());
+        request.scoring = Some(ScoringConfig::default());
+        let brief = build_resume_brief(&conn, &request).unwrap();
+        let knowledge = section(&brief, "Relevant knowledge").unwrap();
+        assert_eq!(
+            knowledge.items.len(),
+            2,
+            "one per model; the second model-a memory is the only copy"
+        );
+    }
+
+    #[test]
+    fn fused_knowledge_fetches_a_wider_window_when_copies_exhaust_the_first() {
+        let conn = test_db();
+        let ns = "project:resume";
+        let near = [1.0_f32, 0.0];
+        // A full first window of near-copies of one fact...
+        for i in 0..KNOWLEDGE_WINDOWS[0].0 {
+            let copy = make_memory(
+                &conn,
+                ns,
+                "fact",
+                &format!("Deploys run the ship script {i}"),
+            );
+            crate::embeddings::store_embedding(&conn, &copy.id, "test", 2, &near).unwrap();
+        }
+        // ...and three distinct facts that rank below every one of them.
+        for (i, vector) in [[0.0_f32, 1.0], [-1.0, 0.0], [0.0, -1.0]]
+            .iter()
+            .enumerate()
+        {
+            let other = make_memory(
+                &conn,
+                ns,
+                "fact",
+                &format!(
+                    "Rule {i}: deploys need a clean tree and a green build before anything else"
+                ),
+            );
+            crate::embeddings::store_embedding(&conn, &other.id, "test", 2, vector).unwrap();
+        }
+        let mut request = resume_request(ns);
+        request.query = Some("deploys".into());
+        request.scoring = Some(ScoringConfig::default());
+        request.query_embedding = Some(crate::fusion::QueryEmbedding {
+            vector: near.to_vec(),
+            model: "test".into(),
+            deadline: None,
+        });
+        let brief = build_resume_brief(&conn, &request).unwrap();
+        let knowledge = section(&brief, "Relevant knowledge").unwrap();
+        assert_eq!(
+            knowledge.items.len(),
+            4,
+            "one of the copies and the three facts behind them"
+        );
+    }
+
+    #[test]
+    fn a_prompt_brief_does_not_pad_an_empty_knowledge_section() {
+        let conn = test_db();
+        let ns = "project:resume";
+        for i in 0..12 {
+            make_memory(
+                &conn,
+                ns,
+                "fact",
+                &format!("The spool keeps entry {i} durable"),
+            );
+        }
+        for i in 0..6 {
+            make_memory(
+                &conn,
+                ns,
+                "constraint",
+                &format!("Never do forbidden thing {i}"),
+            );
+            make_memory(&conn, ns, "decision", &format!("We chose option {i}"));
+            make_memory(&conn, ns, "receipt", &format!("Session write-up {i}"));
+        }
+        let sizes = |query: &str, max_items: u32| -> Vec<usize> {
+            let mut request = resume_request(ns);
+            request.query = Some(query.into());
+            request.max_items = max_items;
+            let brief = build_resume_brief(&conn, &request).unwrap();
+            [
+                "Relevant knowledge",
+                "Needs attention",
+                "Active constraints",
+                "Recent decisions",
+                "Recent activity",
+            ]
+            .iter()
+            .map(|heading| section(&brief, heading).map_or(0, |s| s.items.len()))
+            .collect()
+        };
+        let full = sizes("spool", 20);
+        let empty = sizes("zebra", 20);
+        assert_eq!(full[0], 10);
+        assert_eq!(empty[0], 0);
+        assert_eq!(
+            empty[2..],
+            full[2..],
+            "nothing matched, so the static sections get what they had beside a full one"
+        );
+
+        // The slots knowledge leaves empty do go to follow-ups.
+        for i in 0..3 {
+            open_action(
+                &conn,
+                ns,
+                &format!("Verify release {i}"),
+                Some("2026-07-01T00:00:00Z"),
+            );
+        }
+        assert_eq!(
+            sizes("spool", 12)[1],
+            1,
+            "beside full knowledge: the reserved slot"
+        );
+        assert_eq!(
+            sizes("zebra", 12)[1],
+            3,
+            "beside empty knowledge: all three"
+        );
+        assert_eq!(sizes("zebra", 12)[2..], sizes("spool", 12)[2..]);
     }
 
     #[test]

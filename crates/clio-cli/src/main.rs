@@ -1312,11 +1312,15 @@ fn main() {
     let raw_args: Vec<OsString> = std::env::args_os().collect();
     let cli = Cli::parse_from(&raw_args);
 
+    // A query embedding that overran its budget is still running; ending the
+    // process the ordinary way under it can crash and replace the exit code.
     if let Err(err) = run_with_routing(cli, &raw_args[1..]) {
         error!("{err}");
         eprintln!("Error: {err}");
+        clio_core::fusion::finish_one_shot(1);
         process::exit(1);
     }
+    clio_core::fusion::finish_one_shot(0);
 }
 
 fn run_with_routing(cli: Cli, raw_args: &[OsString]) -> Result<(), Box<dyn std::error::Error>> {
@@ -2645,6 +2649,9 @@ fn cmd_search(
     let conn = db::open(&path)?;
     let s = settings::load(&path)?;
 
+    if s.scoring.fusion {
+        return cmd_search_fused(&conn, &s, json, args);
+    }
     let backend = embeddings::create_backend(&s.embeddings)?;
     let query_embedding = backend.embed_one(&args.query)?;
 
@@ -2706,6 +2713,59 @@ fn cmd_search(
         print_recall_result(&result);
     }
 
+    Ok(())
+}
+
+/// `search` with `scoring.fusion` on: keyword and semantic results merged in
+/// core. Without a usable embedding backend the keyword results stand alone.
+fn cmd_search_fused(
+    conn: &rusqlite::Connection,
+    s: &settings::Settings,
+    json: bool,
+    args: SearchArgs,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let config = s.embeddings.clone();
+    let embedding = clio_core::fusion::query_embedding(&s.scoring, Some(&args.query), move |q| {
+        embeddings::embed_with_config(&config, q)
+    });
+    let base = clio_core::fusion::FusedQuery {
+        query: args.query,
+        namespace: args.namespace.clone().filter(|_| !args.global),
+        include_archived: args.include_archived,
+        exclude_expired: !args.include_expired,
+        limit: args.limit,
+        scoring: Some(s.scoring.clone()),
+        ..Default::default()
+    };
+    let detected;
+    let scope = if args.global || args.namespace.is_some() {
+        None
+    } else {
+        detected = resolve_command_namespace(None, s.context.auto_detect);
+        Some(detected.as_str())
+    };
+    let items = clio_core::fusion::search(conn, &base, scope, embedding.as_ref())?;
+    let result = RecallResult {
+        archived_only: false,
+        total: items.len() as u32,
+        limit: args.limit,
+        offset: 0,
+        count: items.len() as u32,
+        items,
+    };
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&result)?);
+    } else if result.items.is_empty() {
+        println!("No matching memories found.");
+    } else {
+        if embedding.is_none() {
+            eprintln!("Semantic search was unavailable; these are keyword matches.");
+        }
+        println!("Search results ({} found):", result.count);
+        println!();
+        print_recall_result(&result);
+    }
     Ok(())
 }
 
@@ -3797,6 +3857,11 @@ fn cmd_resume(
         }
     };
 
+    let embedding_config = stgs.embeddings.clone();
+    let query_embedding =
+        clio_core::fusion::query_embedding(&stgs.scoring, args.query.as_deref(), move |q| {
+            embeddings::embed_with_config(&embedding_config, q)
+        });
     let request = clio_core::assembly::ResumeRequest {
         namespace,
         query: args.query,
@@ -3804,6 +3869,7 @@ fn cmd_resume(
         max_items: args.max_items,
         char_budget: args.char_budget,
         scoring: Some(stgs.scoring),
+        query_embedding,
         dormant_days: stgs.attention.dormant_days,
         max_age_days: stgs.attention.max_age_days,
         now: None,

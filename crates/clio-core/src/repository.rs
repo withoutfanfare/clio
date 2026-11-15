@@ -929,11 +929,19 @@ const FTS_STOPWORDS: &[&str] = &[
 /// is capped to keep the query cheap. Falls back to the all-terms form when
 /// nothing survives filtering, so short technical queries keep working.
 fn sanitise_fts_query_any(raw: &str) -> String {
+    let terms = any_terms(raw);
+    if terms.is_empty() {
+        return sanitise_fts_query(raw);
+    }
+    terms.join(" OR ")
+}
+
+/// The quoted terms an any-term query matches on.
+fn any_terms(raw: &str) -> Vec<String> {
     const MAX_TERMS: usize = 12;
 
     let mut seen = std::collections::HashSet::new();
-    let terms: Vec<String> = raw
-        .split_whitespace()
+    raw.split_whitespace()
         .map(|t| {
             t.trim_matches(|c: char| !c.is_alphanumeric())
                 .replace('"', " ")
@@ -944,16 +952,102 @@ fn sanitise_fts_query_any(raw: &str) -> String {
         .filter(|t| seen.insert(t.clone()))
         .take(MAX_TERMS)
         .map(|t| format!("\"{t}\""))
-        .collect();
+        .collect()
+}
 
-    if terms.is_empty() {
-        return sanitise_fts_query(raw);
+/// Ticket and code identifiers, such as `SCO-123`, `touch_accessed` or
+/// `fusion::search`. Dates and plain hyphenated words are not.
+pub(crate) fn is_identifier(term: &str) -> bool {
+    let term = term.trim_matches('"');
+    term.chars().next().is_some_and(|c| c.is_alphabetic())
+        && (term.contains('_')
+            || term.contains("::")
+            || (term.contains('-') && term.chars().any(|c| c.is_ascii_digit())))
+}
+
+/// Append "kind is none of these" to a query over `memories m`.
+pub(crate) fn append_kind_exclusion(
+    sql: &mut String,
+    params: &mut Vec<Box<dyn rusqlite::types::ToSql>>,
+    kinds: &[String],
+) {
+    if kinds.is_empty() {
+        return;
     }
-    terms.join(" OR ")
+    let placeholders: Vec<String> = (0..kinds.len())
+        .map(|i| format!("?{}", params.len() + 1 + i))
+        .collect();
+    sql.push_str(&format!(" AND m.kind NOT IN ({})", placeholders.join(", ")));
+    for kind in kinds {
+        params.push(Box::new(kind.clone()));
+    }
+}
+
+/// Any-word recall that also returns the quoted terms it matched on, so a
+/// caller can weigh the matches without choosing the terms a second time.
+/// `exclude_kinds` are left out before the limit is applied. Untracked, and
+/// `q.namespace` must already be canonical.
+pub(crate) fn recall_any_terms(
+    conn: &Connection,
+    q: &RecallQuery,
+    exclude_kinds: &[String],
+) -> Result<(Vec<RecallItem>, Vec<String>)> {
+    let raw = q.query.as_deref().unwrap_or_default();
+    let scoped = q.scoring.as_ref().is_none_or(|s| s.scoped_terms);
+    let terms = any_terms(&informative_query(conn, raw, scoped.then_some(q))?);
+    let safe_query = if terms.is_empty() {
+        sanitise_fts_query(raw)
+    } else {
+        terms.join(" OR ")
+    };
+    let matches = recall_fts_matching(conn, safe_query, q, exclude_kinds)?;
+    Ok((matches.items, terms))
+}
+
+/// For each of `ids` that matches any of `terms`: how many of them it
+/// matches, and whether one of those is an identifier. The count says how far
+/// a query's words agree on one memory, as opposed to each turning up
+/// somewhere.
+pub(crate) fn term_evidence(
+    conn: &Connection,
+    q: &RecallQuery,
+    terms: &[String],
+    ids: &[&str],
+) -> Result<std::collections::HashMap<String, (usize, bool)>> {
+    let mut matched = std::collections::HashMap::new();
+    if terms.is_empty() || ids.is_empty() {
+        return Ok(matched);
+    }
+    let mut sql = String::from(
+        "SELECT m.id FROM memory_fts CROSS JOIN memories m ON m.rowid = memory_fts.rowid \
+         WHERE memory_fts MATCH ?1",
+    );
+    let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = vec![Box::new(String::new())];
+    append_filters(&mut sql, &mut params, q);
+    let mut stmt = conn.prepare(&sql)?;
+    for term in terms {
+        let identifier = is_identifier(term);
+        params[0] = Box::new(term.clone());
+        let refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+        let rows = stmt.query_map(refs.as_slice(), |row| row.get::<_, String>(0))?;
+        for id in rows {
+            let id = id?;
+            if ids.contains(&id.as_str()) {
+                let entry: &mut (usize, bool) = matched.entry(id).or_default();
+                entry.0 += 1;
+                entry.1 |= identifier;
+            }
+        }
+    }
+    Ok(matched)
 }
 
 /// Select across a bounded prompt, retaining identifiers and rare corpus terms.
-fn informative_query(conn: &Connection, raw: &str) -> Result<String> {
+/// Rarity is counted across the whole index: it measures how distinctive a
+/// word is. With `scope`, a word that matches none of the memories that query
+/// covers is dropped first, so filler that is rare everywhere but absent from
+/// the project cannot push out the project's own vocabulary.
+fn informative_query(conn: &Connection, raw: &str, scope: Option<&RecallQuery>) -> Result<String> {
     let bounded: String = raw.chars().take(1000).collect();
     let bounded = bounded
         .split_whitespace()
@@ -977,13 +1071,30 @@ fn informative_query(conn: &Connection, raw: &str) -> Result<String> {
     }
     let mut counts =
         conn.prepare_cached("SELECT count(*) FROM memory_fts WHERE memory_fts MATCH ?1")?;
+    // CROSS JOIN pins the full-text index as the outer loop.
+    let mut in_scope = String::from(
+        "SELECT 1 FROM memory_fts CROSS JOIN memories m ON m.rowid = memory_fts.rowid \
+         WHERE memory_fts MATCH ?1",
+    );
+    let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = vec![Box::new(String::new())];
+    if let Some(q) = scope {
+        append_filters(&mut in_scope, &mut params, q);
+    }
+    in_scope.push_str(" LIMIT 1");
+    let mut in_scope = conn.prepare_cached(&in_scope)?;
     let mut ranked = Vec::new();
     for (position, term) in terms.drain(..).enumerate() {
-        let count: i64 = counts.query_row([sanitise_fts_query(&term)], |r| r.get(0))?;
-        let identifier = term.chars().next().is_some_and(|c| c.is_alphabetic())
-            && (term.contains('_')
-                || term.contains("::")
-                || (term.contains('-') && term.chars().any(|c| c.is_ascii_digit())));
+        let safe = sanitise_fts_query(&term);
+        let count: i64 = counts.query_row([&safe], |r| r.get(0))?;
+        if scope.is_some() {
+            params[0] = Box::new(safe);
+            let refs: Vec<&dyn rusqlite::types::ToSql> =
+                params.iter().map(|p| p.as_ref()).collect();
+            if count == 0 || !in_scope.exists(refs.as_slice())? {
+                continue;
+            }
+        }
+        let identifier = is_identifier(&term);
         // A term that occurs nowhere matches nothing, identifier or not, so
         // it goes last; among the rest, identifiers lead, then rarer terms.
         ranked.push((count == 0, !identifier, count, position, term));
@@ -999,11 +1110,26 @@ fn informative_query(conn: &Connection, raw: &str) -> Result<String> {
 
 fn recall_fts(conn: &Connection, fts_query: &str, q: &RecallQuery) -> Result<RecallResult> {
     let safe_query = if q.match_any_term {
-        sanitise_fts_query_any(&informative_query(conn, fts_query)?)
+        let scoped = q.scoring.as_ref().is_none_or(|s| s.scoped_terms);
+        sanitise_fts_query_any(&informative_query(conn, fts_query, scoped.then_some(q))?)
     } else {
         sanitise_fts_query(fts_query)
     };
+    recall_fts_matching(conn, safe_query, q, &[])
+}
 
+/// Run an already sanitised full-text expression with `q`'s filters, scoring
+/// and paging, leaving out `exclude_kinds`.
+fn recall_fts_matching(
+    conn: &Connection,
+    safe_query: String,
+    q: &RecallQuery,
+    exclude_kinds: &[String],
+) -> Result<RecallResult> {
+    // CROSS JOIN pins the full-text index as the outer loop. Left to choose,
+    // the planner walks the namespace's rows for the count query below and
+    // restarts the match for each one: 1.4 s of a 1.45 s resume in a
+    // namespace of 7,500 memories.
     let mut sql = String::from(
         "SELECT m.id, m.namespace, m.kind, m.title, m.summary, m.content, m.tags_text,
                 m.source, m.source_ref, m.confidence, m.importance, m.metadata_json,
@@ -1011,7 +1137,7 @@ fn recall_fts(conn: &Connection, fts_query: &str, q: &RecallQuery) -> Result<Rec
                 m.last_accessed_at, m.access_count,
                 bm25(memory_fts, 4.0, 2.0, 1.0, 0.5) AS rank
          FROM memory_fts
-         JOIN memories m ON m.rowid = memory_fts.rowid
+         CROSS JOIN memories m ON m.rowid = memory_fts.rowid
          WHERE memory_fts MATCH ?1",
     );
 
@@ -1019,6 +1145,7 @@ fn recall_fts(conn: &Connection, fts_query: &str, q: &RecallQuery) -> Result<Rec
     param_values.push(Box::new(safe_query));
 
     append_filters(&mut sql, &mut param_values, q);
+    append_kind_exclusion(&mut sql, &mut param_values, exclude_kinds);
 
     // Count query (without LIMIT/OFFSET) — kept separate for FTS because
     // bm25() is incompatible with window functions like COUNT(*) OVER().
@@ -1030,12 +1157,13 @@ fn recall_fts(conn: &Connection, fts_query: &str, q: &RecallQuery) -> Result<Rec
     if let Some(scoring) = scoring_opt {
         let decay_idx = param_values.len() + 1;
         let boost_idx = param_values.len() + 2;
+        let importance = crate::scoring::importance_sql(scoring);
         sql.push_str(&format!(
             " ORDER BY \
              ((-bm25(memory_fts, 4.0, 2.0, 1.0, 0.5)) \
               * exp(-?{decay_idx} * (julianday('now') - julianday(COALESCE(m.last_accessed_at, m.updated_at)))) \
               * (1.0 + min(0.5, ?{boost_idx} * ln(1.0 + CAST(m.access_count AS REAL)))) \
-              * (CAST(m.importance AS REAL) / 3.0) \
+              * {importance} \
              ) DESC"
         ));
         param_values.push(Box::new(scoring.decay_lambda));
@@ -1118,11 +1246,12 @@ fn recall_recent(conn: &Connection, q: &RecallQuery) -> Result<RecallResult> {
     } else if let Some(scoring) = q.scoring.as_ref().filter(|s| s.decay_lambda > 0.0) {
         let decay_idx = param_values.len() + 1;
         let boost_idx = param_values.len() + 2;
+        let importance = crate::scoring::importance_sql(scoring);
         sql.push_str(&format!(
             " ORDER BY \
              (exp(-?{decay_idx} * (julianday('now') - julianday(COALESCE(m.last_accessed_at, m.updated_at)))) \
               * (1.0 + min(0.5, ?{boost_idx} * ln(1.0 + CAST(m.access_count AS REAL)))) \
-              * (CAST(m.importance AS REAL) / 3.0) \
+              * {importance} \
              ) DESC"
         ));
         param_values.push(Box::new(scoring.decay_lambda));
@@ -2003,6 +2132,41 @@ mod tests {
     }
 
     #[test]
+    fn importance_clamp_reaches_the_recall_ordering() {
+        let conn = crate::db::open_in_memory().unwrap();
+        let store = |content: &str, importance: i32| {
+            let input = serde_json::from_value::<RememberInput>(serde_json::json!({
+                "content": content, "importance": importance
+            }))
+            .unwrap();
+            remember(&conn, &input, &crate::settings::Settings::default()).unwrap()
+        };
+        // The better text match is rated low, the weaker one high.
+        let better = store("lease expiry", 1);
+        let weaker = store("lease expiry and a good deal of other words besides", 5);
+        let first = |clamp: f64, decay_lambda: f64| {
+            let query = RecallQuery {
+                query: Some("lease expiry".into()),
+                scoring: Some(crate::settings::ScoringConfig {
+                    decay_lambda,
+                    importance_clamp: clamp,
+                    ..Default::default()
+                }),
+                skip_access_tracking: true,
+                ..Default::default()
+            };
+            recall(&conn, &query).unwrap().items[0].memory.id.clone()
+        };
+        assert_eq!(first(3.0, 0.01), weaker.id, "full weight: importance wins");
+        assert_eq!(first(1.0, 0.01), better.id, "off: the text match wins");
+        assert_eq!(
+            first(3.0, 0.0),
+            better.id,
+            "decay off keeps plain BM25 order"
+        );
+    }
+
+    #[test]
     fn any_term_query_drops_stopwords_and_joins_with_or() {
         let q = sanitise_fts_query_any("why does the sidebar resize drag feel laggy");
         assert_eq!(
@@ -2040,7 +2204,7 @@ mod delivery_query_tests {
             serde_json::from_value(serde_json::json!({"content":"verifications cafe CLIO-123"})).unwrap();
         super::remember(&conn, &input, &crate::settings::Settings::default()).unwrap();
         conn.execute_batch("PRAGMA query_only = ON").unwrap();
-        let query = super::informative_query(&conn, "common ordinary generic frequent repeated broad general context request implementation memory system verification café /tmp/fix-123/code.rs 2026-11-14 CLIO-123").unwrap();
+        let query = super::informative_query(&conn, "common ordinary generic frequent repeated broad general context request implementation memory system verification café /tmp/fix-123/code.rs 2026-11-14 CLIO-123", None).unwrap();
         assert!(query.contains("verification"));
         assert!(query.contains("café"));
         assert!(query.contains("clio-123"));
@@ -2048,9 +2212,56 @@ mod delivery_query_tests {
         assert!(!query.contains("/"));
         assert!(!query.contains("2026-11-14"));
         assert_eq!(
-            super::informative_query(&conn, "/tmp/code.rs atomic").unwrap(),
+            super::informative_query(&conn, "/tmp/code.rs atomic", None).unwrap(),
             "atomic"
         );
+    }
+
+    #[test]
+    fn scoped_term_selection_ignores_filler_absent_from_the_project() {
+        let conn = crate::db::open_in_memory().unwrap();
+        let store = |namespace: &str, content: &str| {
+            let input = serde_json::from_value(
+                serde_json::json!({"namespace": namespace, "content": content}),
+            )
+            .unwrap();
+            super::remember(&conn, &input, &crate::settings::Settings::default()).unwrap()
+        };
+        // The project's own words are common in the project; the filler is
+        // rare across the store and absent from the project.
+        let lease = store("project:ledger", "leases never expire for agents");
+        store("project:ledger", "leases and expiry for agents");
+        let filler = "perhaps increasingly tightly certainly properly really seemingly \
+                      somewhat thought finding stuck allowed";
+        store("project:other", filler);
+        let prompt = format!("{filler} leases expire agents");
+        let prompt = prompt.as_str();
+        let scoped = crate::models::RecallQuery {
+            query: Some(prompt.into()),
+            namespace: Some("project:ledger".into()),
+            match_any_term: true,
+            scoring: Some(crate::settings::ScoringConfig::default()),
+            ..Default::default()
+        };
+        let mut kept: Vec<String> = super::informative_query(&conn, prompt, Some(&scoped))
+            .unwrap()
+            .split(' ')
+            .map(String::from)
+            .collect();
+        kept.sort();
+        assert_eq!(kept, ["agents", "expire", "leases"]);
+        let found = super::recall(&conn, &scoped).unwrap();
+        assert!(found.items.iter().any(|i| i.memory.id == lease.id));
+
+        // Counting across the whole store keeps the filler and loses the topic.
+        let unscoped = crate::models::RecallQuery {
+            scoring: Some(crate::settings::ScoringConfig {
+                scoped_terms: false,
+                ..Default::default()
+            }),
+            ..scoped
+        };
+        assert_eq!(super::recall(&conn, &unscoped).unwrap().total, 0);
     }
 
     #[test]
@@ -2081,7 +2292,7 @@ mod delivery_query_tests {
         )
         .unwrap();
         super::remember(&conn, &input, &crate::settings::Settings::default()).unwrap();
-        let query = super::informative_query(&conn, "common ordinary generic frequent repeated broad general context request implementation memory system rareword CLIO-123 touch_accessed").unwrap();
+        let query = super::informative_query(&conn, "common ordinary generic frequent repeated broad general context request implementation memory system rareword CLIO-123 touch_accessed", None).unwrap();
         assert!(query.contains("rareword"));
         assert!(query.contains("clio-123"));
         assert!(query.contains("touch_accessed"));
@@ -2089,10 +2300,10 @@ mod delivery_query_tests {
         // out the one prose term that does.
         let pasted = "request_id trace_id span_id build_id job_id run_id user_id org_id \
                       node_id pod_id shard_id lease_id batch_id rareword";
-        let query = super::informative_query(&conn, pasted).unwrap();
+        let query = super::informative_query(&conn, pasted, None).unwrap();
         assert!(query.contains("rareword"), "{query}");
         assert_eq!(
-            super::informative_query(&conn, "spool atomic rename").unwrap(),
+            super::informative_query(&conn, "spool atomic rename", None).unwrap(),
             "spool atomic rename"
         );
     }

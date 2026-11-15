@@ -17,6 +17,7 @@ pub mod embeddings;
 pub mod error;
 pub mod events;
 pub mod export;
+pub mod fusion;
 pub mod integrity;
 pub mod migrate;
 pub mod migrations;

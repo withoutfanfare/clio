@@ -355,6 +355,13 @@ pub fn create_backend(config: &EmbeddingConfig) -> Result<Box<dyn EmbeddingBacke
     }
 }
 
+/// Embed one text with a backend created for the call: the vector and the
+/// model that produced it. For one-shot callers with no backend loaded.
+pub fn embed_with_config(config: &EmbeddingConfig, text: &str) -> Result<(Vec<f32>, String)> {
+    let backend = create_backend(config)?;
+    Ok((backend.embed_one(text)?, backend.model_name().to_string()))
+}
+
 // ---------------------------------------------------------------------------
 // Passage construction
 // ---------------------------------------------------------------------------
@@ -531,6 +538,34 @@ pub fn semantic_search(
     exclude_expired: bool,
     limit: u32,
 ) -> Result<Vec<SemanticResult>> {
+    semantic_search_until(
+        conn,
+        query_embedding,
+        model_name,
+        namespace,
+        include_archived,
+        exclude_expired,
+        &[],
+        limit,
+        None,
+    )
+}
+
+/// [`semantic_search`] that leaves out `exclude_kinds` before the nearest
+/// `limit` are chosen, and stops with an error once `deadline` passes so a
+/// caller with a time budget can fall back to another result.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn semantic_search_until(
+    conn: &Connection,
+    query_embedding: &[f32],
+    model_name: &str,
+    namespace: Option<&str>,
+    include_archived: bool,
+    exclude_expired: bool,
+    exclude_kinds: &[String],
+    limit: u32,
+    deadline: Option<std::time::Instant>,
+) -> Result<Vec<SemanticResult>> {
     let filter = namespace.map_or(NamespaceFilter::All, NamespaceFilter::Exact);
     semantic_search_filtered(
         conn,
@@ -539,10 +574,13 @@ pub fn semantic_search(
         filter,
         include_archived,
         exclude_expired,
+        exclude_kinds,
         limit,
+        deadline,
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn semantic_search_filtered(
     conn: &Connection,
     query_embedding: &[f32],
@@ -550,7 +588,9 @@ fn semantic_search_filtered(
     namespace: NamespaceFilter<'_>,
     include_archived: bool,
     exclude_expired: bool,
+    exclude_kinds: &[String],
     limit: u32,
+    deadline: Option<std::time::Instant>,
 ) -> Result<Vec<SemanticResult>> {
     let mut sql = String::from(
         "SELECT e.memory_id, e.embedding
@@ -580,6 +620,7 @@ fn semantic_search_filtered(
             param_values.push(Box::new(ns.to_string()));
         }
     }
+    crate::repository::append_kind_exclusion(&mut sql, &mut param_values, exclude_kinds);
 
     let param_refs: Vec<&dyn rusqlite::types::ToSql> =
         param_values.iter().map(|p| p.as_ref()).collect();
@@ -596,6 +637,11 @@ fn semantic_search_filtered(
         std::collections::BinaryHeap::with_capacity(capacity + 1);
 
     for row_result in rows {
+        if deadline.is_some_and(|d| std::time::Instant::now() >= d) {
+            return Err(ClioError::Storage(
+                "semantic search overran its time budget".into(),
+            ));
+        }
         let (memory_id, blob) = row_result?;
         let embedding = decode_embedding(&blob)?;
         let similarity = cosine_similarity(query_embedding, &embedding)?;
@@ -857,6 +903,72 @@ fn fts_match_strengths(conn: &Connection, query: &str) -> std::collections::Hash
             (id, 0.2 + 0.8 * strength)
         })
         .collect()
+}
+
+// ---------------------------------------------------------------------------
+// Near-copies among chosen items
+// ---------------------------------------------------------------------------
+
+/// Remembers the items chosen so far and recognises a near-copy of one: the
+/// same title, or a stored embedding at least `threshold` similar. Uses the
+/// vectors already stored, so nothing is embedded. Vectors are compared only
+/// within one model and size: two models' spaces are unrelated even when
+/// their sizes agree, as all three local models' do. A memory with no stored
+/// vector is only ever a copy by title.
+pub(crate) struct NearCopies {
+    threshold: f64,
+    /// Each kept vector with the model that produced it.
+    vectors: Vec<(String, Vec<f32>)>,
+    titles: std::collections::HashSet<String>,
+}
+
+impl NearCopies {
+    pub(crate) fn new(threshold: f64) -> Self {
+        Self {
+            threshold,
+            vectors: Vec::new(),
+            titles: std::collections::HashSet::new(),
+        }
+    }
+
+    /// True when `memory` repeats an item already admitted. Otherwise it is
+    /// admitted and later candidates are compared with it.
+    pub(crate) fn repeats(&mut self, conn: &Connection, memory: &Memory) -> Result<bool> {
+        if self.threshold <= 0.0 {
+            return Ok(false);
+        }
+        let title = memory
+            .title
+            .as_deref()
+            .map(|t| t.trim().to_lowercase())
+            .filter(|t| !t.is_empty());
+        if title.as_ref().is_some_and(|t| self.titles.contains(t)) {
+            return Ok(true);
+        }
+        let stored: Option<(String, Vec<u8>)> = conn
+            .query_row(
+                "SELECT model, embedding FROM memory_embeddings WHERE memory_id = ?1",
+                params![memory.id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        let stored = match stored {
+            Some((model, blob)) => Some((model, decode_embedding(&blob)?)),
+            None => None,
+        };
+        if let Some((model, vector)) = &stored {
+            if self.vectors.iter().any(|(kept_model, kept)| {
+                kept_model == model
+                    && cosine_similarity(kept, vector)
+                        .is_ok_and(|similarity| similarity >= self.threshold)
+            }) {
+                return Ok(true);
+            }
+        }
+        self.titles.extend(title);
+        self.vectors.extend(stored);
+        Ok(false)
+    }
 }
 
 // ---------------------------------------------------------------------------

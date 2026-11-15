@@ -25,6 +25,55 @@ pub struct ScoringConfig {
     /// rather than its nearest neighbours. 0.0 = disabled.
     #[serde(default = "default_min_similarity")]
     pub min_similarity: f64,
+
+    /// Before a long query's any-word terms are chosen by rarity, drop the
+    /// words that match none of the memories the search covers. `false`
+    /// keeps them, as before.
+    #[serde(default = "default_true")]
+    pub scoped_terms: bool,
+
+    /// Merge any-word keyword search with semantic search by rank position
+    /// for a resume brief's relevant knowledge and for semantic search.
+    /// `false` keeps keywords alone in the brief and vectors alone in search.
+    #[serde(default = "default_true")]
+    pub fusion: bool,
+
+    /// Milliseconds the query embedding and vector scan may take before fused
+    /// retrieval returns the keyword result on its own. `0` = no limit.
+    #[serde(default = "default_fusion_budget_ms")]
+    pub fusion_budget_ms: u64,
+
+    /// Reciprocal rank fusion constant: an item scores `1 / (k + position)`
+    /// in each list that holds it. At the published 60 an item in both lists
+    /// outranks every item in only one, which buried each list's best
+    /// results under weak agreement; at 10 its first few results compete.
+    #[serde(default = "default_fusion_k")]
+    pub fusion_k: f64,
+
+    /// In fused retrieval, rank a keyword match that contains an identifier
+    /// the query names (a ticket id, a function name) ahead of everything
+    /// else: a memory that names it is about it.
+    #[serde(default = "default_true")]
+    pub identifiers_first: bool,
+
+    /// Fused retrieval returns nothing when the most similar memory it
+    /// searched is below this cosine similarity and no keyword match shares
+    /// three of the query's terms: nothing there is about the query, so
+    /// any-word matches would be noise. `0.0` = never stay quiet.
+    #[serde(default = "default_quiet_similarity")]
+    pub quiet_similarity: f64,
+
+    /// A resume brief skips a relevant-knowledge candidate whose stored
+    /// embedding is at least this similar to one already chosen (or whose
+    /// title is the same), and takes the next candidate. `0.0` = keep copies.
+    #[serde(default = "default_dedup_similarity")]
+    pub dedup_similarity: f64,
+
+    /// Bound on the importance multiplier (`importance / 3`, 0.33 to 1.67):
+    /// it is clamped to `1/x ..= x`. `3.0` leaves it whole, `1.25` narrows it
+    /// to 0.8–1.25, `1.0` ignores importance in ranking.
+    #[serde(default = "default_importance_clamp")]
+    pub importance_clamp: f64,
 }
 
 fn default_decay_lambda() -> f64 {
@@ -39,12 +88,40 @@ fn default_min_similarity() -> f64 {
     0.35
 }
 
+fn default_fusion_budget_ms() -> u64 {
+    1000
+}
+
+fn default_fusion_k() -> f64 {
+    10.0
+}
+
+fn default_quiet_similarity() -> f64 {
+    0.45
+}
+
+fn default_dedup_similarity() -> f64 {
+    0.85
+}
+
+fn default_importance_clamp() -> f64 {
+    3.0
+}
+
 impl Default for ScoringConfig {
     fn default() -> Self {
         Self {
             decay_lambda: default_decay_lambda(),
             access_boost_weight: default_access_boost(),
             min_similarity: default_min_similarity(),
+            scoped_terms: true,
+            fusion: true,
+            fusion_budget_ms: default_fusion_budget_ms(),
+            fusion_k: default_fusion_k(),
+            identifiers_first: true,
+            quiet_similarity: default_quiet_similarity(),
+            dedup_similarity: default_dedup_similarity(),
+            importance_clamp: default_importance_clamp(),
         }
     }
 }
