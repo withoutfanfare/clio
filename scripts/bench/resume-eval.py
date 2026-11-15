@@ -347,17 +347,22 @@ class McpServer:
         self.proc = subprocess.Popen([binary], env=child_env(work), cwd=work, text=True,
                                      stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
         self.next_id, self.timeout = 0, timeout
-        self.rpc("initialize", {"protocolVersion": "2024-11-05", "capabilities": {},
-                                "clientInfo": {"name": "resume-eval", "version": "0"}})
-        self.send({"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}})
+        try:
+            self.rpc("initialize", {"protocolVersion": "2024-11-05", "capabilities": {},
+                                    "clientInfo": {"name": "resume-eval", "version": "0"}})
+            self.send({"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}})
+        except Exception:
+            self.close()  # a failed handshake must not leave the child holding the work copy
+            raise
 
     def send(self, message):
         self.proc.stdin.write(json.dumps(message) + "\n")
         self.proc.stdin.flush()
 
-    def rpc(self, method, params):
+    def rpc(self, method, params, timeout=None):
         self.next_id += 1
-        watchdog = threading.Timer(self.timeout, self.proc.kill)  # a hung server must not hang the run
+        # a hung server must not hang the run
+        watchdog = threading.Timer(timeout or self.timeout, self.proc.kill)
         watchdog.start()
         try:
             self.send({"jsonrpc": "2.0", "id": self.next_id, "method": method, "params": params})
@@ -376,6 +381,17 @@ class McpServer:
         self.proc.wait()
 
 
+CARD_ID = re.compile(r"(?m)^`(" + UUID.pattern + r")` ·")
+
+
+def result_ids(text):
+    try:
+        items = json.loads(text).get("items", [])
+    except (ValueError, AttributeError):
+        return CARD_ID.findall(text)
+    return [item.get("id") or (item.get("memory") or {}).get("id") for item in items if isinstance(item, dict)]
+
+
 def run_mcp(arm, prompt, work):
     query = prepare_query(arm, prompt["prompt"])
     # `_clio_namespace` is what the local bridge sends after resolving the
@@ -385,14 +401,17 @@ def run_mcp(arm, prompt, work):
     arguments = {key: fill.get(value, value) if isinstance(value, str) else value for key, value in template.items()}
     result = {"ok": False, "error": None, "ms": 0.0, "query_chars": len(query), "text": "", "items": [],
               "matched_chars": 0, "other_chars": 0, "start_items": 0, "start_chars": 0}
-    server = None
+    server = began = None
     try:
-        server = McpServer(arm["mcp"], work)
+        server = McpServer(arm["mcp"], work)  # start-up keeps its own allowance and is not timed
         began = time.monotonic()
-        reply = server.rpc("tools/call", {"name": arm["tool"], "arguments": arguments})
-        result["ms"] = (time.monotonic() - began) * 1000  # the call only; server start-up is not counted
+        # The same 8 s the hook path gets, so a slow tool call fails here too.
+        reply = server.rpc("tools/call", {"name": arm["tool"], "arguments": arguments}, timeout=8)
+        result["ms"] = (time.monotonic() - began) * 1000  # the call only
     except Exception as exc:  # noqa: BLE001 - any failure is a scored failure, never a dropped sample
         result["error"] = str(exc)
+        if began is not None:
+            result["ms"] = (time.monotonic() - began) * 1000
         return result
     finally:
         if server:
@@ -404,9 +423,9 @@ def run_mcp(arm, prompt, work):
         result["text"] = text  # an error message is still characters the model has to read
         result["matched_chars"] = len(text)
         return result
-    # Anything shaped like an id, kept only if it is a memory: previews quote
-    # session and worktree ids too.
-    found = list(dict.fromkeys(UUID.findall(text)))
+    # Ids come from the result records only: the card's own id line, or the
+    # items of a JSON reply. A title or excerpt may quote another memory's id.
+    found = list(dict.fromkeys(result_ids(text)))
     conn = sqlite3.connect(os.path.join(work, "memory.db"))
     real = {row[0] for row in conn.execute(
         f"select id from memories where id in ({','.join('?' * len(found))})", found)}
@@ -579,6 +598,9 @@ def load_results(directory):
             {row["prompt_id"]: row for row in load_jsonl(os.path.join(directory, f"{arm['name']}.run{run}.jsonl"))}
             for run in range(1, meta["runs"] + 1)
         ]
+        for number, run in enumerate(results[arm["name"]], 1):
+            if len(run) != meta["prompts"]:
+                die(f"{arm['name']}.run{number}.jsonl has {len(run)} of {meta['prompts']} prompts; the run is incomplete")
     return meta, results
 
 
@@ -745,9 +767,6 @@ def cmd_run(args):
         "binaries": {b: sha256(b) for b in sorted({arm.get("clio") or arm.get("mcp") for arm in arms})},
         "prompts": len(prompts),
     }
-    with open(os.path.join(directory, "meta.json"), "w") as handle:
-        json.dump(meta, handle, indent=1)
-
     for run in range(1, args.runs + 1):
         for arm in arms:
             path = os.path.join(directory, f"{arm['name']}.run{run}.jsonl")
@@ -763,6 +782,9 @@ def cmd_run(args):
                     handle.write(json.dumps(row) + "\n")
                     print(f"\rrun {run}/{args.runs}  {arm['name']}  {index}/{len(prompts)}", end="", file=sys.stderr)
             print(file=sys.stderr)
+    # Written last: an aborted run has no meta.json, so it never becomes "the latest" results.
+    with open(os.path.join(directory, "meta.json"), "w") as handle:
+        json.dump(meta, handle, indent=1)
     report(private, directory, args.dup_cosine)
 
 
@@ -793,7 +815,7 @@ def cmd_unjudged(args):
         for (prompt_id, memory_id), arms in sorted(pending.items()):
             handle.write(json.dumps({
                 "prompt_id": prompt_id, "memory_id": memory_id, "label": "",
-                "prompt": " ".join(prompts[prompt_id]["prompt"].split())[:400],
+                "prompt": " ".join(prompts[prompt_id]["prompt"].split()),
                 **corpus.describe(memory_id), "arms": sorted(arms),
             }, ensure_ascii=False) + "\n")
     print(f"{len(pending)} unjudged (prompt, memory) pairs written to {path}")
@@ -831,9 +853,12 @@ def cmd_prompts(args):
                 if not os.path.isdir(cwd) or os.path.realpath(cwd).startswith(temp_roots):
                     break
                 if cwd not in namespaces:
+                    os.makedirs(os.path.join(private, "work"), exist_ok=True)
                     done = subprocess.run(  # `context` only reads cwd; the path keeps it off the live store regardless
                         [args.clio, "--db-path", os.path.join(private, "work", "unused.db"), "--local", "--json", "context"],
-                        cwd=cwd, capture_output=True, text=True, env={"PATH": os.environ.get("PATH", "")})
+                        cwd=cwd, capture_output=True, text=True, timeout=30, env={"PATH": os.environ.get("PATH", "")})
+                    if done.returncode != 0:  # never a silent "0 candidates"
+                        print(f"skipped {cwd}: `clio context` failed: {done.stderr.strip()[:200]}", file=sys.stderr)
                     namespaces[cwd] = json.loads(done.stdout)["namespace"] if done.returncode == 0 else None
                 if namespaces[cwd]:
                     candidates.append({
@@ -912,6 +937,7 @@ def cmd_selftest(_args):
 
 
 def main():
+    os.umask(0o077)  # results, candidates and unjudged files hold private text
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     commands = parser.add_subparsers(dest="command", required=True)
 
