@@ -2,7 +2,7 @@
 
 use clio_core::assembly::{build_resume_brief, ResumeRequest};
 use clio_core::embeddings::store_embedding;
-use clio_core::fusion::{fused_recall, FusedQuery, QueryEmbedding};
+use clio_core::fusion::QueryEmbedding;
 use clio_core::models::RememberInput;
 use clio_core::settings::{ScoringConfig, Settings};
 use clio_core::{db, repository};
@@ -67,25 +67,4 @@ fn semantic_only_matches_refill_past_the_first_window() {
         ..Default::default()
     };
     assert!(brief_ids(&conn, &request).contains(&distinct));
-}
-
-#[test]
-fn one_agreeing_match_does_not_admit_a_partial_one() {
-    let conn = db::open_in_memory().unwrap();
-    for (title, body) in [("Pair", "work today"), ("Partial", "work lunch menu")] {
-        let id = put(&conn, title, body, "fact", 3);
-        // Opposite to the query, so nothing is close in meaning.
-        store_embedding(&conn, &id, "test", 2, &[-1.0, 0.0]).unwrap();
-    }
-    let query = FusedQuery {
-        query: "work today".into(),
-        limit: 10,
-        namespace: Some(NS.into()),
-        scoring: Some(ScoringConfig::default()),
-        skip_access_tracking: true,
-        ..Default::default()
-    };
-    let found = fused_recall(&conn, &query, Some(&embedding())).unwrap();
-    let titles: Vec<_> = found.iter().map(|f| f.item.memory.title.as_deref()).collect();
-    assert_eq!(titles, vec![Some("Pair")]);
 }

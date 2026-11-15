@@ -50,8 +50,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   shares three of its chosen terms (all of them, when it has fewer), instead
   of returning whatever shares a word with it. A memory that contains an
   identifier the query names is never quietened, and `0` switches the rule
-  off. When some keyword matches agree and others do not, only the agreeing
-  ones are returned. A prompt brief with little or nothing matched no longer hands the
+  off. A prompt brief with little or nothing matched no longer hands the
   unused slots to constraints, decisions and receipts; only follow-ups may
   take them.
 - A resume brief no longer spends two Relevant knowledge slots on one fact: a
