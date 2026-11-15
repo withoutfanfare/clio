@@ -959,7 +959,7 @@ mod tests {
         for cursor in [30, 40] {
             let result =
                 store_checkpoint(&conn, &request(cursor), &[suggested()], &settings).unwrap();
-            assert_eq!(result.queued_review_ids, [proposal.clone()]);
+            assert_eq!(result.queued_review_ids, std::slice::from_ref(&proposal));
         }
         assert_eq!(review_rows(), 1);
         let item = crate::review::get_review(&conn, &proposal).unwrap();
