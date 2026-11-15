@@ -62,6 +62,11 @@ repeat it with an appropriate `--batch-size` until every memory is refreshed.
 | `model` | string | `"gpt-4o-mini"` | Classification model |
 | `review_threshold` | float? | `null` | Confidence below this routes to review queue; `null` disables review |
 
+Two capture limits are fixed in code and are not settings: one distillation
+keeps at most 3 knowledge items plus a receipt (`capture::MAX_KNOWLEDGE_ATOMS`),
+and a memory the distiller marks as a point-in-time status expires 30 days
+after it is stored (`capture::STATUS_LIFETIME_DAYS`).
+
 ## API key resolution
 
 Every setting that takes an `api_key` resolves it in this order, using the first
