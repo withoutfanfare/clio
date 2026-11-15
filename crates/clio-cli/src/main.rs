@@ -1317,6 +1317,9 @@ fn main() {
         eprintln!("Error: {err}");
         process::exit(1);
     }
+    // A query embedding that overran its budget must not take the exit code
+    // down with it.
+    clio_core::fusion::finish_one_shot();
 }
 
 fn run_with_routing(cli: Cli, raw_args: &[OsString]) -> Result<(), Box<dyn std::error::Error>> {

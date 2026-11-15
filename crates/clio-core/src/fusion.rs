@@ -22,6 +22,48 @@ const POOL: u32 = 30;
 /// each leg that returned it. 60 is the value the method was published with.
 const RRF_K: f64 = 60.0;
 
+/// Embedding threads still running, including any that overran their budget.
+static EMBEDDING: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Counts one embedding thread for as long as it lives, panics included.
+struct Embedding;
+
+impl Embedding {
+    fn start() -> Self {
+        EMBEDDING.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Self
+    }
+}
+
+impl Drop for Embedding {
+    fn drop(&mut self) {
+        EMBEDDING.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// End a one-shot process that may have left an embedding behind.
+///
+/// A query embedding that overran its budget is still loading or running the
+/// model on its own thread. Returning from `main` then tears the embedding
+/// runtime down underneath it, and the process dies with a segmentation fault
+/// after printing a perfectly good answer (9 of 30 runs when forced). With
+/// such a thread alive this flushes standard output and exits successfully at
+/// once, skipping that teardown. Otherwise it does nothing.
+pub fn finish_one_shot() {
+    if EMBEDDING.load(std::sync::atomic::Ordering::SeqCst) == 0 {
+        return;
+    }
+    use std::io::Write;
+    let _ = std::io::stdout().flush();
+    let _ = std::io::stderr().flush();
+    #[cfg(unix)]
+    // SAFETY: `_exit` only ends the process. Every command value has been
+    // dropped by the time a caller reaches the end of `main`.
+    unsafe {
+        libc::_exit(0)
+    }
+}
+
 /// A query vector, the model that produced it, and when the semantic leg must
 /// have finished by.
 #[derive(Debug, Clone)]
@@ -46,7 +88,8 @@ pub struct FusedItem {
 /// `None` means "use keywords alone": fusion is off, the query is empty, or
 /// `embed` failed or overran the budget. `embed` runs on its own thread so a
 /// slow model load or provider call cannot hold the caller; when it overruns
-/// it is left to finish unobserved.
+/// it is left to finish unobserved, so a one-shot caller must end with
+/// [`finish_one_shot`].
 pub fn query_embedding<F>(
     scoring: &ScoringConfig,
     query: Option<&str>,
@@ -62,7 +105,9 @@ where
     let budget = Duration::from_millis(scoring.fusion_budget_ms);
     let deadline = (scoring.fusion_budget_ms > 0).then(|| Instant::now() + budget);
     let (tx, rx) = std::sync::mpsc::channel();
+    let running = Embedding::start();
     std::thread::spawn(move || {
+        let _running = running;
         let _ = tx.send(embed(&query));
     });
     let embedded = if deadline.is_some() {
