@@ -685,6 +685,14 @@ pub fn acknowledge_resume(conn: &Connection, brief: &ResumeBrief, ids: &[String]
             )));
         }
         for delivery in deliveries {
+            // A receipt for a follow-up that has changed since is stale: the
+            // new state was never shown, so it must not count as a delivery.
+            if delivery.attention_updated_at.as_ref().is_some_and(|shown| {
+                crate::attention::resolve_attention(conn, &delivery.memory_id)
+                    .is_ok_and(|current| &current.updated_at != shown)
+            }) {
+                continue;
+            }
             let mut event = match delivery_event(conn, delivery) {
                 Ok(event) => event,
                 Err(ClioError::NotFound(_)) => continue,
@@ -839,7 +847,13 @@ fn build_resume(conn: &Connection, request: &ResumeRequest, record: bool) -> Res
         surfaced.push((entry.item, entry.reason.as_str().to_string()));
     }
 
-    needs_attention.truncate(3);
+    // Without a session nothing rotates the list, so a cap would hide the
+    // rest for good. `surfaced` is cut with it: an item dropped here must not
+    // be recorded as shown if it reappears as task knowledge.
+    if request.session_id.is_some() {
+        needs_attention.truncate(3);
+        surfaced.truncate(3);
+    }
 
     // 2. Blocked / waiting items (open, waiting_on set, not already included).
     // Undated waits nobody has touched in weeks are stale, not blocking.
@@ -975,11 +989,13 @@ fn build_resume(conn: &Connection, request: &ResumeRequest, record: bool) -> Res
     })
     .collect::<Vec<_>>();
 
-    // Keep attention reasons when the same memory also matches the task.
+    // Keep attention reasons when the same memory also matches the task, and
+    // keep a matching constraint in its own section, which has a reserved slot.
     knowledge.retain(|k| {
         !needs_attention
             .iter()
             .chain(waiting.iter())
+            .chain(constraints.iter())
             .any(|a| a.memory_id == k.memory_id)
     });
     if !has_query {
@@ -1015,8 +1031,10 @@ fn build_resume(conn: &Connection, request: &ResumeRequest, record: bool) -> Res
                     .iter()
                     .filter(|(a, _)| a.memory_id == item.memory_id)
                     .collect();
+                // The revision selected for the brief, not a fresh read: an
+                // edit made since must not be acknowledged as shown.
                 let memory_updated_at =
-                    Some(repository::get_raw(conn, &item.memory_id)?.updated_at);
+                    Some(item.updated_at.clone().unwrap_or_else(|| item.created_at.clone()));
                 let deliveries: Vec<_> = if attention.is_empty() {
                     vec![ResumeDelivery {
                         memory_id: item.memory_id.clone(),
@@ -1974,16 +1992,81 @@ mod tests {
         )
         .unwrap();
         let mut request = resume_request(ns);
+        // Without a session nothing rotates the list, so nothing is cut.
         let brief = build_resume_brief(&conn, &request).unwrap();
+        assert_eq!(section(&brief, "Needs attention").unwrap().items.len(), 4);
+        request.session_id = Some("cap-session".into());
+        let brief = build_resume_brief_unrecorded(&conn, &request).unwrap();
         let tasks = &section(&brief, "Needs attention").unwrap().items;
         assert_eq!(tasks.len(), 3);
         assert!(tasks[0].reason.contains("2026-07-01"));
+        request.session_id = None;
         request.max_items = 1;
         let brief = build_resume_brief(&conn, &request).unwrap();
         let item = &brief.sections[0].items[0];
         assert_eq!(item.memory_id, receipt.id);
         assert_eq!(item.created_at, "2025-01-01T00:00:00Z");
         assert!(item.updated_at.is_some());
+    }
+
+    #[test]
+    fn followup_cut_by_the_cap_is_not_recorded_as_shown() {
+        let conn = test_db();
+        let ns = "project:resume";
+        for day in [1, 2, 3, 4] {
+            open_action(
+                &conn,
+                ns,
+                &format!("Renewal task {day}"),
+                Some(&format!("2026-07-0{day}T00:00:00Z")),
+            );
+        }
+        let mut request = resume_request(ns);
+        request.session_id = Some("cap-session".into());
+        request.query = Some("renewal task".into());
+        let first = build_resume_brief(&conn, &request).unwrap();
+        assert_eq!(section(&first, "Needs attention").unwrap().items.len(), 3);
+        // The fourth was cut and shown only as task knowledge, so it is still
+        // due in this session's next brief.
+        let second = build_resume_brief(&conn, &request).unwrap();
+        let due = &section(&second, "Needs attention").unwrap().items;
+        assert!(due.iter().any(|i| i.reason.contains("2026-07-04")), "{due:?}");
+    }
+
+    #[test]
+    fn matching_constraint_keeps_its_reserved_slot() {
+        let conn = test_db();
+        let ns = "project:resume";
+        make_memory(&conn, ns, "fact", "The spool is durable across restarts");
+        let constraint = make_memory(&conn, ns, "constraint", "Keep the spool on local disk");
+        let mut request = resume_request(ns);
+        request.query = Some("spool".into());
+        request.max_items = 1;
+        let brief = build_resume_brief(&conn, &request).unwrap();
+        let kept = &section(&brief, "Active constraints").unwrap().items;
+        assert_eq!(kept[0].memory_id, constraint.id);
+    }
+
+    #[test]
+    fn stale_followup_receipt_is_not_recorded() {
+        let conn = test_db();
+        let ns = "project:resume";
+        let task = open_action(&conn, ns, "Dated task", Some("2026-07-01T00:00:00Z"));
+        let mut request = resume_request(ns);
+        request.session_id = Some("late-session".into());
+        let brief = build_resume_brief_unrecorded(&conn, &request).unwrap();
+        // The receipt names the revision that was selected.
+        assert_eq!(
+            brief.pending_delivery[0].memory_updated_at.as_deref(),
+            Some(task.updated_at.as_str())
+        );
+        conn.execute(
+            "UPDATE attention_items SET updated_at = '2030-01-01T00:00:00Z' WHERE memory_id = ?1",
+            [&task.id],
+        )
+        .unwrap();
+        acknowledge_resume(&conn, &brief, std::slice::from_ref(&task.id)).unwrap();
+        assert_eq!(surfaced_count(&conn, &task.id), 0);
     }
 
     #[test]

@@ -318,9 +318,12 @@ pub fn update(
         }
 
         let input = RememberInput {
+            // Canonical, as `remember` stores it, so an update cannot move a
+            // memory to a bare name that recall will not look under.
             namespace: patch
                 .namespace
-                .clone()
+                .as_deref()
+                .map(crate::context::canonical_namespace)
                 .unwrap_or_else(|| existing.namespace.clone()),
             kind: patch.kind.clone().unwrap_or_else(|| existing.kind.clone()),
             title: patch.title.clone().unwrap_or(existing.title),
@@ -594,7 +597,9 @@ pub fn recall_ordinary(
     let widened = result.total == 0 && !query.match_any_term
         && query.query.as_deref().is_some_and(|q| q.split_whitespace().nth(1).is_some());
     if widened {
-        Ok((run(&RecallQuery { match_any_term: true, ..query.clone() })?, true))
+        // Loose any-word matches are not evidence of use; counting them
+        // would feed junk into the access signal that ranking reads.
+        Ok((run(&RecallQuery { match_any_term: true, skip_access_tracking: true, ..query.clone() })?, true))
     } else {
         Ok((result, false))
     }
@@ -979,19 +984,15 @@ fn informative_query(conn: &Connection, raw: &str) -> Result<String> {
             && (term.contains('_')
                 || term.contains("::")
                 || (term.contains('-') && term.chars().any(|c| c.is_ascii_digit())));
-        // Unknown prose is not rare evidence; known identifiers remain useful.
-        ranked.push((
-            !identifier,
-            if count == 0 { i64::MAX } else { count },
-            position,
-            term,
-        ));
+        // A term that occurs nowhere matches nothing, identifier or not, so
+        // it goes last; among the rest, identifiers lead, then rarer terms.
+        ranked.push((count == 0, !identifier, count, position, term));
     }
-    ranked.sort_by(|a, b| (&a.0, &a.1, &a.2).cmp(&(&b.0, &b.1, &b.2)));
+    ranked.sort_by(|a, b| (&a.0, &a.1, &a.2, &a.3).cmp(&(&b.0, &b.1, &b.2, &b.3)));
     Ok(ranked
         .into_iter()
         .take(12)
-        .map(|r| r.3)
+        .map(|r| r.4)
         .collect::<Vec<_>>()
         .join(" "))
 }
@@ -1992,7 +1993,7 @@ mod delivery_query_tests {
             super::remember(&conn, &input, &crate::settings::Settings::default()).unwrap();
         }
         let input =
-            serde_json::from_value(serde_json::json!({"content":"verifications cafe"})).unwrap();
+            serde_json::from_value(serde_json::json!({"content":"verifications cafe CLIO-123"})).unwrap();
         super::remember(&conn, &input, &crate::settings::Settings::default()).unwrap();
         conn.execute_batch("PRAGMA query_only = ON").unwrap();
         let query = super::informative_query(&conn, "common ordinary generic frequent repeated broad general context request implementation memory system verification café /tmp/fix-123/code.rs 2026-11-14 CLIO-123").unwrap();
@@ -2031,12 +2032,21 @@ mod delivery_query_tests {
             let input = serde_json::from_value(serde_json::json!({"content":format!("common ordinary generic frequent repeated broad general context request implementation memory system {i}")})).unwrap();
             super::remember(&conn, &input, &crate::settings::Settings::default()).unwrap();
         }
-        let input = serde_json::from_value(serde_json::json!({"content":"rareword"})).unwrap();
+        let input = serde_json::from_value(
+            serde_json::json!({"content":"rareword CLIO-123 touch_accessed"}),
+        )
+        .unwrap();
         super::remember(&conn, &input, &crate::settings::Settings::default()).unwrap();
         let query = super::informative_query(&conn, "common ordinary generic frequent repeated broad general context request implementation memory system rareword CLIO-123 touch_accessed").unwrap();
         assert!(query.contains("rareword"));
         assert!(query.contains("clio-123"));
         assert!(query.contains("touch_accessed"));
+        // A pasted log full of identifiers that occur nowhere must not push
+        // out the one prose term that does.
+        let pasted = "request_id trace_id span_id build_id job_id run_id user_id org_id \
+                      node_id pod_id shard_id lease_id batch_id rareword";
+        let query = super::informative_query(&conn, pasted).unwrap();
+        assert!(query.contains("rareword"), "{query}");
         assert_eq!(
             super::informative_query(&conn, "spool atomic rename").unwrap(),
             "spool atomic rename"
