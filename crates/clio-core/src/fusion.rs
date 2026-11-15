@@ -73,14 +73,12 @@ pub struct QueryEmbedding {
     pub deadline: Option<Instant>,
 }
 
-/// One fused result with the evidence it was chosen on.
+/// One fused result and whether the keyword leg found it.
 #[derive(Debug, Clone)]
 pub struct FusedItem {
     pub item: RecallItem,
-    /// Found by the keyword leg.
+    /// Found by the keyword leg; otherwise by meaning alone.
     pub keyword: bool,
-    /// Raw cosine similarity when the semantic leg found it.
-    pub similarity: Option<f64>,
 }
 
 /// Embed `query` for fused retrieval within `scoring.fusion_budget_ms`.
@@ -186,12 +184,11 @@ pub fn fused_recall(
                 FusedItem {
                     item,
                     keyword: true,
-                    similarity: None,
                 },
             ),
         );
     }
-    for (position, (memory, similarity)) in semantic.into_iter().enumerate() {
+    for (position, memory) in semantic.into_iter().enumerate() {
         let score = 1.0 / (RRF_K + position as f64 + 1.0);
         let entry = fused.entry(memory.id.clone()).or_insert_with(|| {
             (
@@ -204,12 +201,10 @@ pub fn fused_recall(
                         link_context: Vec::new(),
                     },
                     keyword: false,
-                    similarity: None,
                 },
             )
         });
         entry.0 += score;
-        entry.1.similarity = Some(similarity);
     }
 
     let mut merged: Vec<(f64, FusedItem)> = fused.into_values().collect();
@@ -280,9 +275,9 @@ pub fn search(
     Ok(fused.into_iter().map(|f| f.item).collect())
 }
 
-/// Memories with their cosine similarity, and the similarity of the nearest
+/// The semantic leg's memories, best first, and the similarity of the nearest
 /// memory compared.
-type SemanticLeg = (Vec<(Memory, f64)>, Option<f64>);
+type SemanticLeg = (Vec<Memory>, Option<f64>);
 
 /// The semantic leg: nearest memories above the similarity floor, ordered as
 /// semantic search orders them (cosine times the composite multiplier), and
@@ -317,13 +312,13 @@ fn semantic_leg(
         .collect();
     let ids: Vec<String> = hits.into_iter().map(|h| h.memory_id).collect();
     let now = time::OffsetDateTime::now_utc();
-    let mut scored: Vec<(f64, Memory, f64)> = crate::repository::get_many_pub(conn, &ids)?
+    let mut scored: Vec<(f64, Memory)> = crate::repository::get_many_pub(conn, &ids)?
         .into_iter()
         .map(|memory| {
             let cosine = similarity.get(&memory.id).copied().unwrap_or(0.0);
             let multiplier =
                 scoring.map_or(1.0, |s| crate::scoring::composite_multiplier(&memory, s, now));
-            (cosine * multiplier, memory, cosine)
+            (cosine * multiplier, memory)
         })
         .collect();
     scored.sort_by(|a, b| {
@@ -333,7 +328,7 @@ fn semantic_leg(
     });
     let ordered = scored
         .into_iter()
-        .map(|(_, memory, cosine)| (memory, cosine))
+        .map(|(_, memory)| memory)
         .collect();
     Ok((ordered, nearest))
 }
@@ -394,7 +389,7 @@ mod tests {
         assert!(ids.contains(&named.id.as_str()) && ids.contains(&meant.id.as_str()));
         assert_eq!(ids.len(), 3, "the unrelated note is below the similarity floor");
         let meant_item = fused.iter().find(|f| f.item.memory.id == meant.id).unwrap();
-        assert!(!meant_item.keyword && meant_item.similarity.is_some());
+        assert!(!meant_item.keyword);
 
         // No vector: exactly the keyword result, no error.
         let keywords = fused_recall(&conn, &q, None).unwrap();
