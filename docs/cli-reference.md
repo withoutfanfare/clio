@@ -620,3 +620,5 @@ Administrative exports and query-less browsing do not update access counts or la
 Resume gives task-matched knowledge first claim on prompt brief slots, reserving a small allowance for due follow-ups and blockers. Follow-ups are capped at three, soonest due first. Session-start briefs reserve a slot for the newest receipt. Constraints and decisions already surfaced in the session are excluded before allocation; filtered receipts and stale consolidation do not consume knowledge slots. Items include `created_at` and, when different, `updated_at`.
 
 Any-term task search considers up to 1,000 Unicode characters and selects at most 12 terms. Ticket/code identifiers take priority, followed by known corpus words with the lowest document counts. Queries with at most 12 meaningful terms retain their existing matching behaviour.
+
+Effectiveness attributes new surfaced events to the memory namespace and resolves older events with missing namespaces through their memory record, without rewriting the ledger.
