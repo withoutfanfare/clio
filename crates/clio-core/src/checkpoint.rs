@@ -199,6 +199,7 @@ pub fn store_checkpoint(
             if let Some(attention) = &memory.attention {
                 meta.insert("attention".into(), serde_json::to_value(attention)?);
             }
+            memory.stamp_expiry(&mut meta);
             let mut metadata = serde_json::Value::Object(meta);
 
             // Unique provenance per atom, sharing the checkpoint key as the
@@ -216,36 +217,47 @@ pub fn store_checkpoint(
                 // Even when the content matches an existing memory, the
                 // suggested open loop itself still needs review. Stamp the
                 // canonical memory into the metadata so approval attaches
-                // attention to it instead of storing a duplicate row — the
-                // follow-up is never silently dropped either way.
-                if let Some(existing_id) =
-                    crate::repository::find_content_duplicate(conn, &namespace, &memory.content)?
-                {
+                // attention to it instead of storing a duplicate row.
+                let live_twin =
+                    crate::repository::find_content_duplicate(conn, &namespace, &memory.content)?;
+                if let Some(existing_id) = &live_twin {
                     if let Some(object) = metadata.as_object_mut() {
                         object.insert("canonical_memory_id".into(), serde_json::json!(existing_id));
                     }
                 }
-                let review_item = crate::review::queue_for_review(
-                    conn,
-                    &crate::review::ReviewInput {
-                        content: memory.content.clone(),
-                        suggested_namespace: namespace,
-                        suggested_kind: classification.kind,
-                        suggested_title: Some(classification.title),
-                        suggested_summary: if classification.summary.is_empty() {
-                            None
-                        } else {
-                            Some(classification.summary)
-                        },
-                        suggested_tags: classification.tags,
-                        suggested_importance: classification.importance,
-                        suggested_confidence: Some(classification.confidence),
-                        source_route: Some(req.source.clone()),
-                        source_ref: Some(item_ref),
-                        metadata,
+                let input = crate::review::ReviewInput {
+                    content: memory.content.clone(),
+                    suggested_namespace: namespace,
+                    suggested_kind: classification.kind,
+                    suggested_title: Some(classification.title),
+                    suggested_summary: if classification.summary.is_empty() {
+                        None
+                    } else {
+                        Some(classification.summary)
                     },
-                )?;
-                queued_review_ids.push(review_item.id);
+                    suggested_tags: classification.tags,
+                    suggested_importance: classification.importance,
+                    suggested_confidence: Some(classification.confidence),
+                    source_route: Some(req.source.clone()),
+                    source_ref: Some(item_ref),
+                    metadata,
+                };
+                // With no live twin, an archived one makes this a revival
+                // proposal like any other capture: one open item per hidden
+                // memory, and none once a person has rejected it.
+                let archived_twin = match live_twin {
+                    Some(_) => None,
+                    None => crate::capture::propose_revival(conn, &input)?,
+                };
+                match archived_twin {
+                    Some(crate::capture::ArchivedTwin::Proposed(item)) => {
+                        queued_review_ids.push(item.id)
+                    }
+                    Some(crate::capture::ArchivedTwin::Rejected(_)) => {}
+                    None => {
+                        queued_review_ids.push(crate::review::queue_for_review(conn, &input)?.id)
+                    }
+                }
                 continue;
             }
 
@@ -261,6 +273,9 @@ pub fn store_checkpoint(
                 false, // embed after commit, never inside the transaction
             )?;
             match outcome {
+                // Content of an archived memory whose revival a person
+                // rejected: the sighting was recorded and nothing else is.
+                CaptureResult::Stored(m) if m.archived_at.is_some() => {}
                 CaptureResult::Stored(m) => {
                     // Explicit user commitments open attention atomically.
                     if let Some(attention) = &memory.attention {
@@ -410,6 +425,80 @@ pub fn embed_checkpoint_memories(
     }
 }
 
+/// Most titles from earlier deltas of a session shown to the distiller.
+const PRIOR_TITLES_LIMIT: u32 = 20;
+/// Longest title shown. With the limit above, the added prompt text stays
+/// under about 1,800 characters however long the session runs.
+const PRIOR_TITLE_CHARS: usize = 80;
+
+/// Prefix `digest` with the titles already stored from earlier deltas of the
+/// same session, so the distiller does not store the same fact again in new
+/// words. A long session is distilled one slice at a time and each slice
+/// would otherwise be judged with no sight of the others.
+///
+/// Only deltas with a lower cursor than this request count as earlier, so an
+/// older delta recovered late is not shown titles from what came after it.
+/// The list is a hint, not a complete record: a fact this session restated
+/// that was deduplicated onto another session's memory, or that is waiting
+/// in the review queue, is not in it.
+///
+/// Returns the digest untouched when the session has stored nothing yet, and
+/// on any lookup failure: this is a hint, never a reason to lose a capture.
+pub fn digest_with_prior_titles(
+    conn: &Connection,
+    req: &CheckpointRequest,
+    digest: &str,
+) -> String {
+    // A session's memories share the `{session_id}@` provenance prefix. The
+    // range is that prefix as an index scan: `A` is the character after `@`.
+    // The cursor follows the `@`; casting what is left reads its digits.
+    let titles = (|| -> Result<Vec<String>> {
+        let mut stmt = conn.prepare_cached(
+            "SELECT title FROM memories
+             WHERE source = ?1 AND source_ref >= ?2 AND source_ref < ?3
+               AND CAST(substr(source_ref, ?4) AS INTEGER) < ?5
+               AND kind != 'receipt' AND title IS NOT NULL
+             ORDER BY created_at DESC LIMIT ?6",
+        )?;
+        let rows = stmt.query_map(
+            params![
+                req.source,
+                format!("{}@", req.session_id),
+                format!("{}A", req.session_id),
+                req.session_id.chars().count() + 2,
+                req.cursor,
+                PRIOR_TITLES_LIMIT
+            ],
+            |row| row.get::<_, String>(0),
+        )?;
+        Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+    })();
+
+    let titles = match titles {
+        Ok(titles) if !titles.is_empty() => titles,
+        Ok(_) => return digest.to_string(),
+        Err(e) => {
+            tracing::warn!("could not look up this session's earlier memories: {e}");
+            return digest.to_string();
+        }
+    };
+
+    let mut text = String::from("ALREADY STORED from earlier in this session (titles only):\n");
+    for title in titles {
+        let title: String = title
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .chars()
+            .take(PRIOR_TITLE_CHARS)
+            .collect();
+        text.push_str(&format!("- {title}\n"));
+    }
+    text.push_str("\nSESSION DIGEST:\n");
+    text.push_str(digest);
+    text
+}
+
 /// Distil one session delta and commit it as an exact-once checkpoint.
 ///
 /// Preflights the key before calling the model, rechecks it inside the write
@@ -431,7 +520,8 @@ pub fn checkpoint(
     }
 
     // Provider work strictly outside the write transaction.
-    let (memories, usage) = crate::capture::distill_with_usage(digest, config)?;
+    let digest = digest_with_prior_titles(conn, req, digest);
+    let (memories, usage) = crate::capture::distill_with_usage(&digest, config)?;
 
     let result = store_checkpoint(conn, req, &memories, settings)?;
 
@@ -468,6 +558,7 @@ mod tests {
             confidence: 1.0,
             attention: None,
             resolves: None,
+            lifetime: crate::capture::Lifetime::Durable,
         }
     }
 
@@ -663,6 +754,119 @@ mod tests {
     }
 
     #[test]
+    fn status_notes_expire_and_durable_knowledge_does_not() {
+        let conn = test_conn();
+        let mut settings = Settings::default();
+        settings.capture.review_threshold = Some(0.5);
+
+        let status = |content: &str, confidence: f64| DistilledMemory {
+            lifetime: crate::capture::Lifetime::Status,
+            confidence,
+            ..atom(content)
+        };
+        let result = store_checkpoint(
+            &conn,
+            &request(10),
+            &[
+                atom("the queue is a spool directory"),
+                status("PR 12 passed review today", 1.0),
+                status("staging is on revision abc", 0.1),
+            ],
+            &settings,
+        )
+        .unwrap();
+
+        let get = |id: &str| crate::repository::get_raw(&conn, id).unwrap();
+        assert_eq!(get(&result.stored_memory_ids[0]).valid_until, None);
+        let until = get(&result.stored_memory_ids[1]).valid_until.unwrap();
+        let days: f64 = conn
+            .query_row("SELECT julianday(?1) - julianday('now')", [&until], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert!((29.9..=30.1).contains(&days), "expires in {days} days");
+
+        // A status note that waited in the review queue keeps its expiry.
+        let approved =
+            crate::review::approve_review(&conn, &result.queued_review_ids[0], &settings).unwrap();
+        assert!(approved.valid_until.is_some());
+
+        // Expiry hides a memory from recall that excludes expired rows; the
+        // row itself is still there.
+        conn.execute(
+            "UPDATE memories SET valid_until = '2000-01-01T00:00:00Z' WHERE id = ?1",
+            [&result.stored_memory_ids[1]],
+        )
+        .unwrap();
+        let recalled = crate::repository::recall(
+            &conn,
+            &crate::models::RecallQuery {
+                namespace: Some("project:checkpoint-test".into()),
+                exclude_expired: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(
+            recalled
+                .items
+                .iter()
+                .all(|m| m.memory.id != result.stored_memory_ids[1])
+        );
+        assert!(get(&result.stored_memory_ids[1]).archived_at.is_none());
+    }
+
+    #[test]
+    fn later_slices_are_told_what_the_session_already_stored() {
+        let conn = test_conn();
+        let settings = Settings::default();
+        let digest = "## User\nmore work";
+
+        // Nothing stored yet: the digest is passed through byte for byte.
+        assert_eq!(
+            digest_with_prior_titles(&conn, &request(10), digest),
+            digest
+        );
+
+        let receipt = DistilledMemory {
+            kind: "receipt".into(),
+            ..atom("did the work")
+        };
+        store_checkpoint(&conn, &request(10), &[atom("fact one"), receipt], &settings).unwrap();
+        let mut other = request(10);
+        other.session_id = "session-10".into();
+        store_checkpoint(&conn, &other, &[atom("another session")], &settings).unwrap();
+
+        let text = digest_with_prior_titles(&conn, &request(20), digest);
+        assert!(text.starts_with("ALREADY STORED"));
+        assert!(text.contains("- Title: fact one\n"));
+        assert!(text.ends_with(&format!("SESSION DIGEST:\n{digest}")));
+        // Receipts are per-slice records, and other sessions are not ours.
+        assert!(!text.contains("did the work"));
+        assert!(!text.contains("another session"));
+
+        // An older delta recovered late sees only what came before it.
+        store_checkpoint(&conn, &request(40), &[atom("fact two")], &settings).unwrap();
+        let recovered = digest_with_prior_titles(&conn, &request(30), digest);
+        assert!(recovered.contains("fact one") && !recovered.contains("fact two"));
+        assert_eq!(
+            digest_with_prior_titles(&conn, &request(10), digest),
+            digest
+        );
+
+        // However much a session stores, the added text stays bounded.
+        let long = "x".repeat(200);
+        for cursor in 0..30 {
+            let facts: Vec<_> = (0..3)
+                .map(|n| atom(&format!("{long} {cursor} {n}")))
+                .collect();
+            store_checkpoint(&conn, &request(100 + cursor), &facts, &settings).unwrap();
+        }
+        let added = digest_with_prior_titles(&conn, &request(500), digest).len() - digest.len();
+        assert!(added < 1_800, "added {added} characters");
+    }
+
+    #[test]
     fn low_confidence_atoms_queue_for_review_atomically() {
         let conn = test_conn();
         let settings = Settings::default(); // review_threshold default applies
@@ -720,6 +924,100 @@ mod tests {
                 .unwrap()
                 .is_some(),
             "the follow-up lives on the canonical memory"
+        );
+    }
+
+    #[test]
+    fn a_suggested_follow_up_on_archived_content_shares_the_one_revival_proposal() {
+        let conn = test_conn();
+        let settings = Settings::default();
+        let suggested = || DistilledMemory {
+            attention: Some(crate::capture::DistilledAttention {
+                explicitness: "suggested".into(),
+                owner: Some("user".into()),
+                ..crate::capture::DistilledAttention::default()
+            }),
+            ..atom("chase the vendor")
+        };
+        let review_rows = || -> i64 {
+            conn.query_row("SELECT COUNT(*) FROM review_queue", [], |r| r.get(0))
+                .unwrap()
+        };
+
+        let stored =
+            store_checkpoint(&conn, &request(10), &[atom("chase the vendor")], &settings).unwrap();
+        let archived = stored.stored_memory_ids[0].clone();
+        crate::repository::archive(&conn, &archived).unwrap();
+
+        // An ordinary sighting opens the proposal; it carries no follow-up.
+        let plain =
+            store_checkpoint(&conn, &request(20), &[atom("chase the vendor")], &settings).unwrap();
+        let proposal = plain.queued_review_ids[0].clone();
+
+        // Suggested follow-ups on the same content, in two later deltas, join
+        // that proposal instead of queueing one item per checkpoint.
+        for cursor in [30, 40] {
+            let result =
+                store_checkpoint(&conn, &request(cursor), &[suggested()], &settings).unwrap();
+            assert_eq!(result.queued_review_ids, std::slice::from_ref(&proposal));
+        }
+        assert_eq!(review_rows(), 1);
+        let item = crate::review::get_review(&conn, &proposal).unwrap();
+        assert_eq!(item.metadata["revive_memory_id"], archived.as_str());
+        assert_eq!(item.metadata["attention"]["owner"], "user");
+
+        // Approval revives the one memory and opens the follow-up on it.
+        let memory = crate::review::approve_review(&conn, &proposal, &settings).unwrap();
+        assert_eq!(memory.id, archived);
+        assert!(memory.archived_at.is_none());
+        assert!(
+            crate::attention::get_by_memory(&conn, &archived)
+                .unwrap()
+                .is_some()
+        );
+        assert_eq!(memory_count(&conn), 1);
+    }
+
+    #[test]
+    fn content_whose_revival_was_rejected_opens_nothing_on_later_sightings() {
+        let conn = test_conn();
+        let settings = Settings::default();
+        let stored =
+            store_checkpoint(&conn, &request(10), &[atom("chase the vendor")], &settings).unwrap();
+        let archived = stored.stored_memory_ids[0].clone();
+        crate::repository::archive(&conn, &archived).unwrap();
+        let proposed =
+            store_checkpoint(&conn, &request(20), &[atom("chase the vendor")], &settings).unwrap();
+        crate::review::reject_review(&conn, &proposed.queued_review_ids[0]).unwrap();
+
+        let with_attention = |explicitness: &str| DistilledMemory {
+            attention: Some(crate::capture::DistilledAttention {
+                explicitness: explicitness.into(),
+                ..crate::capture::DistilledAttention::default()
+            }),
+            ..atom("chase the vendor")
+        };
+        let later = store_checkpoint(
+            &conn,
+            &request(30),
+            &[with_attention("explicit"), with_attention("suggested")],
+            &settings,
+        )
+        .unwrap();
+
+        assert!(later.stored_memory_ids.is_empty());
+        assert!(later.queued_review_ids.is_empty());
+        assert!(
+            crate::attention::get_by_memory(&conn, &archived)
+                .unwrap()
+                .is_none(),
+            "no follow-up is opened on a memory a person chose to keep hidden"
+        );
+        assert!(
+            crate::repository::get_raw(&conn, &archived)
+                .unwrap()
+                .archived_at
+                .is_some()
         );
     }
 

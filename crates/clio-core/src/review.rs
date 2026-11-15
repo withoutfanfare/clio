@@ -212,6 +212,30 @@ pub fn approve_review(
             .filter(|value| value.is_object())
             .cloned();
 
+        // A capture that met an archived memory again was queued as a
+        // proposal to bring it back. Approval is the explicit decision that
+        // un-archives it; the sighting itself was recorded at capture time.
+        if let Some(archived) = item
+            .metadata
+            .get("revive_memory_id")
+            .and_then(|value| value.as_str())
+        {
+            if crate::repository::get_raw(conn, archived).is_ok() {
+                // A person has just decided this should be seen again, so an
+                // expiry that has already passed goes too; otherwise the
+                // approved memory would still be hidden.
+                conn.execute(
+                    "UPDATE memories SET valid_until = NULL
+                     WHERE id = ?1 AND datetime(valid_until) <= datetime('now')",
+                    params![archived],
+                )?;
+                let memory = crate::repository::unarchive(conn, archived)?;
+                open_attention_from_metadata(conn, &memory, attention_data.as_ref())?;
+                return Ok(memory);
+            }
+            // The archived memory has gone; fall through to normal storage.
+        }
+
         // A queued suggestion whose content already had a canonical memory at
         // capture time attaches to that memory rather than storing a
         // duplicate row (the checkpoint stamped its ID into the metadata).
@@ -253,6 +277,7 @@ pub fn approve_review(
             }
         }
 
+        let valid_until = crate::capture::expiry_from_metadata(&item.metadata);
         let input = crate::models::RememberInput {
             namespace: item.suggested_namespace,
             kind: item.suggested_kind,
@@ -266,7 +291,7 @@ pub fn approve_review(
             importance: item.suggested_importance,
             metadata: item.metadata,
             valid_from: None,
-            valid_until: None,
+            valid_until,
             upsert,
         };
 
@@ -354,6 +379,19 @@ pub fn reject_review(conn: &Connection, id: &str) -> Result<ReviewItem> {
 /// Edit the suggested fields of a review item. Only provided fields are
 /// updated; the status is set to 'edited'.
 pub fn edit_review(conn: &Connection, id: &str, edits: &ReviewEdits) -> Result<ReviewItem> {
+    // Approving a revival proposal un-archives the stored memory as it is;
+    // edits made here would be accepted and then thrown away.
+    if let Some(archived) = get_review(conn, id)?
+        .metadata
+        .get("revive_memory_id")
+        .and_then(|value| value.as_str())
+    {
+        return Err(ClioError::Validation(format!(
+            "review item {id} proposes un-archiving memory {archived} and cannot be edited; \
+             approve it, then update that memory"
+        )));
+    }
+
     if let Some(importance) = edits.importance {
         if !(1..=5).contains(&importance) {
             return Err(ClioError::Validation(format!(

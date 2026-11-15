@@ -179,7 +179,7 @@ The capture pipeline accepts unstructured text and produces a structured memory 
 A checkpoint commits the distillation of one session delta exactly once, keyed by `(source, session_id, cursor)`.
 
 1. Preflight: a completed key returns its stored result envelope (`replayed: true`) without calling the model
-2. Model extraction runs strictly outside the write transaction
+2. Model extraction runs strictly outside the write transaction. The digest is prefixed with up to 20 titles (80 characters each, receipts excluded) already stored from deltas of the same session with a lower cursor, found by the `{session_id}@{cursor}` prefix of `source_ref`. The model is told to leave out repetitions but to keep corrections, reversals and materially new evidence: a title is a pointer, not proof that the content is the same. A session with nothing stored yet sends its digest unchanged
 3. One `BEGIN IMMEDIATE` transaction rechecks the key under the write lock, stores every extracted memory or review item through the shared capture path, and inserts the checkpoint record — all atomically
 4. Any failure rolls back every write; the key stays open and the client job stays retryable
 5. An empty extraction is a successful checkpoint and is never redistilled
@@ -187,11 +187,13 @@ A checkpoint commits the distillation of one session delta exactly once, keyed b
 
 **Open-loop extraction (within a checkpoint):**
 
+- One distillation yields at most 3 knowledge atoms plus one receipt (`capture::MAX_KNOWLEDGE_ATOMS`). The prompt presents this as a ceiling, not a target; when the model exceeds it, open loops are kept first, then the highest importance
 - Distilled atoms may carry optional `attention` data (explicitness, owner, due/remind, trigger, waiting-on, completion condition) and an optional `resolves` identifier
 - Only `explicitness: "explicit"` — a clear user commitment or requested reminder — opens attention automatically, atomically with the stored memory; unknown explicitness values are normalised to `suggested`
 - Suggested/inferred open loops always queue for review regardless of confidence; approving the review item creates the memory and its attention in one transaction (the attention payload rides in the review item's metadata)
 - "Could", "might" and assistant suggestions are never explicit; completed routine steps and externally tracked work are not open loops
 - A `resolves` identifier NEVER auto-completes: it records a visible `resolution_candidate` event on the open/snoozed target (with the storing memory as proposed evidence) for human review — model output distilled from an untrusted transcript cannot close real work. Unknown, fuzzy or terminal targets leave state unchanged; a failed candidate never fails the checkpoint
+- Each atom carries `lifetime`: `durable` (the default, and what a missing field means) or `status` for a point-in-time note. A status atom is stored with `valid_until` 30 days ahead, so it drops out of resume briefs once stale; receipts and open loops are always durable. Expiry hides, it never deletes
 - Branch and ticket context is applied deterministically after model parsing: `ticket:<id>` tags (lowercase) and branch metadata come from the checkpoint request, never from the model
 - Immediate explicit capture through `memory_remember`/`memory_action` remains the primary path; checkpoint extraction is the asynchronous safety net
 
@@ -210,8 +212,10 @@ A checkpoint commits the distillation of one session delta exactly once, keyed b
 An attention item marks one memory as operationally open. Memories record what was said; attention records what is still owed.
 
 - One optional attention row per memory (`UNIQUE(memory_id)`); creation is idempotent and commits atomically with its `attention_opened` event
+- A new attention item's namespace is stored in canonical form (`clio` becomes `project:clio`); listing, eligibility and the overview canonicalise the namespace they are asked for, so a bare project name reaches the same items. Older bare values were rewritten only where memories already existed under the matching `project:` namespace; a similar spelling alone is not treated as proof of the same project
 - Statuses are only `open`, `snoozed`, `resolved`, `cancelled`; invalid transitions are validation errors, not no-ops; `resolved` and `cancelled` are terminal
 - Completion never deletes or rewrites the source memory — it records a `resolved` event and, when evidence is supplied, a `resolved_by` link from the followed-up memory to the evidence memory
+- When a follow-up is resolved or cancelled, its memory is archived in the same transaction if its kind is `task` (hidden, not deleted). The attention row, events and `resolved_by` link still lead to the outcome; a fact or decision that only had a follow-up attached stays live
 - Eligibility is a pure read returning a machine-readable reason per item: `overdue` (past `due_at`), `reminder_due` (past `remind_at`, including expired snoozes), `project_session` (the `project-session` trigger in the item's own namespace), `dormant` (untouched for `attention.dormant_days`)
 - An item surfaces at most once per session/topic scope for the same reason and state — the `surfaced` event's idempotency key includes the item's `updated_at`, so any state change re-arms surfacing
 - Automatic surfacing records events but never touches `access_count`/`last_accessed_at` ranking data
@@ -221,6 +225,9 @@ An attention item marks one memory as operationally open. Memories record what w
 ### Occurrences and Cited Consolidation
 
 - Repeated exact evidence strengthens one canonical memory: the capture path records an append-only occurrence (first sighting included) instead of a duplicate row; checkpoint replays add nothing thanks to the provenance unique index
+- Automatic capture never un-archives. When captured content is byte-identical to an archived memory (and no live twin exists), the sighting is recorded as an occurrence, the memory stays hidden, and one review item carrying `metadata.revive_memory_id` proposes bringing it back. A capture carries no time for when its session took place, so a replayed old transcript cannot be told from new evidence. Explicit un-archive is unchanged
+- Every capture path (direct capture, distillation, checkpoints and suggested follow-ups) goes through the same keyed step, in one transaction, so there is never more than one open proposal per archived memory. Approving it un-archives the memory unchanged and clears an expiry that has already passed; the proposal cannot be edited. Rejecting it is final for that memory: later sightings add an occurrence and nothing else, including no follow-up
+- When a capture meets an exact live twin, the stored memory keeps its own `valid_until`. A status sighting never puts an expiry on a durable memory, and a later sighting never renews or clears an expiry already set
 - Merges transfer occurrences to the kept memory before archiving duplicates
 - Every memory/link/attention/occurrence mutation bumps the namespace's generation via triggers — adapters cannot forget invalidation
 - Consolidation output is structured and cited: every statement carries input memory IDs, validated against the bounded input; an invalid candidate is rejected and the previous singleton stays, visibly stale via its generation watermark

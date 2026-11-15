@@ -62,6 +62,13 @@ repeat it with an appropriate `--batch-size` until every memory is refreshed.
 | `model` | string | `"gpt-4o-mini"` | Classification model |
 | `review_threshold` | float? | `null` | Confidence below this routes to review queue; `null` disables review |
 
+Two capture limits are fixed in code and are not settings: one distillation
+keeps at most 3 knowledge items plus a receipt (`capture::MAX_KNOWLEDGE_ATOMS`),
+and a memory the distiller marks as a point-in-time status is given a
+`valid_until` 30 days after it is stored (`capture::STATUS_LIFETIME_DAYS`).
+Only reads that exclude expired memories honour it; see the `memories`
+semantic rules in `schema.md` for which do.
+
 ## API key resolution
 
 Every setting that takes an `api_key` resolves it in this order, using the first
@@ -105,7 +112,9 @@ restart.
 
 Use `capture --model <model> --dry-run` or `distill --model <model> --dry-run`
 for a one-off comparison that does not change the active setting. Add
-`--metrics` to include latency and provider-reported token usage.
+`--metrics` to include latency and provider-reported token usage; for
+`distill` it also reports `knowledge_items_returned`, the number of knowledge
+items the model returned before the cap was applied.
 
 ### Desktop control suitability
 

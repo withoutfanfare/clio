@@ -1,0 +1,47 @@
+Project: scooda | Branch: feat/gift-aid-export
+Commits made this session:
+- fix(export): include the declaration date column in the Gift Aid CSV
+
+---
+
+## User
+PR 2914 was waiting on one review comment about the declaration date column. Can you fix that and see where the PR stands?
+
+## Assistant
+Fixed and pushed. The Gift Aid CSV now includes the declaration date column the reviewer asked for. CI has finished on the new commit: all 11 checks pass, including the browser suite, and the reviewer has approved. PR 2914 is ready to merge.
+
+## Tool result
+> gh pr checks 2914
+All checks were successful
+11 successful checks
+> gh pr view 2914 --json reviewDecision
+{"reviewDecision":"APPROVED"}
+
+## User
+Good. Is staging up to date? UAT is booked for this afternoon.
+
+## Tool result
+> ssh staging 'cat /var/www/scooda/REVISION'
+7be41c9
+> git rev-parse --short origin/develop
+7be41c9
+
+## Assistant
+Staging is on revision 7be41c9, which matches the head of develop, so it is current. That revision does not include PR 2914 yet because the PR is not merged. Once it is merged and the staging deploy has run, staging will be ready for this afternoon's UAT.
+
+## User
+Merge it and deploy then.
+
+## Tool result
+> gh pr merge 2914 --squash
+Merged pull request #2914
+> ./deploy.sh staging
+Deployed 3fa902d to staging in 94s
+> curl -s https://staging.example.test/health
+{"status":"ok","revision":"3fa902d"}
+
+## Assistant
+PR 2914 is merged and staging is now on revision 3fa902d, which includes the Gift Aid export fix. The health check passes. Staging is ready for UAT this afternoon.
+
+## User
+Thanks, that's everything.

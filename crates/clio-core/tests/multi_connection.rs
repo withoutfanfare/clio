@@ -493,6 +493,7 @@ fn checkpoint_atom(content: &str) -> clio_core::capture::DistilledMemory {
         confidence: 1.0,
         attention: None,
         resolves: None,
+        lifetime: Default::default(),
     }
 }
 
@@ -555,4 +556,79 @@ fn simultaneous_checkpoints_with_the_same_key_store_once() {
         memories, 1,
         "only the winning checkpoint's atom may persist"
     );
+}
+
+static REVIVAL_BLOCKED: AtomicBool = AtomicBool::new(false);
+
+fn revival_busy_handler(_attempt: i32) -> bool {
+    REVIVAL_BLOCKED.store(true, Ordering::Release);
+    std::thread::sleep(Duration::from_millis(1));
+    true
+}
+
+#[test]
+fn simultaneous_captures_of_archived_content_queue_one_revival_proposal() {
+    use clio_core::capture::{CaptureResult, ClassificationResult, capture_with_classification};
+
+    REVIVAL_BLOCKED.store(false, Ordering::Release);
+    let (_directory, mut first, second) = file_db();
+    let text = "The spool uses atomic renames.";
+    let classification = || ClassificationResult {
+        kind: "fact".into(),
+        title: "Spool durability".into(),
+        summary: String::new(),
+        tags: vec![],
+        namespace: "project:multi-machine".into(),
+        importance: 3,
+        confidence: 1.0,
+    };
+    let capture = |conn: &Connection| {
+        capture_with_classification(conn, text, &classification(), None, None, &test_settings())
+    };
+    let CaptureResult::Stored(original) = capture(&first).unwrap() else {
+        panic!("first capture should be stored");
+    };
+    repository::archive(&first, &original.id).unwrap();
+
+    second
+        .busy_handler(Some(revival_busy_handler))
+        .expect("failed to install busy handler");
+    let transaction = first
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .unwrap();
+    let (completed_tx, completed_rx) = std::sync::mpsc::sync_channel(1);
+    let worker = std::thread::spawn(move || {
+        let result = capture_with_classification(
+            &second,
+            text,
+            &classification(),
+            None,
+            None,
+            &test_settings(),
+        );
+        completed_tx.send(result).unwrap();
+    });
+
+    // The competing direct capture has seen the archived twin and is waiting
+    // for the write lock; it must not have queued anything yet.
+    wait_until_blocked(&REVIVAL_BLOCKED, &completed_rx);
+    let CaptureResult::Queued(winner) = capture(&transaction).unwrap() else {
+        panic!("an archived twin should be proposed");
+    };
+    transaction.commit().unwrap();
+
+    let CaptureResult::Queued(loser) = completed_rx
+        .recv()
+        .expect("capture worker stopped without a result")
+        .expect("the competing capture should succeed")
+    else {
+        panic!("the competing capture should reuse the proposal");
+    };
+    worker.join().expect("capture worker panicked");
+
+    assert_eq!(loser.id, winner.id);
+    let proposals: u32 = first
+        .query_row("SELECT COUNT(*) FROM review_queue", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(proposals, 1);
 }
