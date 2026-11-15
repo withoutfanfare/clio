@@ -1,4 +1,4 @@
-ALREADY STORED from earlier in this session (do not restate):
+ALREADY STORED from earlier in this session (titles only):
 - Tracking poller runs on the default queue, not media
 - Royal Mail tracking API rejects batches over 30 numbers
 - Royal Mail 429 responses must honour Retry-After

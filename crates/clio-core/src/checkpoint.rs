@@ -436,6 +436,12 @@ const PRIOR_TITLE_CHARS: usize = 80;
 /// words. A long session is distilled one slice at a time and each slice
 /// would otherwise be judged with no sight of the others.
 ///
+/// Only deltas with a lower cursor than this request count as earlier, so an
+/// older delta recovered late is not shown titles from what came after it.
+/// The list is a hint, not a complete record: a fact this session restated
+/// that was deduplicated onto another session's memory, or that is waiting
+/// in the review queue, is not in it.
+///
 /// Returns the digest untouched when the session has stored nothing yet, and
 /// on any lookup failure: this is a hint, never a reason to lose a capture.
 pub fn digest_with_prior_titles(
@@ -445,18 +451,22 @@ pub fn digest_with_prior_titles(
 ) -> String {
     // A session's memories share the `{session_id}@` provenance prefix. The
     // range is that prefix as an index scan: `A` is the character after `@`.
+    // The cursor follows the `@`; casting what is left reads its digits.
     let titles = (|| -> Result<Vec<String>> {
         let mut stmt = conn.prepare_cached(
             "SELECT title FROM memories
              WHERE source = ?1 AND source_ref >= ?2 AND source_ref < ?3
+               AND CAST(substr(source_ref, ?4) AS INTEGER) < ?5
                AND kind != 'receipt' AND title IS NOT NULL
-             ORDER BY created_at DESC LIMIT ?4",
+             ORDER BY created_at DESC LIMIT ?6",
         )?;
         let rows = stmt.query_map(
             params![
                 req.source,
                 format!("{}@", req.session_id),
                 format!("{}A", req.session_id),
+                req.session_id.chars().count() + 2,
+                req.cursor,
                 PRIOR_TITLES_LIMIT
             ],
             |row| row.get::<_, String>(0),
@@ -473,7 +483,7 @@ pub fn digest_with_prior_titles(
         }
     };
 
-    let mut text = String::from("ALREADY STORED from earlier in this session (do not restate):\n");
+    let mut text = String::from("ALREADY STORED from earlier in this session (titles only):\n");
     for title in titles {
         let title: String = title
             .split_whitespace()
@@ -834,6 +844,15 @@ mod tests {
         // Receipts are per-slice records, and other sessions are not ours.
         assert!(!text.contains("did the work"));
         assert!(!text.contains("another session"));
+
+        // An older delta recovered late sees only what came before it.
+        store_checkpoint(&conn, &request(40), &[atom("fact two")], &settings).unwrap();
+        let recovered = digest_with_prior_titles(&conn, &request(30), digest);
+        assert!(recovered.contains("fact one") && !recovered.contains("fact two"));
+        assert_eq!(
+            digest_with_prior_titles(&conn, &request(10), digest),
+            digest
+        );
 
         // However much a session stores, the added text stays bounded.
         let long = "x".repeat(200);

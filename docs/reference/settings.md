@@ -64,8 +64,10 @@ repeat it with an appropriate `--batch-size` until every memory is refreshed.
 
 Two capture limits are fixed in code and are not settings: one distillation
 keeps at most 3 knowledge items plus a receipt (`capture::MAX_KNOWLEDGE_ATOMS`),
-and a memory the distiller marks as a point-in-time status expires 30 days
-after it is stored (`capture::STATUS_LIFETIME_DAYS`).
+and a memory the distiller marks as a point-in-time status is given a
+`valid_until` 30 days after it is stored (`capture::STATUS_LIFETIME_DAYS`).
+Only reads that exclude expired memories honour it; see the `memories`
+semantic rules in `schema.md` for which do.
 
 ## API key resolution
 

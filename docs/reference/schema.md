@@ -140,7 +140,7 @@ CREATE TABLE memories (
 - `content` is the only mandatory human payload field.
 - `title` and `summary` are optional because some clients will store raw findings or notes.
 - `metadata_json` must always decode to an object. Arrays and scalars are invalid.
-- `valid_from` is advisory. `valid_until` is an expiry: once it has passed, the memory is left out of any read that asks to exclude expired rows (resume briefs do). Expiry hides a memory; it never archives or deletes it, and clearing the field brings the memory back.
+- `valid_from` is advisory. `valid_until` is an expiry: once it has passed, the memory is left out of any read that asks to exclude expired rows. Resume briefs, the attention overview and link suggestions ask; ordinary recall, search, recent listings and context briefs do not yet, so an expired memory still appears there. Expiry hides a memory; it never archives or deletes it, and clearing the field brings the memory back.
 - Session distillation sets `valid_until` to 30 days ahead (`capture::STATUS_LIFETIME_DAYS`) on memories the model marks `"lifetime": "status"`: point-in-time notes such as a PR having passed or a release having gone out. Durable knowledge, receipts and open loops never get an expiry, and a missing `lifetime` means durable. The same timestamp is kept in `metadata_json.valid_until` so that an item held in the review queue keeps its expiry when approved.
 - `source` and `source_ref` are optional individually, but only meaningful for upsert when both are set.
 
