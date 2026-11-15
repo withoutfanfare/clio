@@ -649,6 +649,8 @@ Fetch one memory by id.
 - `json`: full memory record
 - `markdown`: detail view including metadata and content
 
+Desktop browse and archive lists request `include_expired: true` in remote mode and include expired records locally. Search continues to hide expired records by default. Omitted server arguments keep their existing defaults, so installed clients remain compatible.
+
 ## `memory_recent`
 
 **Deprecated** — use `memory_recall` with no `query` (it falls through to a
