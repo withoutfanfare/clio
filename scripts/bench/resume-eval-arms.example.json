@@ -1,0 +1,7 @@
+[
+  {"name": "hook-200", "kind": "hook", "clio": "/abs/path/to/baseline/release/clio", "query_chars": 200},
+  {"name": "hook-1000", "kind": "hook", "clio": "/abs/path/to/baseline/release/clio", "query_chars": 1000},
+  {"name": "mcp-recall", "kind": "mcp", "mcp": "/abs/path/to/baseline/release/clio-mcp", "tool": "memory_recall", "query_chars": 200},
+  {"name": "mcp-search", "kind": "mcp", "mcp": "/abs/path/to/baseline/release/clio-mcp", "tool": "memory_search", "query_chars": 200},
+  {"name": "candidate-hook", "kind": "hook", "clio": "/abs/path/to/candidate/release/clio", "query_chars": 1000}
+]
