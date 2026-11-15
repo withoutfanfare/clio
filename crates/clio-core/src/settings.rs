@@ -44,8 +44,9 @@ pub struct ScoringConfig {
     pub fusion_budget_ms: u64,
 
     /// Fused retrieval returns nothing when the most similar memory it
-    /// searched is below this cosine similarity: nothing there is about the
-    /// query, so any-word matches would be noise. `0.0` = never stay quiet.
+    /// searched is below this cosine similarity and no keyword match shares
+    /// three of the query's terms: nothing there is about the query, so
+    /// any-word matches would be noise. `0.0` = never stay quiet.
     #[serde(default = "default_quiet_similarity")]
     pub quiet_similarity: f64,
 
@@ -79,7 +80,7 @@ fn default_fusion_budget_ms() -> u64 {
 }
 
 fn default_quiet_similarity() -> f64 {
-    0.40
+    0.45
 }
 
 fn default_dedup_similarity() -> f64 {

@@ -929,11 +929,19 @@ const FTS_STOPWORDS: &[&str] = &[
 /// is capped to keep the query cheap. Falls back to the all-terms form when
 /// nothing survives filtering, so short technical queries keep working.
 fn sanitise_fts_query_any(raw: &str) -> String {
+    let terms = any_terms(raw);
+    if terms.is_empty() {
+        return sanitise_fts_query(raw);
+    }
+    terms.join(" OR ")
+}
+
+/// The quoted terms an any-term query matches on.
+fn any_terms(raw: &str) -> Vec<String> {
     const MAX_TERMS: usize = 12;
 
     let mut seen = std::collections::HashSet::new();
-    let terms: Vec<String> = raw
-        .split_whitespace()
+    raw.split_whitespace()
         .map(|t| {
             t.trim_matches(|c: char| !c.is_alphanumeric())
                 .replace('"', " ")
@@ -944,12 +952,38 @@ fn sanitise_fts_query_any(raw: &str) -> String {
         .filter(|t| seen.insert(t.clone()))
         .take(MAX_TERMS)
         .map(|t| format!("\"{t}\""))
-        .collect();
+        .collect()
+}
 
-    if terms.is_empty() {
-        return sanitise_fts_query(raw);
+/// The most any-word terms of `q`'s query that any one of `ids` matches: how
+/// far the query's words agree on a single memory, as opposed to each turning
+/// up somewhere.
+pub(crate) fn term_agreement(conn: &Connection, q: &RecallQuery, ids: &[&str]) -> Result<usize> {
+    let Some(raw) = q.query.as_deref() else {
+        return Ok(0);
+    };
+    let scoped = q.scoring.as_ref().is_none_or(|s| s.scoped_terms);
+    let terms = any_terms(&informative_query(conn, raw, scoped.then_some(q))?);
+    let mut sql = String::from(
+        "SELECT m.id FROM memory_fts CROSS JOIN memories m ON m.rowid = memory_fts.rowid \
+         WHERE memory_fts MATCH ?1",
+    );
+    let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = vec![Box::new(String::new())];
+    append_filters(&mut sql, &mut params, q);
+    let mut stmt = conn.prepare(&sql)?;
+    let mut matched: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    for term in terms {
+        params[0] = Box::new(term);
+        let refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+        let rows = stmt.query_map(refs.as_slice(), |row| row.get::<_, String>(0))?;
+        for id in rows {
+            let id = id?;
+            if ids.contains(&id.as_str()) {
+                *matched.entry(id).or_default() += 1;
+            }
+        }
     }
-    terms.join(" OR ")
+    Ok(matched.into_values().max().unwrap_or(0))
 }
 
 /// Select across a bounded prompt, retaining identifiers and rare corpus terms.

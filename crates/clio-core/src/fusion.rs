@@ -22,6 +22,10 @@ const POOL: u32 = 30;
 /// each leg that returned it. 60 is the value the method was published with.
 const RRF_K: f64 = 60.0;
 
+/// Chosen query terms one keyword match must share for the keyword leg to
+/// count as evidence by itself. One or two shared words turn up by chance.
+const AGREEING_TERMS: usize = 3;
+
 /// Embedding threads still running, including any that overran their budget.
 static EMBEDDING: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
@@ -140,10 +144,11 @@ where
 /// the embedding's deadline, the keyword results are returned on their own.
 ///
 /// Nothing is returned when the most similar memory searched is below
-/// `scoring.quiet_similarity`: any-word matching always finds something, and
-/// with nothing close in meaning that something is noise. The rule needs the
-/// semantic leg to have compared at least one memory, so a store with no
-/// usable embeddings keeps its keyword results.
+/// `scoring.quiet_similarity` and no keyword match shares
+/// [`AGREEING_TERMS`] of the query's terms: any-word matching always finds
+/// something, and with neither signal behind it that something is noise. The
+/// rule needs the semantic leg to have compared at least one memory, so a
+/// store with no usable embeddings keeps its keyword results.
 pub fn fused_recall(
     conn: &Connection,
     base: &RecallQuery,
@@ -156,23 +161,23 @@ pub fn fused_recall(
         }),
         None => (Vec::new(), None),
     };
+    let keyword_query = RecallQuery {
+        match_any_term: true,
+        include_links: false,
+        limit: POOL.max(base.limit),
+        offset: 0,
+        skip_access_tracking: true,
+        ..base.clone()
+    };
+    let keyword = crate::repository::recall(conn, &keyword_query)?.items;
+
     let quiet = base.scoring.as_ref().map_or(0.0, |s| s.quiet_similarity);
     if nearest.is_some_and(|similarity| similarity < quiet) {
-        return Ok(Vec::new());
+        let ids: Vec<&str> = keyword.iter().map(|i| i.memory.id.as_str()).collect();
+        if crate::repository::term_agreement(conn, &keyword_query, &ids)? < AGREEING_TERMS {
+            return Ok(Vec::new());
+        }
     }
-
-    let keyword = crate::repository::recall(
-        conn,
-        &RecallQuery {
-            match_any_term: true,
-            include_links: false,
-            limit: POOL.max(base.limit),
-            offset: 0,
-            skip_access_tracking: true,
-            ..base.clone()
-        },
-    )?
-    .items;
 
     let mut fused: HashMap<String, (f64, FusedItem)> = HashMap::new();
     for (position, item) in keyword.into_iter().enumerate() {
@@ -438,6 +443,15 @@ mod tests {
             ..near.clone()
         };
         assert_eq!(fused_recall(&conn, &q, Some(&other_model)).unwrap().len(), 1);
+
+        // Three of the query's words agreeing on one memory is evidence by
+        // itself, however far its meaning sits.
+        let agreed = store(&conn, "project:x", "lease expiry notes for agents", &[0.0, 1.0]);
+        let found = fused_recall(&conn, &q, Some(&near)).unwrap();
+        assert_eq!(found.len(), 2);
+        assert_eq!(found[0].item.memory.id, agreed.id);
+        crate::repository::archive(&conn, &agreed.id).unwrap();
+        assert!(fused_recall(&conn, &q, Some(&near)).unwrap().is_empty());
 
         // Something close in meaning lets the keyword match through as well.
         store(&conn, "project:x", "tokens time out after an hour", &[0.9, 0.436]);

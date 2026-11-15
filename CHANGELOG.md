@@ -44,8 +44,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   alone; `memory_search` no longer errors without a backend. Its `rank` is now
   a fused rank score, not a similarity.
 - Fused retrieval stays quiet when nothing it searched is close in meaning to
-  the query (`scoring.quiet_similarity`, default 0.40), instead of returning
-  whatever shares a word with it.
+  the query (`scoring.quiet_similarity`, default 0.45) and no keyword match
+  shares three of its chosen terms, instead of returning whatever shares a
+  word with it.
 - A resume brief no longer spends two Relevant knowledge slots on one fact: a
   near-copy of an item already chosen is skipped and the next candidate takes
   the slot (`scoring.dedup_similarity`, default 0.85).
