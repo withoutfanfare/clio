@@ -451,6 +451,11 @@ pub fn distill_with_usage(
     distill_measured(text, config).map(|(memories, usage, _)| (memories, usage))
 }
 
+pub struct DistillationCounts {
+    pub knowledge: usize,
+    pub explicit: usize,
+}
+
 /// Distil text and also report how many knowledge items the model returned
 /// before the cap trimmed them. The capture benchmark needs that figure: the
 /// capped list can never exceed the ceiling, so it cannot show whether the
@@ -459,10 +464,13 @@ pub fn distill_with_usage(
 pub fn distill_measured(
     text: &str,
     config: &CaptureConfig,
-) -> Result<(Vec<DistilledMemory>, CaptureUsage, usize)> {
+) -> Result<(Vec<DistilledMemory>, CaptureUsage, DistillationCounts)> {
     let response = chat_with_usage(DISTILLATION_SYSTEM_PROMPT, text, config, true)?;
     let memories = parse_uncapped(&response.content)?;
-    let returned = memories.iter().filter(|m| m.kind != "receipt").count();
+    let returned = DistillationCounts {
+        knowledge: memories.iter().filter(|m| m.kind != "receipt").count(),
+        explicit: memories.iter().filter(|m| m.kind != "receipt" && m.attention.as_ref().is_some_and(DistilledAttention::is_explicit)).count(),
+    };
     Ok((cap_distilled_memories(memories), response.usage, returned))
 }
 
@@ -716,6 +724,9 @@ fn cap_distilled_memories(memories: Vec<DistilledMemory>) -> Vec<DistilledMemory
     keep.extend((0..memories.len()).filter(|&i| memories[i].kind == "receipt"));
     keep.sort_unstable();
 
+    if keep.len() < memories.len() {
+        tracing::warn!(dropped = memories.len() - keep.len(), "distillation cap dropped items");
+    }
     let mut memories = memories;
     let mut index = 0;
     memories.retain(|_| {

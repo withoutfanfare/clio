@@ -639,6 +639,8 @@ Default DB: `~/Library/Application Support/clio/memory.db` (macOS)
 
 ---
 
+Distillation `--dry-run --metrics --json` reports pre-cap `knowledge_items_returned`, `explicit_items_returned` and `non_explicit_items_returned`. The benchmark checks the non-explicit ceiling of three and reports explicit-labelled calls and four/five-item calls. Cap drops are logged as warnings.
+
 ## Related Documentation
 
 - [Getting Started](getting-started.md) — full walkthrough with explanations

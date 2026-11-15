@@ -2935,7 +2935,9 @@ fn cmd_distill(
                     "elapsed_ms": elapsed_ms,
                     "usage": usage,
                     // Before the cap: what the model itself returned.
-                    "knowledge_items_returned": returned,
+                    "knowledge_items_returned": returned.knowledge,
+                    "explicit_items_returned": returned.explicit,
+                    "non_explicit_items_returned": returned.knowledge - returned.explicit,
                     "result": memories,
                 })
             } else {
