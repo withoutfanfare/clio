@@ -431,7 +431,16 @@ This is the primary retrieval tool for AI clients. It must handle both semantic-
 
 ### Behaviour
 
-- if `query` is present, use FTS recall
+- if `query` is present, use FTS recall: a memory must contain every word
+- if that strict search finds nothing and `query` has more than one word, retry
+  once with core's any-word search (`RecallQuery.match_any_term`, the search
+  resume briefs use) under the same filters. The reply then opens with a note
+  saying a wider search was used (the first line in Markdown, a `note` field in
+  JSON), so a sentence such as "how do we deploy a new release to Atlas" is
+  never answered with a bare zero
+- if a query still matches nothing, the reply is a one-line note that suggests
+  `memory_search` and fewer or different keywords (Markdown), or an empty
+  envelope carrying that `note` (JSON)
 - if `query` is absent, return recent records subject to filters
 - by default, archived records are excluded
 - support namespace, kind, and tags filters

@@ -1392,12 +1392,57 @@ fn memory_detail_md(m: &Memory) -> String {
     md
 }
 
+/// What a keyword recall should say before its results: that the search was
+/// widened to any word, or where to look next when nothing matched at all.
+/// `None` for an ordinary result.
+fn recall_note(
+    result: &RecallResult,
+    searched: bool,
+    widened: bool,
+    global: bool,
+) -> Option<String> {
+    if result.total > 0 {
+        return widened.then(|| {
+            "No memory contains every word of the query, so this is a wider search \
+             for any of its key words (best match first)."
+                .to_string()
+        });
+    }
+    if !searched {
+        return None;
+    }
+    let mut note = String::from("No memories match that query");
+    if widened {
+        note.push_str(", even searching for any of its key words");
+    }
+    note.push_str(
+        ". Try memory_search (finds by meaning, not exact words) or fewer, different keywords",
+    );
+    if !global {
+        note.push_str(", or `global: true` to search every project");
+    }
+    note.push('.');
+    Some(note)
+}
+
 /// Format a response as either Markdown or JSON, depending on `response_format`.
-fn format_recall_response(result: &RecallResult, format: &str) -> String {
+/// A `note` leads the Markdown reply and is the `note` field of the JSON one.
+fn format_recall_response(result: &RecallResult, format: &str, note: Option<String>) -> String {
     if format == "json" {
-        serde_json::to_string_pretty(result).unwrap_or_else(|e| format!("Serialisation error: {e}"))
+        let json = match note {
+            None => serde_json::to_string_pretty(result),
+            Some(note) => serde_json::to_value(result).and_then(|mut value| {
+                value["note"] = note.into();
+                serde_json::to_string_pretty(&value)
+            }),
+        };
+        json.unwrap_or_else(|e| format!("Serialisation error: {e}"))
     } else {
-        recall_result_md(result)
+        match note {
+            Some(note) if result.total == 0 => note,
+            Some(note) => format!("{note}\n\n{}", recall_result_md(result)),
+            None => recall_result_md(result),
+        }
     }
 }
 
@@ -1860,7 +1905,9 @@ impl ClioServer {
 
     /// Full-text search and filter memories.
     #[tool(
-        description = "Keyword/full-text (FTS) search and filter memories. Omit `query` for a \
+        description = "Keyword/full-text (FTS) search and filter memories. A memory must \
+                       contain every word of `query`; when none does, a multi-word query is \
+                       retried matching any key word and the reply says so. Omit `query` for a \
                        recent-style listing. Pass `cwd` for namespace auto-detection."
     )]
     async fn memory_recall(
@@ -1907,25 +1954,43 @@ impl ClioServer {
             // --global: search all namespaces without scoping.
             // --namespace: search only that exact namespace.
             // Neither: use scoped-then-global recall (project namespace + global fallback).
-            let result = if params.global {
-                cache
-                    .recall(&conn, &query)
-                    .map_err(|e| format_clio_error(&e))?
-            } else if params.namespace.is_some() {
-                let scoped_query = RecallQuery {
-                    namespace: Some(detected_ns),
-                    ..query
-                };
-                cache
-                    .recall(&conn, &scoped_query)
-                    .map_err(|e| format_clio_error(&e))?
-            } else {
-                cache
-                    .recall_scoped(&conn, &query, &detected_ns)
-                    .map_err(|e| format_clio_error(&e))?
+            let run = |query: &RecallQuery| {
+                if params.global {
+                    cache.recall(&conn, query)
+                } else if params.namespace.is_some() {
+                    let scoped_query = RecallQuery {
+                        namespace: Some(detected_ns.clone()),
+                        ..query.clone()
+                    };
+                    cache.recall(&conn, &scoped_query)
+                } else {
+                    cache.recall_scoped(&conn, query, &detected_ns)
+                }
+                .map_err(|e| format_clio_error(&e))
             };
 
-            Ok(format_recall_response(&result, &params.response_format))
+            let mut result = run(&query)?;
+            // A sentence rarely has every word in one memory. When the strict
+            // search finds nothing, retry with core's any-word search (the one
+            // resume briefs use) and say so, rather than answer "0 memories".
+            let searched = query.query.is_some();
+            let widened = result.total == 0
+                && query
+                    .query
+                    .as_deref()
+                    .is_some_and(|q| q.split_whitespace().nth(1).is_some());
+            if widened {
+                result = run(&RecallQuery {
+                    match_any_term: true,
+                    ..query.clone()
+                })?;
+            }
+
+            Ok(format_recall_response(
+                &result,
+                &params.response_format,
+                recall_note(&result, searched, widened, params.global),
+            ))
         })
         .await
         .map_err(|e| format!("Internal error: task failed: {e}"))?
@@ -1986,7 +2051,11 @@ impl ClioServer {
             let result = cache
                 .recall(&conn, &query)
                 .map_err(|e| format_clio_error(&e))?;
-            Ok(format_recall_response(&result, &params.response_format))
+            Ok(format_recall_response(
+                &result,
+                &params.response_format,
+                None,
+            ))
         })
         .await
         .map_err(|e| format!("Internal error: task failed: {e}"))?
@@ -2498,7 +2567,11 @@ impl ClioServer {
                 count: len,
             };
 
-            Ok(format_recall_response(&result, &params.response_format))
+            Ok(format_recall_response(
+                &result,
+                &params.response_format,
+                None,
+            ))
         })
         .await
         .map_err(|e| format!("Internal error: task failed: {e}"))?
@@ -3068,7 +3141,8 @@ impl ServerHandler for ClioServer {
                  explicit `namespace` -> auto-detect from `cwd` -> `global`. Always pass \
                  `cwd` so recall and storage land in the right project.\n\n\
                  CHOOSING A TOOL:\n\
-                 - memory_recall: keyword/FTS search. Omit `query` for a recent-style listing.\n\
+                 - memory_recall: keyword/FTS search; a sentence that matches nothing is \
+                 retried on any key word. Omit `query` for a recent-style listing.\n\
                  - memory_search: semantic (vector) search; requires a configured embedding \
                  backend and returns a configuration error if none is set.\n\
                  - memory_remember: deliberate store. To update in place pass \
@@ -3929,5 +4003,112 @@ mod concurrency_tests {
 
         drop(server);
         std::fs::remove_file(db_path).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod surface_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn server_with(memories: &[(&str, &str, &str)]) -> ClioServer {
+        let conn = clio_core::db::open_in_memory().unwrap();
+        let settings = clio_core::settings::Settings::default();
+        for (namespace, title, content) in memories {
+            clio_core::repository::remember(
+                &conn,
+                &RememberInput {
+                    namespace: (*namespace).into(),
+                    kind: "note".into(),
+                    title: Some((*title).into()),
+                    summary: None,
+                    content: (*content).into(),
+                    tags: Vec::new(),
+                    source: None,
+                    source_ref: None,
+                    confidence: None,
+                    importance: 3,
+                    metadata: json!({}),
+                    valid_from: None,
+                    valid_until: None,
+                    upsert: false,
+                },
+                &settings,
+            )
+            .unwrap();
+        }
+        ClioServer::new(PathBuf::from("unused-surface.db"), conn, settings, None)
+    }
+
+    async fn recall(server: &ClioServer, args: serde_json::Value) -> Result<String, String> {
+        server
+            .memory_recall(Parameters(serde_json::from_value(args).unwrap()))
+            .await
+    }
+
+    #[tokio::test]
+    async fn sentence_recall_widens_to_any_word_and_says_so() {
+        let server = server_with(&[
+            (
+                "project:demo",
+                "Release procedure",
+                "Deploy a release by running the ship script on Atlas.",
+            ),
+            ("project:demo", "Lunch", "The canteen closes at two."),
+        ]);
+
+        // Every word present: an ordinary strict result, no note.
+        let strict = recall(
+            &server,
+            json!({"query": "deploy Atlas", "namespace": "project:demo"}),
+        )
+        .await
+        .unwrap();
+        assert!(strict.starts_with("**1 of 1 memories**"), "{strict}");
+
+        // A sentence no single memory contains in full: widened, and said so first.
+        let sentence = json!({
+            "query": "how do we deploy a new release to Atlas",
+            "namespace": "project:demo"
+        });
+        let widened = recall(&server, sentence.clone()).await.unwrap();
+        assert!(
+            widened.starts_with("No memory contains every word"),
+            "{widened}"
+        );
+        assert!(widened.contains("Release procedure"));
+        assert!(!widened.contains("Lunch"));
+
+        let mut as_json = sentence;
+        as_json["response_format"] = json!("json");
+        let widened: serde_json::Value =
+            serde_json::from_str(&recall(&server, as_json).await.unwrap()).unwrap();
+        assert_eq!(widened["count"], 1);
+        assert!(widened["note"].as_str().unwrap().contains("wider search"));
+
+        // Nothing at all: no bare "0 of 0", and a pointer to the semantic tool.
+        let nothing = recall(
+            &server,
+            json!({"query": "quantum chromodynamics lattice", "namespace": "project:demo"}),
+        )
+        .await
+        .unwrap();
+        assert!(
+            nothing.starts_with("No memories match that query, even"),
+            "{nothing}"
+        );
+        assert!(nothing.contains("memory_search"));
+
+        // A single word is never widened, but still gets the pointer.
+        let single = recall(
+            &server,
+            json!({"query": "zeppelin", "namespace": "project:demo"}),
+        )
+        .await
+        .unwrap();
+        assert!(
+            single.starts_with("No memories match that query. Try"),
+            "{single}"
+        );
     }
 }
