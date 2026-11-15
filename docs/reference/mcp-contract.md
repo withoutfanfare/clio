@@ -1491,7 +1491,7 @@ Find memories by semantic meaning using vector embeddings.
 
 - embed the query text using the active embedding backend
 - compute cosine similarity only against stored embeddings with the active model name and matching vector dimensions, dropping matches below `scoring.min_similarity`
-- run any-word keyword search over the same memories and merge the top 30 of each by rank position (reciprocal rank fusion): an item scores `1 / (scoring.fusion_k + position)` in each list that holds it, 60 by default. The exact-phrase keyword boost this replaces never matched a sentence
+- run any-word keyword search over the same memories and merge the top 30 of each by rank position (reciprocal rank fusion): an item scores `1 / (scoring.fusion_k + position)` in each list that holds it, 10 by default. The exact-phrase keyword boost this replaces never matched a sentence
 - a keyword match containing an identifier the query names (a ticket id, or a name with `_` or `::`) ranks ahead of the merged order (`scoring.identifiers_first`)
 - if the backend is missing, the embedding fails or `scoring.fusion_budget_ms` is overrun, return the keyword matches alone; the reply's note says so. There is no error
 - return nothing from a namespace whose most similar memory is below `scoring.quiet_similarity` (0.45), unless one of the keyword matches shares at least three of the query's chosen terms. Scoped search applies this to the project and to `global` separately
@@ -1501,7 +1501,7 @@ Find memories by semantic meaning using vector embeddings.
 - when detection falls back to `global`, search only `global` unless `global: true` requests all namespaces
 - exclude archived memories by default
 - return results best first
-- the ranking value is returned as `score` in a compact item and as `rank` in a `json` record; higher is a better match. It is the fused rank score (at most `2/61`, about 0.033, at the default `fusion_k`), not a similarity. An identifier match placed first keeps its own score, so scores are not strictly descending
+- the ranking value is returned as `score` in a compact item and as `rank` in a `json` record; higher is a better match. It is the fused rank score (at most `2/11`, about 0.18, at the default `fusion_k`), not a similarity. An identifier match placed first keeps its own score, so scores are not strictly descending
 
 ### Response
 

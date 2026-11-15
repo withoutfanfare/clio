@@ -44,8 +44,9 @@ pub struct ScoringConfig {
     pub fusion_budget_ms: u64,
 
     /// Reciprocal rank fusion constant: an item scores `1 / (k + position)`
-    /// in each list that holds it. At 60 an item in both lists outranks every
-    /// item in only one; smaller values let a list's top results compete.
+    /// in each list that holds it. At the published 60 an item in both lists
+    /// outranks every item in only one, which buried each list's best
+    /// results under weak agreement; at 10 its first few results compete.
     #[serde(default = "default_fusion_k")]
     pub fusion_k: f64,
 
@@ -92,7 +93,7 @@ fn default_fusion_budget_ms() -> u64 {
 }
 
 fn default_fusion_k() -> f64 {
-    60.0
+    10.0
 }
 
 fn default_quiet_similarity() -> f64 {
