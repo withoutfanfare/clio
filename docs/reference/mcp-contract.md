@@ -1214,11 +1214,11 @@ Handoff and context briefs answer "what is this project?"; resume answers "what 
 
 ### Behaviour
 
-1. Sections in priority order: Needs attention (eligible open work with machine-readable reasons: `overdue`, `reminder_due`, `project_session`, `dormant`), Waiting on, Active constraints (project first plus up to two global), Recent decisions, Relevant knowledge (query only), Recent activity (receipts)
-2. Empty sections are omitted and release their capacity; each non-empty critical section (attention, waiting, constraints) keeps one guaranteed slot at small budgets
+1. Prompt briefs prioritise Relevant knowledge, then Needs attention, Waiting on, Active constraints, Recent decisions and Recent activity. Session starts put one recent receipt first, followed by attention, waiting, constraints and decisions.
+2. Empty sections release capacity. Attention and waiting reserve slots; constraints also reserve a slot at session start. Small prompt budgets can omit constraints.
 3. Items are deduplicated across sections by memory ID; archived, expired, resolved and cancelled records never appear
 4. A resume never counts as use for ranking: `access_count` and `last_accessed_at` stay unchanged. It is not write-free, though (see 5)
-5. With `session_id`, every item shown records one idempotent `surfaced` event in `memory_events`. Attention items are then suppressed on repeat requests in the same scope until their state changes. Without `session_id` nothing is written
+5. With `session_id`, default selection records idempotent surfaced events. Attention is suppressed until its state changes. Constraints and decisions are suppressed only on query-bearing requests after acknowledged delivery, and edits make them eligible again. Session starts never suppress these sections. Deferred selection records nothing until acknowledgement; without a session nothing is written.
 6. The character budget counts the serialised representation (title + bounded content + reason); at least one item is always kept
 7. Event-write failure logs a warning and still returns the brief
 

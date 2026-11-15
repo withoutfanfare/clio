@@ -1,11 +1,12 @@
 # Benchmarks
 
-Tools for tuning Clio on measured outcomes rather than intuition. All three run
+Tools for tuning Clio on measured outcomes rather than intuition. Retrieval checks run
 against a copy of a database and never modify live data.
 
 | Script | Answers |
 |---|---|
 | `link-invariants.sh` | Does auto-linking obey its design rules? |
+| [`resume-eval.py`](resume-eval.md) | Does the hook and MCP resume path surface task-relevant memories? |
 | `recall-eval.py` | Does retrieval return the *right* memories? |
 | `dial-in.sh` | Which threshold and cap maximise retrieval quality? |
 | `capture-model/run.py` | Which capture model distils correctly, and at what cost? |

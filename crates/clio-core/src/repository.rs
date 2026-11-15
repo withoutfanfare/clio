@@ -376,8 +376,8 @@ pub fn update(
 /// Return the id of a non-archived memory in `namespace` with byte-identical
 /// content, if one exists. Used to suppress duplicate writes on the capture and
 /// review-approval paths. Archived memories are excluded here; the capture path
-/// handles an archived twin separately via [`find_archived_duplicate`], reviving
-/// it rather than creating a fresh live row.
+/// handles an archived twin via [`find_archived_duplicate`], proposing revival
+/// for review while keeping the original hidden.
 pub fn find_content_duplicate(
     conn: &Connection,
     namespace: &str,
@@ -400,7 +400,7 @@ pub fn find_content_duplicate(
 
 /// Return the id of an **archived** memory in `namespace` with byte-identical
 /// content, if one exists (and no live twin does). The capture path uses this to
-/// revive an archived duplicate rather than creating a fresh live row.
+/// propose revival for review while leaving the archived duplicate hidden.
 pub fn find_archived_duplicate(
     conn: &Connection,
     namespace: &str,
