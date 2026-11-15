@@ -25,6 +25,12 @@ pub struct ScoringConfig {
     /// rather than its nearest neighbours. 0.0 = disabled.
     #[serde(default = "default_min_similarity")]
     pub min_similarity: f64,
+
+    /// Before a long query's any-word terms are chosen by rarity, drop the
+    /// words that match none of the memories the search covers. `false`
+    /// keeps them, as before.
+    #[serde(default = "default_true")]
+    pub scoped_terms: bool,
 }
 
 fn default_decay_lambda() -> f64 {
@@ -45,6 +51,7 @@ impl Default for ScoringConfig {
             decay_lambda: default_decay_lambda(),
             access_boost_weight: default_access_boost(),
             min_similarity: default_min_similarity(),
+            scoped_terms: true,
         }
     }
 }

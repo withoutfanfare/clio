@@ -2335,6 +2335,7 @@ fn semantic_recall_min_similarity_floor_drops_weak_matches() {
         decay_lambda: 0.0,
         access_boost_weight: 0.0,
         min_similarity: 0.5,
+        ..Default::default()
     };
     let results = semantic_recall(
         &conn,
@@ -2402,6 +2403,7 @@ fn semantic_recall_importance_lifts_weaker_match_when_scoring_enabled() {
         decay_lambda: 0.01,
         access_boost_weight: 0.1,
         min_similarity: 0.0,
+        ..Default::default()
     };
     let scored = semantic_recall(
         &conn,

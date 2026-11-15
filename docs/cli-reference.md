@@ -319,8 +319,11 @@ Any-term search considers 1,000 Unicode characters and at most 12 terms. Tokens
 containing `/` are excluded, including paths and URLs. Ticket/code identifiers
 take priority; dates and times are not identifiers. Remaining terms use document
 counts through FTS MATCH, including the index's stemming and accent folding.
-Counts cover the whole index, including archived memories. Short queries retain
-their matching behaviour apart from path exclusion.
+Counts cover the whole index, including archived memories. A word that matches
+none of the memories the search itself covers (its namespace, archive and
+expiry filters) is dropped before the 12 are chosen; with
+`scoring.scoped_terms` off nothing is dropped. Short queries retain their
+matching behaviour apart from path exclusion.
 
 Administrative exports and query-less recall (including kind/tag-only filters
 and scoped browsing) do not update access counts or last-accessed dates.

@@ -953,7 +953,11 @@ fn sanitise_fts_query_any(raw: &str) -> String {
 }
 
 /// Select across a bounded prompt, retaining identifiers and rare corpus terms.
-fn informative_query(conn: &Connection, raw: &str) -> Result<String> {
+/// Rarity is counted across the whole index: it measures how distinctive a
+/// word is. With `scope`, a word that matches none of the memories that query
+/// covers is dropped first, so filler that is rare everywhere but absent from
+/// the project cannot push out the project's own vocabulary.
+fn informative_query(conn: &Connection, raw: &str, scope: Option<&RecallQuery>) -> Result<String> {
     let bounded: String = raw.chars().take(1000).collect();
     let bounded = bounded
         .split_whitespace()
@@ -977,9 +981,29 @@ fn informative_query(conn: &Connection, raw: &str) -> Result<String> {
     }
     let mut counts =
         conn.prepare_cached("SELECT count(*) FROM memory_fts WHERE memory_fts MATCH ?1")?;
+    // CROSS JOIN pins the full-text index as the outer loop.
+    let mut in_scope = String::from(
+        "SELECT 1 FROM memory_fts CROSS JOIN memories m ON m.rowid = memory_fts.rowid \
+         WHERE memory_fts MATCH ?1",
+    );
+    let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = vec![Box::new(String::new())];
+    if let Some(q) = scope {
+        append_filters(&mut in_scope, &mut params, q);
+    }
+    in_scope.push_str(" LIMIT 1");
+    let mut in_scope = conn.prepare_cached(&in_scope)?;
     let mut ranked = Vec::new();
     for (position, term) in terms.drain(..).enumerate() {
-        let count: i64 = counts.query_row([sanitise_fts_query(&term)], |r| r.get(0))?;
+        let safe = sanitise_fts_query(&term);
+        let count: i64 = counts.query_row([&safe], |r| r.get(0))?;
+        if scope.is_some() {
+            params[0] = Box::new(safe);
+            let refs: Vec<&dyn rusqlite::types::ToSql> =
+                params.iter().map(|p| p.as_ref()).collect();
+            if count == 0 || !in_scope.exists(refs.as_slice())? {
+                continue;
+            }
+        }
         let identifier = term.chars().next().is_some_and(|c| c.is_alphabetic())
             && (term.contains('_')
                 || term.contains("::")
@@ -999,7 +1023,8 @@ fn informative_query(conn: &Connection, raw: &str) -> Result<String> {
 
 fn recall_fts(conn: &Connection, fts_query: &str, q: &RecallQuery) -> Result<RecallResult> {
     let safe_query = if q.match_any_term {
-        sanitise_fts_query_any(&informative_query(conn, fts_query)?)
+        let scoped = q.scoring.as_ref().is_none_or(|s| s.scoped_terms);
+        sanitise_fts_query_any(&informative_query(conn, fts_query, scoped.then_some(q))?)
     } else {
         sanitise_fts_query(fts_query)
     };
@@ -1996,7 +2021,7 @@ mod delivery_query_tests {
             serde_json::from_value(serde_json::json!({"content":"verifications cafe CLIO-123"})).unwrap();
         super::remember(&conn, &input, &crate::settings::Settings::default()).unwrap();
         conn.execute_batch("PRAGMA query_only = ON").unwrap();
-        let query = super::informative_query(&conn, "common ordinary generic frequent repeated broad general context request implementation memory system verification café /tmp/fix-123/code.rs 2026-11-14 CLIO-123").unwrap();
+        let query = super::informative_query(&conn, "common ordinary generic frequent repeated broad general context request implementation memory system verification café /tmp/fix-123/code.rs 2026-11-14 CLIO-123", None).unwrap();
         assert!(query.contains("verification"));
         assert!(query.contains("café"));
         assert!(query.contains("clio-123"));
@@ -2004,9 +2029,56 @@ mod delivery_query_tests {
         assert!(!query.contains("/"));
         assert!(!query.contains("2026-11-14"));
         assert_eq!(
-            super::informative_query(&conn, "/tmp/code.rs atomic").unwrap(),
+            super::informative_query(&conn, "/tmp/code.rs atomic", None).unwrap(),
             "atomic"
         );
+    }
+
+    #[test]
+    fn scoped_term_selection_ignores_filler_absent_from_the_project() {
+        let conn = crate::db::open_in_memory().unwrap();
+        let store = |namespace: &str, content: &str| {
+            let input = serde_json::from_value(
+                serde_json::json!({"namespace": namespace, "content": content}),
+            )
+            .unwrap();
+            super::remember(&conn, &input, &crate::settings::Settings::default()).unwrap()
+        };
+        // The project's own words are common in the project; the filler is
+        // rare across the store and absent from the project.
+        let lease = store("project:ledger", "leases never expire for agents");
+        store("project:ledger", "leases and expiry for agents");
+        let filler = "perhaps increasingly tightly certainly properly really seemingly \
+                      somewhat thought finding stuck allowed";
+        store("project:other", filler);
+        let prompt = format!("{filler} leases expire agents");
+        let prompt = prompt.as_str();
+        let scoped = crate::models::RecallQuery {
+            query: Some(prompt.into()),
+            namespace: Some("project:ledger".into()),
+            match_any_term: true,
+            scoring: Some(crate::settings::ScoringConfig::default()),
+            ..Default::default()
+        };
+        let mut kept: Vec<String> = super::informative_query(&conn, prompt, Some(&scoped))
+            .unwrap()
+            .split(' ')
+            .map(String::from)
+            .collect();
+        kept.sort();
+        assert_eq!(kept, ["agents", "expire", "leases"]);
+        let found = super::recall(&conn, &scoped).unwrap();
+        assert!(found.items.iter().any(|i| i.memory.id == lease.id));
+
+        // Counting across the whole store keeps the filler and loses the topic.
+        let unscoped = crate::models::RecallQuery {
+            scoring: Some(crate::settings::ScoringConfig {
+                scoped_terms: false,
+                ..Default::default()
+            }),
+            ..scoped
+        };
+        assert_eq!(super::recall(&conn, &unscoped).unwrap().total, 0);
     }
 
     #[test]
@@ -2037,7 +2109,7 @@ mod delivery_query_tests {
         )
         .unwrap();
         super::remember(&conn, &input, &crate::settings::Settings::default()).unwrap();
-        let query = super::informative_query(&conn, "common ordinary generic frequent repeated broad general context request implementation memory system rareword CLIO-123 touch_accessed").unwrap();
+        let query = super::informative_query(&conn, "common ordinary generic frequent repeated broad general context request implementation memory system rareword CLIO-123 touch_accessed", None).unwrap();
         assert!(query.contains("rareword"));
         assert!(query.contains("clio-123"));
         assert!(query.contains("touch_accessed"));
@@ -2045,10 +2117,10 @@ mod delivery_query_tests {
         // out the one prose term that does.
         let pasted = "request_id trace_id span_id build_id job_id run_id user_id org_id \
                       node_id pod_id shard_id lease_id batch_id rareword";
-        let query = super::informative_query(&conn, pasted).unwrap();
+        let query = super::informative_query(&conn, pasted, None).unwrap();
         assert!(query.contains("rareword"), "{query}");
         assert_eq!(
-            super::informative_query(&conn, "spool atomic rename").unwrap(),
+            super::informative_query(&conn, "spool atomic rename", None).unwrap(),
             "spool atomic rename"
         );
     }

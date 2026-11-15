@@ -143,6 +143,7 @@ unless the app also implements their full validation and recovery workflows.
 | `decay_lambda` | float | `0.01` | Exponential decay rate (0.0 = disabled, 0.01 = 75% at 30 days) |
 | `access_boost_weight` | float | `0.1` | Weight for access frequency boost (0.0 = disabled) |
 | `min_similarity` | float | `0.35` | Lowest cosine similarity a semantic search result may have. Weaker matches are dropped, so an unrelated query returns nothing rather than the least-bad guess. `0.0` disables the floor |
+| `scoped_terms` | bool | `true` | A long any-word query keeps its 12 rarest terms, counted across the whole store. `true` first drops the words that match none of the memories the search covers (namespace, archive and expiry filters applied). `false` keeps them, which lets filler that is rare everywhere but absent from the project push the project's own words out |
 
 ## daemon
 

@@ -31,6 +31,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Effectiveness reports task-matching and expiry coverage; capture and resume
   benchmarks exercise selectivity and retrieval relevance.
 
+**Retrieval, round two (2026-11-15)**
+- Long any-word queries drop words that match none of the memories the search
+  covers before choosing their 12 rarest terms, so a chatty prompt no longer
+  loses its topic to filler (`scoring.scoped_terms`, default on).
+
 **Deployment notes:** deploy compatible server and CLI binaries before using new
 flags or tool profiles. Existing hooks and desktop JSON envelopes are preserved.
 Delivery acknowledgement needs caller adoption; current hooks remain supported.
