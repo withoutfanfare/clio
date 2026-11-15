@@ -295,6 +295,15 @@ an acknowledged delivery of the current memory revision in that session.
 Selection-time events do not qualify. Session starts always reconsider them,
 including restarts and compaction. The knowledge section refills after filtering
 receipts and stale consolidation, within one bounded window of 50 candidates.
+Fused knowledge leaves receipts out before either side's candidates are cut,
+and reads once more at 100 candidates (60 from each side) when filtering and
+near-copy skipping leave slots empty after a full 50. Nothing beyond the 100th
+merged candidate is considered.
+
+On a prompt request the slots Relevant knowledge does not fill may go to due
+follow-ups and blockers only. Constraints, decisions and activity get what they
+would have had beside a full knowledge section, so a brief with nothing matched
+stays short. Session start is unaffected.
 
 Relevant knowledge is fused retrieval: any-word keyword search and semantic
 search over the project namespace, merged by rank position. `clio search` uses
@@ -303,10 +312,13 @@ if there is no backend, it fails, or it takes longer than
 `scoring.fusion_budget_ms` (1,000 ms), the keyword result is returned alone and
 the command still succeeds. `scoring.fusion` switches the merge off. When the
 most similar memory in the namespace is below `scoring.quiet_similarity` (0.45)
-and no keyword match shares three of the query's chosen terms, the section is
-left empty: nothing stored is about the task. A candidate that
-repeats one already chosen (same title, or stored embeddings at least
-`scoring.dedup_similarity` similar, 0.85) is skipped and the slot refilled.
+and no keyword match either shares three of the query's chosen terms (all of
+them, when it has fewer) or contains an identifier the query names, the section
+is left empty: nothing stored is about the task. The rule needs the semantic
+side, so a keyword-only fallback is never quietened. A candidate that repeats
+one already chosen (same title, or stored embeddings from the same model at
+least `scoring.dedup_similarity` similar, 0.85) is skipped and the slot
+refilled; `clio search` results are not de-duplicated.
 
 ```sh
 clio resume                                  # session-start context

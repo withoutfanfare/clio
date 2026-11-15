@@ -47,11 +47,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `scoring.fusion_k` sets the fusion constant.
 - Fused retrieval stays quiet when nothing it searched is close in meaning to
   the query (`scoring.quiet_similarity`, default 0.45) and no keyword match
-  shares three of its chosen terms, instead of returning whatever shares a
-  word with it.
+  shares three of its chosen terms (all of them, when it has fewer), instead
+  of returning whatever shares a word with it. A memory that contains an
+  identifier the query names is never quietened, and `0` switches the rule
+  off. A prompt brief with little or nothing matched no longer hands the
+  unused slots to constraints, decisions and receipts; only follow-ups may
+  take them.
 - A resume brief no longer spends two Relevant knowledge slots on one fact: a
   near-copy of an item already chosen is skipped and the next candidate takes
-  the slot (`scoring.dedup_similarity`, default 0.85).
+  the slot (`scoring.dedup_similarity`, default 0.85). Vectors are compared
+  only within one embedding model. Receipts are left out before candidates
+  are cut, and one wider fetch (100 candidates) follows when filtering leaves
+  slots empty.
 - `scoring.importance_clamp` bounds how far importance moves a ranking score,
   so its weight can be measured. The default (3.0) leaves ranking as it was.
 - Keyword search in a large namespace no longer spends over a second counting

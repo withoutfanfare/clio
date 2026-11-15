@@ -1750,8 +1750,8 @@ fn search_fused(
         settings.context.auto_detect,
     );
     let explicit = !params.global && params.namespace.is_some();
-    let base = RecallQuery {
-        query: Some(params.query),
+    let base = clio_core::fusion::FusedQuery {
+        query: params.query,
         namespace: explicit.then(|| detected_ns.clone()),
         include_archived: params.include_archived,
         exclude_expired: !params.include_expired,

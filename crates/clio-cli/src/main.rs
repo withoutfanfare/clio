@@ -2726,8 +2726,8 @@ fn cmd_search_fused(
     let embedding = clio_core::fusion::query_embedding(&s.scoring, Some(&args.query), move |q| {
         embeddings::embed_with_config(&config, q)
     });
-    let base = RecallQuery {
-        query: Some(args.query),
+    let base = clio_core::fusion::FusedQuery {
+        query: args.query,
         namespace: args.namespace.clone().filter(|_| !args.global),
         include_archived: args.include_archived,
         exclude_expired: !args.include_expired,

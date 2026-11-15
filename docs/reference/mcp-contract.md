@@ -1216,10 +1216,10 @@ Handoff and context briefs answer "what is this project?"; resume answers "what 
 
 ### Behaviour
 
-0. Relevant knowledge is fused retrieval (`scoring.fusion`, on by default): any-word keyword search and semantic search over the project namespace, merged by rank position. An item only the semantic side found carries the reason `similar in meaning to the task`; the rest keep `matches task terms`. With no embedding backend, a failed embedding or an overrun of `scoring.fusion_budget_ms`, the section is the keyword result alone and the call still succeeds. The section is empty when the most similar memory in the namespace is below `scoring.quiet_similarity` and no keyword match shares three of the query's chosen terms: nothing there is about the task
+0. Relevant knowledge is fused retrieval (`scoring.fusion`, on by default): any-word keyword search and semantic search over the project namespace, merged by rank position. An item only the semantic side found carries the reason `similar in meaning to the task`; the rest keep `matches task terms`. With no embedding backend, a failed embedding or an overrun of `scoring.fusion_budget_ms`, the section is the keyword result alone and the call still succeeds. The section is empty when the most similar memory in the namespace is below `scoring.quiet_similarity` and no keyword match either shares three of the query's chosen terms (all of them, when it has fewer) or contains an identifier the query names: nothing there is about the task. That rule needs the semantic side: with `scoring.fusion` off, or when the call falls back to keywords (no backend, a failed embedding, the budget overrun), nothing is quietened
 1. Prompt briefs prioritise Relevant knowledge, then Needs attention, Waiting on, Active constraints, Recent decisions and Recent activity. Session starts put one recent receipt first, followed by attention, waiting, constraints and decisions.
-2. Empty sections release capacity. Attention and waiting reserve slots; constraints also reserve a slot at session start. Small prompt budgets can omit constraints.
-3. Items are deduplicated across sections by memory ID; archived, expired, resolved and cancelled records never appear. Within Relevant knowledge a near-copy of an item already chosen (same title, or stored embeddings at least `scoring.dedup_similarity` similar) is skipped and the next candidate takes its slot
+2. Empty sections release capacity. Attention and waiting reserve slots; constraints also reserve a slot at session start. Small prompt budgets can omit constraints. On a prompt call (a `query` is given) Relevant knowledge is allocated its ten slots whether or not it fills them: the slots it leaves empty may go to Needs attention and Waiting on only, and constraints, decisions and activity get what they would have had beside a full section. A brief with nothing matched stays short instead of padding itself. Session start is unaffected.
+3. Items are deduplicated across sections by memory ID; archived, expired, resolved and cancelled records never appear. Within Relevant knowledge a near-copy of an item already chosen (same title, or stored embeddings from the same model at least `scoring.dedup_similarity` similar) is skipped and the next candidate takes its slot. Receipts are left out before either side's candidates are cut. Fused knowledge reads 50 merged candidates (30 from each side); if filtering and near-copy skipping leave slots empty after a full 50, it reads once more at 100 (60 from each side), and nothing beyond that is considered. Keyword-only knowledge reads one window of 50. Near-copy skipping applies to this section only, not to `memory_search` results
 4. A resume never counts as use for ranking: `access_count` and `last_accessed_at` stay unchanged. It is not write-free, though (see 5)
 5. With `session_id`, default selection records idempotent surfaced events. Attention is suppressed until its state changes. Constraints and decisions are suppressed only on query-bearing requests after acknowledged delivery, and edits make them eligible again. Session starts never suppress these sections. Deferred selection records nothing until acknowledgement; without a session nothing is written.
 6. The character budget counts the serialised representation (title + bounded content + reason); at least one item is always kept
@@ -1493,15 +1493,17 @@ Find memories by semantic meaning using vector embeddings.
 - compute cosine similarity only against stored embeddings with the active model name and matching vector dimensions, dropping matches below `scoring.min_similarity`
 - run any-word keyword search over the same memories and merge the top 30 of each by rank position (reciprocal rank fusion): an item scores `1 / (scoring.fusion_k + position)` in each list that holds it, 10 by default. The exact-phrase keyword boost this replaces never matched a sentence
 - a keyword match containing an identifier the query names (a ticket id, or a name with `_` or `::`) ranks ahead of the merged order (`scoring.identifiers_first`)
-- if the backend is missing, the embedding fails or `scoring.fusion_budget_ms` is overrun, return the keyword matches alone; the reply's note says so. There is no error
-- return nothing from a namespace whose most similar memory is below `scoring.quiet_similarity` (0.45), unless one of the keyword matches shares at least three of the query's chosen terms. Scoped search applies this to the project and to `global` separately
+- if the backend is missing, the embedding fails or `scoring.fusion_budget_ms` is overrun, return the keyword matches alone. There is no error. A `markdown` or `compact` reply carries a note saying so; a `json` reply does not, because its shape is the core recall envelope and cannot change
+- return nothing from a namespace whose most similar memory is below `scoring.quiet_similarity` and no keyword match either shares three of the query's chosen terms (all of them, when it has fewer) or contains an identifier the query names (the threshold is 0.45; `0` switches the rule off). Scoped search applies this to the project and to `global` separately. The rule needs the semantic side, so a keyword-only fallback is never quietened
+- only namespace, archive and expiry filters exist for this tool; the core request type carries nothing else, so no filter can be accepted and applied to one side only
+- results are not de-duplicated: near-copy skipping belongs to the resume brief
 - with `scoring.fusion` off: vectors alone, ranked by cosine similarity adjusted by the phrase boost and the configured scoring, and an error when no backend is available
 - when `namespace` is explicitly provided, filter to that namespace; a bare project name is canonicalised first, as in `memory_recall`
 - when `cwd` is provided and `namespace` is omitted, use scoped recall: search detected namespace first, then fill remaining slots from `global`; project-scoped results appear before global results
 - when detection falls back to `global`, search only `global` unless `global: true` requests all namespaces
 - exclude archived memories by default
 - return results best first
-- the ranking value is returned as `score` in a compact item and as `rank` in a `json` record; higher is a better match. It is the fused rank score (at most `2/11`, about 0.18, at the default `fusion_k`), not a similarity. An identifier match placed first keeps its own score, so scores are not strictly descending
+- the ranking value is returned as `score` in a compact item and as `rank` in a `json` record; higher is a better match. **It is a fused rank score, not a similarity**: at most `2 / (fusion_k + 1)`, about 0.18 at the default, and it says only where an item stood in the two lists. A consumer that showed the old value as a similarity percentage must stop. An identifier match placed first keeps its own score, so scores are not strictly descending
 
 ### Response
 
@@ -1535,7 +1537,7 @@ The `json` shape, shown indented:
       "archived_at": null,
       "created_at": "2026-03-02T19:15:00Z",
       "updated_at": "2026-03-02T19:15:00Z",
-      "rank": 0.847
+      "rank": 0.174
     }
   ]
 }

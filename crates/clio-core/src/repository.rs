@@ -965,12 +965,32 @@ pub(crate) fn is_identifier(term: &str) -> bool {
             || (term.contains('-') && term.chars().any(|c| c.is_ascii_digit())))
 }
 
+/// Append "kind is none of these" to a query over `memories m`.
+pub(crate) fn append_kind_exclusion(
+    sql: &mut String,
+    params: &mut Vec<Box<dyn rusqlite::types::ToSql>>,
+    kinds: &[String],
+) {
+    if kinds.is_empty() {
+        return;
+    }
+    let placeholders: Vec<String> = (0..kinds.len())
+        .map(|i| format!("?{}", params.len() + 1 + i))
+        .collect();
+    sql.push_str(&format!(" AND m.kind NOT IN ({})", placeholders.join(", ")));
+    for kind in kinds {
+        params.push(Box::new(kind.clone()));
+    }
+}
+
 /// Any-word recall that also returns the quoted terms it matched on, so a
 /// caller can weigh the matches without choosing the terms a second time.
-/// Untracked, and `q.namespace` must already be canonical.
+/// `exclude_kinds` are left out before the limit is applied. Untracked, and
+/// `q.namespace` must already be canonical.
 pub(crate) fn recall_any_terms(
     conn: &Connection,
     q: &RecallQuery,
+    exclude_kinds: &[String],
 ) -> Result<(Vec<RecallItem>, Vec<String>)> {
     let raw = q.query.as_deref().unwrap_or_default();
     let scoped = q.scoring.as_ref().is_none_or(|s| s.scoped_terms);
@@ -980,7 +1000,8 @@ pub(crate) fn recall_any_terms(
     } else {
         terms.join(" OR ")
     };
-    Ok((recall_fts_matching(conn, safe_query, q)?.items, terms))
+    let matches = recall_fts_matching(conn, safe_query, q, exclude_kinds)?;
+    Ok((matches.items, terms))
 }
 
 /// For each of `ids` that matches any of `terms`: how many of them it
@@ -1094,15 +1115,16 @@ fn recall_fts(conn: &Connection, fts_query: &str, q: &RecallQuery) -> Result<Rec
     } else {
         sanitise_fts_query(fts_query)
     };
-    recall_fts_matching(conn, safe_query, q)
+    recall_fts_matching(conn, safe_query, q, &[])
 }
 
 /// Run an already sanitised full-text expression with `q`'s filters, scoring
-/// and paging.
+/// and paging, leaving out `exclude_kinds`.
 fn recall_fts_matching(
     conn: &Connection,
     safe_query: String,
     q: &RecallQuery,
+    exclude_kinds: &[String],
 ) -> Result<RecallResult> {
     // CROSS JOIN pins the full-text index as the outer loop. Left to choose,
     // the planner walks the namespace's rows for the count query below and
@@ -1123,6 +1145,7 @@ fn recall_fts_matching(
     param_values.push(Box::new(safe_query));
 
     append_filters(&mut sql, &mut param_values, q);
+    append_kind_exclusion(&mut sql, &mut param_values, exclude_kinds);
 
     // Count query (without LIMIT/OFFSET) — kept separate for FTS because
     // bm25() is incompatible with window functions like COUNT(*) OVER().

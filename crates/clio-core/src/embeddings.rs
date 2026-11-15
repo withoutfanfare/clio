@@ -545,12 +545,14 @@ pub fn semantic_search(
         namespace,
         include_archived,
         exclude_expired,
+        &[],
         limit,
         None,
     )
 }
 
-/// [`semantic_search`] that stops with an error once `deadline` passes, so a
+/// [`semantic_search`] that leaves out `exclude_kinds` before the nearest
+/// `limit` are chosen, and stops with an error once `deadline` passes so a
 /// caller with a time budget can fall back to another result.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn semantic_search_until(
@@ -560,6 +562,7 @@ pub(crate) fn semantic_search_until(
     namespace: Option<&str>,
     include_archived: bool,
     exclude_expired: bool,
+    exclude_kinds: &[String],
     limit: u32,
     deadline: Option<std::time::Instant>,
 ) -> Result<Vec<SemanticResult>> {
@@ -571,6 +574,7 @@ pub(crate) fn semantic_search_until(
         filter,
         include_archived,
         exclude_expired,
+        exclude_kinds,
         limit,
         deadline,
     )
@@ -584,6 +588,7 @@ fn semantic_search_filtered(
     namespace: NamespaceFilter<'_>,
     include_archived: bool,
     exclude_expired: bool,
+    exclude_kinds: &[String],
     limit: u32,
     deadline: Option<std::time::Instant>,
 ) -> Result<Vec<SemanticResult>> {
@@ -615,6 +620,7 @@ fn semantic_search_filtered(
             param_values.push(Box::new(ns.to_string()));
         }
     }
+    crate::repository::append_kind_exclusion(&mut sql, &mut param_values, exclude_kinds);
 
     let param_refs: Vec<&dyn rusqlite::types::ToSql> =
         param_values.iter().map(|p| p.as_ref()).collect();
@@ -905,11 +911,14 @@ fn fts_match_strengths(conn: &Connection, query: &str) -> std::collections::Hash
 
 /// Remembers the items chosen so far and recognises a near-copy of one: the
 /// same title, or a stored embedding at least `threshold` similar. Uses the
-/// vectors already stored, so nothing is embedded. A memory with no stored
+/// vectors already stored, so nothing is embedded. Vectors are compared only
+/// within one model and size: two models' spaces are unrelated even when
+/// their sizes agree, as all three local models' do. A memory with no stored
 /// vector is only ever a copy by title.
 pub(crate) struct NearCopies {
     threshold: f64,
-    vectors: Vec<Vec<f32>>,
+    /// Each kept vector with the model that produced it.
+    vectors: Vec<(String, Vec<f32>)>,
     titles: std::collections::HashSet<String>,
 }
 
@@ -936,24 +945,28 @@ impl NearCopies {
         if title.as_ref().is_some_and(|t| self.titles.contains(t)) {
             return Ok(true);
         }
-        let blob: Option<Vec<u8>> = conn
+        let stored: Option<(String, Vec<u8>)> = conn
             .query_row(
-                "SELECT embedding FROM memory_embeddings WHERE memory_id = ?1",
+                "SELECT model, embedding FROM memory_embeddings WHERE memory_id = ?1",
                 params![memory.id],
-                |row| row.get(0),
+                |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .optional()?;
-        let vector = blob.map(|b| decode_embedding(&b)).transpose()?;
-        if let Some(vector) = &vector {
-            // Vectors of another model's size are not comparable: not a copy.
-            if self.vectors.iter().any(|kept| {
-                cosine_similarity(kept, vector).is_ok_and(|similarity| similarity >= self.threshold)
+        let stored = match stored {
+            Some((model, blob)) => Some((model, decode_embedding(&blob)?)),
+            None => None,
+        };
+        if let Some((model, vector)) = &stored {
+            if self.vectors.iter().any(|(kept_model, kept)| {
+                kept_model == model
+                    && cosine_similarity(kept, vector)
+                        .is_ok_and(|similarity| similarity >= self.threshold)
             }) {
                 return Ok(true);
             }
         }
         self.titles.extend(title);
-        self.vectors.extend(vector);
+        self.vectors.extend(stored);
         Ok(false)
     }
 }

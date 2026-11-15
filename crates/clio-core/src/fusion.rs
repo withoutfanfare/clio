@@ -20,7 +20,9 @@ use crate::settings::ScoringConfig;
 const POOL: u32 = 30;
 
 /// Chosen query terms one keyword match must share for the keyword leg to
-/// count as evidence by itself. One or two shared words turn up by chance.
+/// count as evidence by itself: one or two shared words out of many turn up
+/// by chance. A query with fewer chosen terms needs all of them, or a short
+/// follow-up could never qualify.
 const AGREEING_TERMS: usize = 3;
 
 /// Embedding threads still running, including any that overran their budget.
@@ -75,6 +77,28 @@ pub struct QueryEmbedding {
     pub vector: Vec<f32>,
     pub model: String,
     pub deadline: Option<Instant>,
+}
+
+/// A fused retrieval request: exactly what both legs honour. Filters that
+/// only keyword recall understands (kind, tags, importance, archived-only,
+/// paging) have no field here, so they cannot be passed and half-applied.
+#[derive(Debug, Clone, Default)]
+pub struct FusedQuery {
+    pub query: String,
+    /// One namespace, or every namespace when `None`. A bare project name is
+    /// canonicalised.
+    pub namespace: Option<String>,
+    pub include_archived: bool,
+    pub exclude_expired: bool,
+    /// Kinds neither leg may return, left out before either list is cut.
+    pub exclude_kinds: Vec<String>,
+    /// Results to return.
+    pub limit: u32,
+    /// Candidates each leg contributes before merging; `0` means the default
+    /// of 30. The keyword leg contributes at least `limit`.
+    pub pool: u32,
+    pub scoring: Option<ScoringConfig>,
+    pub skip_access_tracking: bool,
 }
 
 /// One fused result and whether the keyword leg found it.
@@ -134,62 +158,99 @@ where
     }
 }
 
-/// Fused recall over the memories `base` covers.
+/// [`query_embedding`] for a caller whose backend cannot move to another
+/// thread: `embed` runs on the calling thread, so the caller waits for it
+/// however long it takes. The answer is the same: an embedding that arrives
+/// after the budget is discarded and keywords are used alone.
+pub fn query_embedding_inline<F>(
+    scoring: &ScoringConfig,
+    query: Option<&str>,
+    embed: F,
+) -> Option<QueryEmbedding>
+where
+    F: FnOnce(&str) -> Result<(Vec<f32>, String)>,
+{
+    if !scoring.fusion {
+        return None;
+    }
+    let query = query.map(str::trim).filter(|q| !q.is_empty())?;
+    let deadline = (scoring.fusion_budget_ms > 0)
+        .then(|| Instant::now() + Duration::from_millis(scoring.fusion_budget_ms));
+    match embed(query) {
+        Ok(_) if deadline.is_some_and(|d| Instant::now() >= d) => {
+            tracing::warn!("query embedding overran its budget, using keywords alone");
+            None
+        }
+        Ok((vector, model)) => Some(QueryEmbedding {
+            vector,
+            model,
+            deadline,
+        }),
+        Err(e) => {
+            tracing::debug!("no query embedding, using keywords alone: {e}");
+            None
+        }
+    }
+}
+
+/// Fused recall over the memories `query` covers.
 ///
-/// `base` supplies the query text, namespace, archive and expiry flags,
-/// scoring and limit. The keyword leg honours every other filter on it; the
-/// semantic leg knows only namespace, archive and expiry, so callers that
-/// filter by kind or tag must not pass an embedding. Each leg is ordered the
-/// way its own search orders it today. If the semantic leg fails or overruns
-/// the embedding's deadline, the keyword results are returned on their own.
+/// Each leg is ordered the way its own search orders it today. If the
+/// semantic leg fails or overruns the embedding's deadline, the keyword
+/// results are returned on their own.
 ///
 /// A keyword match containing an identifier the query names ranks ahead of
 /// the merged order (`scoring.identifiers_first`): rank fusion would
 /// otherwise put the one memory that names the ticket below every memory
 /// both legs half-agree on.
 ///
-/// Nothing is returned when the most similar memory searched is below
-/// `scoring.quiet_similarity` and no keyword match shares
-/// [`AGREEING_TERMS`] of the query's terms: any-word matching always finds
-/// something, and with neither signal behind it that something is noise. The
-/// rule needs the semantic leg to have compared at least one memory, so a
-/// store with no usable embeddings keeps its keyword results.
+/// Nothing is returned when `scoring.quiet_similarity` is above zero, the
+/// most similar memory searched is below it, and no keyword match either
+/// shares [`AGREEING_TERMS`] of the query's terms (all of them, when it has
+/// fewer) or contains an identifier the query names: any-word matching always finds something, and with no
+/// signal behind it that something is noise. An exact identifier match is
+/// never noise. The rule needs the semantic leg to have compared at least
+/// one memory, so a store with no usable embeddings keeps its keyword
+/// results.
 pub fn fused_recall(
     conn: &Connection,
-    base: &RecallQuery,
+    query: &FusedQuery,
     embedding: Option<&QueryEmbedding>,
 ) -> Result<Vec<FusedItem>> {
-    let canonical = RecallQuery {
-        namespace: base
+    let pool = if query.pool == 0 { POOL } else { query.pool };
+    let keyword_query = RecallQuery {
+        query: Some(query.query.clone()),
+        namespace: query
             .namespace
             .as_deref()
             .map(crate::context::canonical_namespace),
-        ..base.clone()
+        include_archived: query.include_archived,
+        exclude_expired: query.exclude_expired,
+        limit: pool.max(query.limit),
+        scoring: query.scoring.clone(),
+        skip_access_tracking: true,
+        match_any_term: true,
+        ..Default::default()
     };
-    let base = &canonical;
+    let base = &keyword_query;
     let (semantic, nearest) = match embedding {
-        Some(e) => semantic_leg(conn, base, e).unwrap_or_else(|err| {
+        Some(e) => semantic_leg(conn, base, &query.exclude_kinds, pool, e).unwrap_or_else(|err| {
             tracing::warn!("semantic leg failed, using keywords alone: {err}");
             (Vec::new(), None)
         }),
         None => (Vec::new(), None),
     };
-    let keyword_query = RecallQuery {
-        match_any_term: true,
-        include_links: false,
-        limit: POOL.max(base.limit),
-        offset: 0,
-        skip_access_tracking: true,
-        ..base.clone()
-    };
-    let (keyword, terms) = crate::repository::recall_any_terms(conn, &keyword_query)?;
+    let (keyword, terms) =
+        crate::repository::recall_any_terms(conn, &keyword_query, &query.exclude_kinds)?;
 
     // How the query's terms sit on the keyword matches: every term when the
     // quiet rule needs their agreement, otherwise only its identifiers.
     let defaults = ScoringConfig::default();
     let scoring = base.scoring.as_ref().unwrap_or(&defaults);
     let quiet = base.scoring.as_ref().map_or(0.0, |s| s.quiet_similarity);
-    let far = nearest.is_some_and(|similarity| similarity < quiet);
+    // Cosine can be negative, so a zero threshold must be checked as "off".
+    let far = quiet > 0.0 && nearest.is_some_and(|similarity| similarity < quiet);
+    let agreeing = AGREEING_TERMS.min(terms.len()).max(1);
     let weighed: Vec<String> = terms
         .into_iter()
         .filter(|t| far || (scoring.identifiers_first && crate::repository::is_identifier(t)))
@@ -197,9 +258,9 @@ pub fn fused_recall(
     let ids: Vec<&str> = keyword.iter().map(|i| i.memory.id.as_str()).collect();
     let evidence = crate::repository::term_evidence(conn, &keyword_query, &weighed, &ids)?;
     if far
-        && evidence
+        && !evidence
             .values()
-            .all(|(shared, _)| *shared < AGREEING_TERMS)
+            .any(|(shared, named)| *named || *shared >= agreeing)
     {
         return Ok(Vec::new());
     }
@@ -249,14 +310,14 @@ pub fn fused_recall(
     });
     let items: Vec<FusedItem> = merged
         .into_iter()
-        .take(base.limit as usize)
+        .take(query.limit as usize)
         .map(|(score, mut fused)| {
             fused.item.rank = Some(score);
             fused
         })
         .collect();
 
-    if !base.skip_access_tracking {
+    if !query.skip_access_tracking {
         let ids: Vec<&str> = items.iter().map(|f| f.item.memory.id.as_str()).collect();
         if let Err(e) = crate::repository::touch_accessed(conn, &ids) {
             tracing::warn!("access tracking failed in fused recall: {e}");
@@ -269,7 +330,7 @@ pub fn fused_recall(
 /// as scoped keyword and semantic recall do. A detected `global` stays global.
 pub fn fused_recall_scoped(
     conn: &Connection,
-    base: &RecallQuery,
+    query: &FusedQuery,
     detected_namespace: &str,
     embedding: Option<&QueryEmbedding>,
 ) -> Result<Vec<FusedItem>> {
@@ -277,16 +338,16 @@ pub fn fused_recall_scoped(
     let within = |namespace: &str, limit: u32| {
         fused_recall(
             conn,
-            &RecallQuery {
+            &FusedQuery {
                 namespace: Some(namespace.to_string()),
                 limit,
-                ..base.clone()
+                ..query.clone()
             },
             embedding,
         )
     };
-    let mut items = within(&namespace, base.limit)?;
-    let remaining = base.limit.saturating_sub(items.len() as u32);
+    let mut items = within(&namespace, query.limit)?;
+    let remaining = query.limit.saturating_sub(items.len() as u32);
     if namespace != "global" && remaining > 0 {
         items.extend(within("global", remaining)?);
     }
@@ -295,16 +356,16 @@ pub fn fused_recall_scoped(
 
 /// Fused search as the `search` command and `memory_search` tool run it:
 /// scoped to `scope` then `global` when given, otherwise over
-/// `base.namespace` (one namespace, or every namespace when `None`).
+/// `query.namespace` (one namespace, or every namespace when `None`).
 pub fn search(
     conn: &Connection,
-    base: &RecallQuery,
+    query: &FusedQuery,
     scope: Option<&str>,
     embedding: Option<&QueryEmbedding>,
 ) -> Result<Vec<RecallItem>> {
     let fused = match scope {
-        Some(namespace) => fused_recall_scoped(conn, base, namespace, embedding)?,
-        None => fused_recall(conn, base, embedding)?,
+        Some(namespace) => fused_recall_scoped(conn, query, namespace, embedding)?,
+        None => fused_recall(conn, query, embedding)?,
     };
     Ok(fused.into_iter().map(|f| f.item).collect())
 }
@@ -313,12 +374,15 @@ pub fn search(
 /// memory compared.
 type SemanticLeg = (Vec<Memory>, Option<f64>);
 
-/// The semantic leg: nearest memories above the similarity floor, ordered as
-/// semantic search orders them (cosine times the composite multiplier), and
-/// the similarity of the nearest memory compared, floor or not.
+/// The semantic leg: the `pool` nearest memories above the similarity floor,
+/// ordered as semantic search orders them (cosine times the composite
+/// multiplier), and the similarity of the nearest memory compared, floor or
+/// not. `base` is the keyword leg's query: its namespace is canonical.
 fn semantic_leg(
     conn: &Connection,
     base: &RecallQuery,
+    exclude_kinds: &[String],
+    pool: u32,
     embedding: &QueryEmbedding,
 ) -> Result<SemanticLeg> {
     let mut hits = crate::embeddings::semantic_search_until(
@@ -328,7 +392,8 @@ fn semantic_leg(
         base.namespace.as_deref(),
         base.include_archived,
         base.exclude_expired,
-        POOL,
+        exclude_kinds,
+        pool,
         embedding.deadline,
     )?;
     let nearest = hits.first().map(|h| h.similarity);
@@ -378,10 +443,11 @@ mod tests {
         memory
     }
 
-    fn query(text: &str) -> RecallQuery {
-        RecallQuery {
-            query: Some(text.into()),
+    fn query(text: &str) -> FusedQuery {
+        FusedQuery {
+            query: text.into(),
             namespace: Some("project:x".into()),
+            limit: 10,
             scoring: Some(ScoringConfig {
                 decay_lambda: 0.0,
                 ..Default::default()
@@ -480,7 +546,7 @@ mod tests {
         assert_eq!(fused[0].item.memory.id, named.id);
         assert_eq!(fused.len(), 4);
 
-        let plain = RecallQuery {
+        let plain = FusedQuery {
             scoring: Some(ScoringConfig {
                 decay_lambda: 0.0,
                 identifiers_first: false,
@@ -503,7 +569,7 @@ mod tests {
         assert!(fused_recall(&conn, &q, Some(&near)).unwrap().is_empty());
 
         // The keyword match returns once the rule is off, or with no vector.
-        let off = RecallQuery {
+        let off = FusedQuery {
             scoring: Some(ScoringConfig {
                 decay_lambda: 0.0,
                 quiet_similarity: 0.0,
@@ -549,6 +615,131 @@ mod tests {
     }
 
     #[test]
+    fn an_exact_identifier_is_never_silenced() {
+        let conn = crate::db::open_in_memory().unwrap();
+        // The only memory naming the ticket points the opposite way in
+        // meaning, and nothing else is near the query either.
+        let ticket = store(&conn, "project:x", "CLIO-123", &[-1.0, 0.0]);
+        let near = embedding(&[1.0, 0.0]);
+        let q = query("CLIO-123");
+        let found = fused_recall(&conn, &q, Some(&near)).unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].item.memory.id, ticket.id);
+
+        // The veto does not depend on identifier-first ordering.
+        let unordered = FusedQuery {
+            scoring: Some(ScoringConfig {
+                decay_lambda: 0.0,
+                identifiers_first: false,
+                ..Default::default()
+            }),
+            ..q
+        };
+        assert_eq!(
+            fused_recall(&conn, &unordered, Some(&near)).unwrap().len(),
+            1
+        );
+    }
+
+    #[test]
+    fn a_zero_threshold_switches_the_quiet_rule_off_for_negative_cosines() {
+        let conn = crate::db::open_in_memory().unwrap();
+        store(&conn, "project:x", "lease the office car", &[-1.0, 0.0]);
+        let near = embedding(&[1.0, 0.0]);
+        let q = query("lease expiry for agents");
+        assert!(fused_recall(&conn, &q, Some(&near)).unwrap().is_empty());
+        let off = FusedQuery {
+            scoring: Some(ScoringConfig {
+                decay_lambda: 0.0,
+                quiet_similarity: 0.0,
+                ..Default::default()
+            }),
+            ..q
+        };
+        assert_eq!(fused_recall(&conn, &off, Some(&near)).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_short_query_needs_only_its_own_terms_to_agree() {
+        let conn = crate::db::open_in_memory().unwrap();
+        let rule = store(
+            &conn,
+            "project:x",
+            "ship releases with the script",
+            &[0.0, 1.0],
+        );
+        let near = embedding(&[1.0, 0.0]);
+        // One chosen term ("it" is too short to count), and the memory has it.
+        let found = fused_recall(&conn, &query("Yes, ship it"), Some(&near)).unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].item.memory.id, rule.id);
+        // Two chosen terms, only one shared: still quiet.
+        assert!(
+            fused_recall(&conn, &query("ship yesterday"), Some(&near))
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn excluded_kinds_leave_before_either_list_is_cut() {
+        let conn = crate::db::open_in_memory().unwrap();
+        for i in 0..(POOL + 5) {
+            let input: RememberInput = serde_json::from_value(serde_json::json!({
+                "namespace": "project:x", "kind": "receipt", "content": format!("session write-up {i}")
+            }))
+            .unwrap();
+            let receipt =
+                crate::repository::remember(&conn, &input, &crate::settings::Settings::default())
+                    .unwrap();
+            store_embedding(&conn, &receipt.id, "test", 2, &[1.0, 0.0]).unwrap();
+        }
+        // Less similar than every receipt, and shares no word with the query.
+        let fact = store(
+            &conn,
+            "project:x",
+            "tokens time out after an hour",
+            &[0.9, 0.436],
+        );
+        let near = embedding(&[1.0, 0.0]);
+        let q = query("how long do logins last");
+
+        let all = fused_recall(&conn, &q, Some(&near)).unwrap();
+        assert!(all.iter().all(|f| f.item.memory.kind == "receipt"));
+
+        let without = FusedQuery {
+            exclude_kinds: vec!["receipt".into()],
+            ..q
+        };
+        let found = fused_recall(&conn, &without, Some(&near)).unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].item.memory.id, fact.id);
+    }
+
+    #[test]
+    fn inline_embedding_follows_the_same_switch_budget_and_failure() {
+        let on = ScoringConfig {
+            fusion_budget_ms: 50,
+            ..Default::default()
+        };
+        let ok = |_: &str| Ok((vec![1.0_f32], "test".to_string()));
+        assert!(query_embedding_inline(&on, Some("task"), ok).is_some());
+        assert!(query_embedding_inline(&on, Some("  "), ok).is_none());
+        let off = ScoringConfig {
+            fusion: false,
+            ..on.clone()
+        };
+        assert!(query_embedding_inline(&off, Some("task"), ok).is_none());
+        let failing = |_: &str| Err(crate::error::ClioError::Config("still loading".into()));
+        assert!(query_embedding_inline(&on, Some("task"), failing).is_none());
+        let slow = |_: &str| {
+            std::thread::sleep(Duration::from_millis(120));
+            Ok((vec![1.0_f32], "test".to_string()))
+        };
+        assert!(query_embedding_inline(&on, Some("task"), slow).is_none());
+    }
+
+    #[test]
     fn query_embedding_respects_the_switch_the_budget_and_failure() {
         let on = ScoringConfig {
             fusion_budget_ms: 50,
@@ -583,7 +774,7 @@ mod tests {
         let global = store(&conn, "global", "lease etiquette everywhere", &[1.0, 0.0]);
         let fused = fused_recall_scoped(
             &conn,
-            &RecallQuery {
+            &FusedQuery {
                 namespace: None,
                 ..query("lease")
             },
