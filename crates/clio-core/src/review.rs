@@ -212,6 +212,22 @@ pub fn approve_review(
             .filter(|value| value.is_object())
             .cloned();
 
+        // A capture that met an archived memory again was queued as a
+        // proposal to bring it back. Approval is the explicit decision that
+        // un-archives it; the sighting itself was recorded at capture time.
+        if let Some(archived) = item
+            .metadata
+            .get("revive_memory_id")
+            .and_then(|value| value.as_str())
+        {
+            if crate::repository::get_raw(conn, archived).is_ok() {
+                let memory = crate::repository::unarchive(conn, archived)?;
+                open_attention_from_metadata(conn, &memory, attention_data.as_ref())?;
+                return Ok(memory);
+            }
+            // The archived memory has gone; fall through to normal storage.
+        }
+
         // A queued suggestion whose content already had a canonical memory at
         // capture time attaches to that memory rather than storing a
         // duplicate row (the checkpoint stamped its ID into the metadata).

@@ -1,6 +1,8 @@
 //! Capture pipeline: accept raw unstructured text, classify it using an
 //! OpenAI-compatible LLM, and store the result as a structured memory.
 
+use rusqlite::OptionalExtension;
+
 use crate::error::{ClioError, Result};
 use crate::models::{Memory, RememberInput};
 use crate::review::{ReviewInput, ReviewItem};
@@ -990,20 +992,6 @@ pub(crate) fn store_or_queue(
         return Ok(CaptureResult::Stored(memory));
     }
 
-    // If the only twin is archived, revive it rather than creating a duplicate
-    // live row — a re-capture of a hidden fact should bring it back.
-    if let Some(archived_id) = crate::repository::find_archived_duplicate(conn, namespace, content)?
-    {
-        let memory = crate::repository::unarchive(conn, &archived_id)?;
-        crate::occurrences::record_occurrence(conn, &archived_id, Some(source), source_ref, None)?;
-        tracing::debug!(
-            "capture revived archived duplicate {} in {}",
-            archived_id,
-            namespace
-        );
-        return Ok(CaptureResult::Stored(memory));
-    }
-
     let queue = |metadata: serde_json::Value| -> Result<CaptureResult> {
         let review_input = ReviewInput {
             content: content.to_string(),
@@ -1025,6 +1013,35 @@ pub(crate) fn store_or_queue(
         let review_item = crate::review::queue_for_review(conn, &review_input)?;
         Ok(CaptureResult::Queued(review_item))
     };
+
+    // The only twin is archived: someone hid it on purpose. A capture carries
+    // no time for when its session took place, so a replay of an old
+    // transcript looks the same as fresh evidence and must not undo that
+    // decision. Keep the memory hidden, record the sighting, and propose the
+    // revival for review; approving the proposal un-archives it.
+    if let Some(archived_id) = crate::repository::find_archived_duplicate(conn, namespace, content)?
+    {
+        crate::occurrences::record_occurrence(conn, &archived_id, Some(source), source_ref, None)?;
+        // One open proposal per hidden memory, however often it is seen.
+        let pending: Option<String> = conn
+            .query_row(
+                "SELECT id FROM review_queue
+                 WHERE status IN ('pending', 'edited')
+                   AND json_extract(metadata_json, '$.revive_memory_id') = ?1
+                 LIMIT 1",
+                [&archived_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if let Some(id) = pending {
+            return Ok(CaptureResult::Queued(crate::review::get_review(conn, &id)?));
+        }
+        let mut metadata = metadata.clone();
+        if let Some(object) = metadata.as_object_mut() {
+            object.insert("revive_memory_id".into(), serde_json::json!(archived_id));
+        }
+        return queue(metadata);
+    }
 
     // A live memory of the same kind and title is probably the same fact in
     // new words: let a person decide rather than store a second copy.
@@ -1140,6 +1157,63 @@ mod tests {
         // Receipts legitimately share titles, so they are always stored.
         assert!(matches!(store("receipt", "Ran the suite."), CaptureResult::Stored(_)));
         assert!(matches!(store("receipt", "Shipped it."), CaptureResult::Stored(_)));
+    }
+
+    #[test]
+    fn seeing_an_archived_memory_again_proposes_it_for_review_instead_of_reviving_it() {
+        let conn = crate::db::open_in_memory().unwrap();
+        let settings = crate::settings::Settings::default();
+        let capture = |source_ref: &str| {
+            store_or_queue(
+                &conn,
+                "The spool uses atomic renames.",
+                &fact("Spool durability"),
+                "project:demo",
+                "claude-session",
+                Some(source_ref),
+                &serde_json::json!({}),
+                &settings,
+                false,
+            )
+            .unwrap()
+        };
+        let CaptureResult::Stored(original) = capture("old@1-0") else {
+            panic!("first capture should be stored");
+        };
+        crate::repository::archive(&conn, &original.id).unwrap();
+        let is_archived = || {
+            crate::repository::get_raw(&conn, &original.id)
+                .unwrap()
+                .archived_at
+                .is_some()
+        };
+
+        // A replay meets the same content: the archive stands.
+        let CaptureResult::Queued(proposal) = capture("replay@1-0") else {
+            panic!("an archived twin should be proposed, not stored");
+        };
+        assert!(is_archived());
+        assert_eq!(proposal.metadata["revive_memory_id"], original.id.as_str());
+        // The sighting is kept as evidence.
+        assert_eq!(
+            crate::occurrences::count_occurrences(&conn, &original.id).unwrap(),
+            2
+        );
+
+        // Seen yet again: still one open proposal.
+        let CaptureResult::Queued(again) = capture("replay@2-0") else {
+            panic!("still a proposal");
+        };
+        assert_eq!(again.id, proposal.id);
+
+        // A person approving the proposal is what brings the memory back.
+        let revived = crate::review::approve_review(&conn, &proposal.id, &settings).unwrap();
+        assert_eq!(revived.id, original.id);
+        assert!(!is_archived());
+        let rows: i64 = conn
+            .query_row("SELECT COUNT(*) FROM memories", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(rows, 1, "no second row was made");
     }
 
     #[test]

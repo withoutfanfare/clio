@@ -491,7 +491,7 @@ CREATE UNIQUE INDEX idx_memory_occurrences_provenance
 
 ### Occurrence rules
 
-- The capture path records an occurrence for the first sighting and for every dedup/revival hit; the partial unique index makes checkpoint replays and duplicate deliveries no-ops.
+- The capture path records an occurrence for the first sighting and for every dedup hit, including a sighting of an archived memory; the partial unique index makes checkpoint replays and duplicate deliveries no-ops.
 - Occurrence writes share their caller's capture/review transaction.
 - `merge_memories` transfers occurrences to the kept memory before archiving the duplicate row; provenance collisions are dropped as duplicates.
 

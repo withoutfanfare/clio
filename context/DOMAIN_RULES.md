@@ -223,6 +223,7 @@ An attention item marks one memory as operationally open. Memories record what w
 ### Occurrences and Cited Consolidation
 
 - Repeated exact evidence strengthens one canonical memory: the capture path records an append-only occurrence (first sighting included) instead of a duplicate row; checkpoint replays add nothing thanks to the provenance unique index
+- Automatic capture never un-archives. When captured content is byte-identical to an archived memory (and no live twin exists), the sighting is recorded as an occurrence, the memory stays hidden, and one review item carrying `metadata.revive_memory_id` proposes bringing it back; approving that item un-archives the memory. A capture carries no time for when its session took place, so a replayed old transcript cannot be told from new evidence. Explicit un-archive is unchanged
 - Merges transfer occurrences to the kept memory before archiving duplicates
 - Every memory/link/attention/occurrence mutation bumps the namespace's generation via triggers — adapters cannot forget invalidation
 - Consolidation output is structured and cited: every statement carries input memory IDs, validated against the bounded input; an invalid candidate is rejected and the previous singleton stays, visibly stale via its generation watermark
