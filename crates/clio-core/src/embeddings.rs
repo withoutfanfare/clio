@@ -909,25 +909,27 @@ fn fts_match_strengths(conn: &Connection, query: &str) -> std::collections::Hash
 // Near-copies among chosen items
 // ---------------------------------------------------------------------------
 
-/// Remembers the items chosen so far and recognises a near-copy of one: the
-/// same title, or a stored embedding at least `threshold` similar. Uses the
-/// vectors already stored, so nothing is embedded. Vectors are compared only
-/// within one model and size: two models' spaces are unrelated even when
-/// their sizes agree, as all three local models' do. A memory with no stored
-/// vector is only ever a copy by title.
+/// Remembers the items chosen so far and recognises a near-copy of one: a
+/// stored embedding at least `threshold` similar, or, where the two have no
+/// vectors to compare, the same title. Uses the vectors already stored, so
+/// nothing is embedded. Vectors are compared only within one model and size:
+/// two models' spaces are unrelated even when their sizes agree, as all three
+/// local models' do. A shared title alone does not make a copy when the
+/// vectors say otherwise: on the live store 84 of 96 same-title pairs were
+/// below the threshold, different facts under one heading.
 pub(crate) struct NearCopies {
     threshold: f64,
-    /// Each kept vector with the model that produced it.
-    vectors: Vec<(String, Vec<f32>)>,
-    titles: std::collections::HashSet<String>,
+    kept: Vec<Kept>,
 }
+
+/// A kept item's title, and its vector with the model that produced it.
+type Kept = (Option<String>, Option<(String, Vec<f32>)>);
 
 impl NearCopies {
     pub(crate) fn new(threshold: f64) -> Self {
         Self {
             threshold,
-            vectors: Vec::new(),
-            titles: std::collections::HashSet::new(),
+            kept: Vec::new(),
         }
     }
 
@@ -942,9 +944,6 @@ impl NearCopies {
             .as_deref()
             .map(|t| t.trim().to_lowercase())
             .filter(|t| !t.is_empty());
-        if title.as_ref().is_some_and(|t| self.titles.contains(t)) {
-            return Ok(true);
-        }
         let stored: Option<(String, Vec<u8>)> = conn
             .query_row(
                 "SELECT model, embedding FROM memory_embeddings WHERE memory_id = ?1",
@@ -952,21 +951,28 @@ impl NearCopies {
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .optional()?;
-        let stored = match stored {
-            Some((model, blob)) => Some((model, decode_embedding(&blob)?)),
-            None => None,
-        };
-        if let Some((model, vector)) = &stored {
-            if self.vectors.iter().any(|(kept_model, kept)| {
-                kept_model == model
-                    && cosine_similarity(kept, vector)
-                        .is_ok_and(|similarity| similarity >= self.threshold)
-            }) {
-                return Ok(true);
+        // One unreadable vector must not fail the whole brief.
+        let stored = stored.and_then(|(model, blob)| match decode_embedding(&blob) {
+            Ok(vector) => Some((model, vector)),
+            Err(e) => {
+                tracing::warn!("ignoring the embedding of {}: {e}", memory.id);
+                None
             }
+        });
+        let repeats =
+            self.kept
+                .iter()
+                .any(|(kept_title, kept_vector)| match (kept_vector, &stored) {
+                    (Some((kept_model, kept)), Some((model, vector))) if kept_model == model => {
+                        cosine_similarity(kept, vector)
+                            .is_ok_and(|similarity| similarity >= self.threshold)
+                    }
+                    _ => title.is_some() && *kept_title == title,
+                });
+        if repeats {
+            return Ok(true);
         }
-        self.titles.extend(title);
-        self.vectors.extend(stored);
+        self.kept.push((title, stored));
         Ok(false)
     }
 }
@@ -1759,5 +1765,45 @@ mod tests {
         assert!(passage.contains("A summary."));
         assert!(passage.contains("rust, memory"));
         assert!(passage.contains("Full content here."));
+    }
+
+    #[test]
+    fn a_shared_title_is_not_a_copy_when_the_vectors_disagree() {
+        let conn = crate::db::open_in_memory().unwrap();
+        // `insert_memory` gives every memory the same title.
+        let ios = insert_memory(&conn, "iOS release checklist: bump the build number");
+        let android = insert_memory(&conn, "Android release checklist: sign the bundle");
+        let untitled_twin = insert_memory(&conn, "A third note filed under the same heading");
+        store_embedding(&conn, &ios.id, "test", 2, &[1.0, 0.0]).unwrap();
+        store_embedding(&conn, &android.id, "test", 2, &[0.0, 1.0]).unwrap();
+
+        let mut copies = NearCopies::new(0.85);
+        assert!(!copies.repeats(&conn, &ios).unwrap());
+        assert!(
+            !copies.repeats(&conn, &android).unwrap(),
+            "same title, unrelated content"
+        );
+        assert!(
+            copies.repeats(&conn, &untitled_twin).unwrap(),
+            "with no vector to compare, the title decides"
+        );
+    }
+
+    #[test]
+    fn an_unreadable_embedding_is_compared_by_title_instead_of_failing() {
+        let conn = crate::db::open_in_memory().unwrap();
+        let first = insert_memory(&conn, "first");
+        let broken = insert_memory(&conn, "second");
+        store_embedding(&conn, &first.id, "test", 2, &[1.0, 0.0]).unwrap();
+        store_embedding(&conn, &broken.id, "test", 2, &[0.0, 1.0]).unwrap();
+        conn.execute(
+            "UPDATE memory_embeddings SET embedding = x'010203' WHERE memory_id = ?1",
+            params![broken.id],
+        )
+        .unwrap();
+
+        let mut copies = NearCopies::new(0.85);
+        assert!(!copies.repeats(&conn, &first).unwrap());
+        assert!(copies.repeats(&conn, &broken).unwrap());
     }
 }

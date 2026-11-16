@@ -64,8 +64,9 @@ pub struct ScoringConfig {
     pub quiet_similarity: f64,
 
     /// A resume brief skips a relevant-knowledge candidate whose stored
-    /// embedding is at least this similar to one already chosen (or whose
-    /// title is the same), and takes the next candidate. `0.0` = keep copies.
+    /// embedding is at least this similar to one already chosen (or, with no
+    /// vectors to compare, whose title is the same), and takes the next
+    /// candidate. `0.0` = keep copies.
     #[serde(default = "default_dedup_similarity")]
     pub dedup_similarity: f64,
 
