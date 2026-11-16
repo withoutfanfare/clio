@@ -126,7 +126,8 @@ take the namespace exactly as given.
 `memory_session_checkpoint`): the model's classification may promote a memory to
 `global`, and that promotion ranks above the auto-detected `cwd` namespace:
 explicit `namespace` → model's `global` promotion → auto-detected from `cwd` →
-model's suggested namespace. This is one shared rule in core
+model's suggested namespace (lower-cased when the response is parsed, so its
+spelling cannot split one project in two). This is one shared rule in core
 (`capture::resolve_namespace`) for every classified path, so capture and distill
 cannot disagree about where the same classification lands.
 

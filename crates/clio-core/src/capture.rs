@@ -554,7 +554,12 @@ fn classification_from_value(v: &serde_json::Value, allow_receipt: bool) -> Clas
         })
         .unwrap_or_default();
 
-    let namespace = v["namespace"].as_str().unwrap_or("global").to_string();
+    // Lower-cased so the model's spelling cannot split one project in two.
+    let namespace = v["namespace"]
+        .as_str()
+        .unwrap_or("global")
+        .trim()
+        .to_lowercase();
 
     let importance = v["importance"].as_i64().unwrap_or(3).clamp(1, 5) as i32;
 
@@ -2077,5 +2082,19 @@ mod tests {
 
         let result = parse_classification(json).unwrap();
         assert_eq!(result.tags, vec!["rust", "upper", "multi-word"]);
+    }
+
+    #[test]
+    fn parse_namespace_lower_cased() {
+        // The model once answered `project:Scooda`, which opened a second
+        // namespace beside `project:scooda`.
+        let json = r#"{"kind": "note", "title": "T", "namespace": " project:Scooda "}"#;
+        assert_eq!(
+            parse_classification(json).unwrap().namespace,
+            "project:scooda"
+        );
+
+        let json = r#"{"kind": "note", "title": "T", "namespace": "Global"}"#;
+        assert_eq!(parse_classification(json).unwrap().namespace, "global");
     }
 }
