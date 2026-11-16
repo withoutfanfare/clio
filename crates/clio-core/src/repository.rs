@@ -1024,6 +1024,20 @@ pub(crate) fn term_evidence(
     );
     let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = vec![Box::new(String::new())];
     append_filters(&mut sql, &mut params, q);
+    // Only the candidates' rows are joined and read. Reading every match of a
+    // common word took 61 ms for twelve terms in a namespace of 7,700
+    // memories; this takes 14 ms.
+    let first = params.len() + 1;
+    let marks: Vec<String> = (first..first + ids.len())
+        .map(|i| format!("?{i}"))
+        .collect();
+    sql.push_str(&format!(
+        " AND memory_fts.rowid IN (SELECT rowid FROM memories WHERE id IN ({}))",
+        marks.join(", ")
+    ));
+    for id in ids {
+        params.push(Box::new(id.to_string()));
+    }
     let mut stmt = conn.prepare(&sql)?;
     for term in terms {
         let identifier = is_identifier(term);
@@ -1031,12 +1045,9 @@ pub(crate) fn term_evidence(
         let refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
         let rows = stmt.query_map(refs.as_slice(), |row| row.get::<_, String>(0))?;
         for id in rows {
-            let id = id?;
-            if ids.contains(&id.as_str()) {
-                let entry: &mut (usize, bool) = matched.entry(id).or_default();
-                entry.0 += 1;
-                entry.1 |= identifier;
-            }
+            let entry: &mut (usize, bool) = matched.entry(id?).or_default();
+            entry.0 += 1;
+            entry.1 |= identifier;
         }
     }
     Ok(matched)
