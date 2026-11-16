@@ -963,7 +963,9 @@ impl NearCopies {
             self.kept
                 .iter()
                 .any(|(kept_title, kept_vector)| match (kept_vector, &stored) {
-                    (Some((kept_model, kept)), Some((model, vector))) if kept_model == model => {
+                    (Some((kept_model, kept)), Some((model, vector)))
+                        if kept_model == model && kept.len() == vector.len() =>
+                    {
                         cosine_similarity(kept, vector)
                             .is_ok_and(|similarity| similarity >= self.threshold)
                     }
@@ -1787,6 +1789,23 @@ mod tests {
             copies.repeats(&conn, &untitled_twin).unwrap(),
             "with no vector to compare, the title decides"
         );
+    }
+
+    #[test]
+    fn different_vector_sizes_fall_back_to_title_comparison() {
+        let conn = crate::db::open_in_memory().unwrap();
+        let first = insert_memory(&conn, "first");
+        let second = insert_memory(&conn, "second");
+        store_embedding(&conn, &first.id, "test", 2, &[1.0, 0.0]).unwrap();
+        store_embedding(&conn, &second.id, "test", 1, &[1.0]).unwrap();
+
+        let mut copies = NearCopies::new(0.85);
+        assert!(!copies.repeats(&conn, &first).unwrap());
+        assert!(copies.repeats(&conn, &second).unwrap());
+
+        let mut different_title = second.clone();
+        different_title.title = Some("Another heading".into());
+        assert!(!copies.repeats(&conn, &different_title).unwrap());
     }
 
     #[test]

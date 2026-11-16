@@ -360,10 +360,10 @@ pub fn fused_recall_scoped(
     Ok(fused_recall_scoped_reporting(conn, query, detected_namespace, embedding)?.0)
 }
 
-/// [`fused_recall_scoped`], and whether the project's semantic leg ran to its
-/// end. A `global` fill that lost its own semantic leg after the project kept
-/// its is left out: it would add unfiltered any-word matches to a fused,
-/// quietened answer.
+/// [`fused_recall_scoped`], and whether an accepted namespace's semantic leg
+/// ran to its end. A `global` fill that lost its own semantic leg after the
+/// project kept its is left out: it would add unfiltered any-word matches to
+/// a fused, quietened answer.
 fn fused_recall_scoped_reporting(
     conn: &Connection,
     query: &FusedQuery,
@@ -382,12 +382,13 @@ fn fused_recall_scoped_reporting(
             embedding,
         )
     };
-    let (mut items, searched_meaning) = within(&namespace, query.limit)?;
+    let (mut items, mut searched_meaning) = within(&namespace, query.limit)?;
     let remaining = query.limit.saturating_sub(items.len() as u32);
     if namespace != "global" && remaining > 0 {
         let (fill, fill_searched_meaning) = within("global", remaining)?;
         if fill_searched_meaning || !searched_meaning {
             items.extend(fill);
+            searched_meaning |= fill_searched_meaning;
         }
     }
     Ok((items, searched_meaning))
@@ -873,6 +874,31 @@ mod tests {
         assert!(ran(Some(&embedding(&[1.0, 0.0]))));
         assert!(!ran(Some(&late)));
         assert!(!ran(None));
+    }
+
+    #[test]
+    fn a_successful_global_fill_reports_meaning_when_the_project_leg_failed() {
+        let conn = crate::db::open_in_memory().unwrap();
+        let project = store(&conn, "project:x", "lease expiry rules", &[1.0, 0.0]);
+        let global = store(&conn, "global", "shared etiquette everywhere", &[1.0, 0.0]);
+        conn.execute(
+            "UPDATE memory_embeddings SET embedding = x'010203' WHERE memory_id = ?1",
+            [&project.id],
+        )
+        .unwrap();
+        let (items, semantic) = search(
+            &conn,
+            &FusedQuery {
+                namespace: None,
+                ..query("lease")
+            },
+            Some("x"),
+            Some(&embedding(&[1.0, 0.0])),
+        )
+        .unwrap();
+        let ids: Vec<&str> = items.iter().map(|i| i.memory.id.as_str()).collect();
+        assert_eq!(ids, vec![project.id.as_str(), global.id.as_str()]);
+        assert!(semantic, "the accepted global fill searched meaning");
     }
 
     #[test]
