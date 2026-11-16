@@ -44,6 +44,7 @@ fn local_search(
             None,
             embedding.as_ref(),
         )?
+        .0
     } else {
         let backend = match backend {
             BackendState::Ready(b) => b,

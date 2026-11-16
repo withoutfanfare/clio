@@ -95,7 +95,8 @@ pub struct FusedQuery {
     /// Results to return.
     pub limit: u32,
     /// Candidates each leg contributes before merging; `0` means the default
-    /// of 30. The keyword leg contributes at least `limit`.
+    /// of 30. The keyword leg contributes at least `limit`, and so does the
+    /// semantic leg under the default.
     pub pool: u32,
     pub scoring: Option<ScoringConfig>,
     pub skip_access_tracking: bool,
@@ -217,7 +218,25 @@ pub fn fused_recall(
     query: &FusedQuery,
     embedding: Option<&QueryEmbedding>,
 ) -> Result<Vec<FusedItem>> {
+    Ok(fused_recall_reporting(conn, query, embedding)?.0)
+}
+
+/// [`fused_recall`], and whether the semantic leg ran to its end. `false`
+/// means the items are any-word keyword matches with the quiet rule off, so a
+/// caller holding a fused answer already should keep that one.
+pub(crate) fn fused_recall_reporting(
+    conn: &Connection,
+    query: &FusedQuery,
+    embedding: Option<&QueryEmbedding>,
+) -> Result<(Vec<FusedItem>, bool)> {
     let pool = if query.pool == 0 { POOL } else { query.pool };
+    // An explicit pool is the caller's cut for the semantic leg. The default
+    // grows with the limit, or a search for 100 results stops at 30 by meaning.
+    let semantic_pool = if query.pool == 0 {
+        pool.max(query.limit)
+    } else {
+        pool
+    };
     let keyword_query = RecallQuery {
         query: Some(query.query.clone()),
         namespace: query
@@ -233,13 +252,13 @@ pub fn fused_recall(
         ..Default::default()
     };
     let base = &keyword_query;
-    let (semantic, nearest) = match embedding {
-        Some(e) => semantic_leg(conn, base, &query.exclude_kinds, pool, e).unwrap_or_else(|err| {
-            tracing::warn!("semantic leg failed, using keywords alone: {err}");
-            (Vec::new(), None)
-        }),
-        None => (Vec::new(), None),
-    };
+    let leg = embedding.and_then(|e| {
+        semantic_leg(conn, base, &query.exclude_kinds, semantic_pool, e)
+            .inspect_err(|err| tracing::warn!("semantic leg failed, using keywords alone: {err}"))
+            .ok()
+    });
+    let searched_meaning = leg.is_some();
+    let (semantic, nearest) = leg.unwrap_or_default();
     let (keyword, terms) =
         crate::repository::recall_any_terms(conn, &keyword_query, &query.exclude_kinds)?;
 
@@ -266,7 +285,7 @@ pub fn fused_recall(
             .values()
             .any(|(shared, named)| *named || *shared >= agreeing)
     {
-        return Ok(Vec::new());
+        return Ok((Vec::new(), searched_meaning));
     }
     let names_identifier =
         |id: &str| scoring.identifiers_first && evidence.get(id).is_some_and(|(_, named)| *named);
@@ -327,7 +346,7 @@ pub fn fused_recall(
             tracing::warn!("access tracking failed in fused recall: {e}");
         }
     }
-    Ok(items)
+    Ok((items, searched_meaning))
 }
 
 /// Fused recall in the detected namespace, then remaining slots from `global`,
@@ -338,9 +357,22 @@ pub fn fused_recall_scoped(
     detected_namespace: &str,
     embedding: Option<&QueryEmbedding>,
 ) -> Result<Vec<FusedItem>> {
+    Ok(fused_recall_scoped_reporting(conn, query, detected_namespace, embedding)?.0)
+}
+
+/// [`fused_recall_scoped`], and whether the project's semantic leg ran to its
+/// end. A `global` fill that lost its own semantic leg after the project kept
+/// its is left out: it would add unfiltered any-word matches to a fused,
+/// quietened answer.
+fn fused_recall_scoped_reporting(
+    conn: &Connection,
+    query: &FusedQuery,
+    detected_namespace: &str,
+    embedding: Option<&QueryEmbedding>,
+) -> Result<(Vec<FusedItem>, bool)> {
     let namespace = crate::context::canonical_namespace(detected_namespace);
     let within = |namespace: &str, limit: u32| {
-        fused_recall(
+        fused_recall_reporting(
             conn,
             &FusedQuery {
                 namespace: Some(namespace.to_string()),
@@ -350,28 +382,38 @@ pub fn fused_recall_scoped(
             embedding,
         )
     };
-    let mut items = within(&namespace, query.limit)?;
+    let (mut items, searched_meaning) = within(&namespace, query.limit)?;
     let remaining = query.limit.saturating_sub(items.len() as u32);
     if namespace != "global" && remaining > 0 {
-        items.extend(within("global", remaining)?);
+        let (fill, fill_searched_meaning) = within("global", remaining)?;
+        if fill_searched_meaning || !searched_meaning {
+            items.extend(fill);
+        }
     }
-    Ok(items)
+    Ok((items, searched_meaning))
 }
 
 /// Fused search as the `search` command and `memory_search` tool run it:
 /// scoped to `scope` then `global` when given, otherwise over
 /// `query.namespace` (one namespace, or every namespace when `None`).
+///
+/// Also returns whether meaning was searched. `false` means the results are
+/// keyword matches alone: there was no query vector, or the semantic leg
+/// failed or overran its deadline after one was made.
 pub fn search(
     conn: &Connection,
     query: &FusedQuery,
     scope: Option<&str>,
     embedding: Option<&QueryEmbedding>,
-) -> Result<Vec<RecallItem>> {
-    let fused = match scope {
-        Some(namespace) => fused_recall_scoped(conn, query, namespace, embedding)?,
-        None => fused_recall(conn, query, embedding)?,
+) -> Result<(Vec<RecallItem>, bool)> {
+    let (fused, searched_meaning) = match scope {
+        Some(namespace) => fused_recall_scoped_reporting(conn, query, namespace, embedding)?,
+        None => fused_recall_reporting(conn, query, embedding)?,
     };
-    Ok(fused.into_iter().map(|f| f.item).collect())
+    Ok((
+        fused.into_iter().map(|f| f.item).collect(),
+        searched_meaning,
+    ))
 }
 
 /// The semantic leg's memories, best first, and the similarity of the nearest
@@ -789,5 +831,73 @@ mod tests {
         .unwrap();
         let ids: Vec<&str> = fused.iter().map(|f| f.item.memory.id.as_str()).collect();
         assert_eq!(ids, vec![project.id.as_str(), global.id.as_str()]);
+    }
+
+    #[test]
+    fn a_search_for_more_than_the_pool_is_not_capped_by_the_semantic_leg() {
+        let conn = crate::db::open_in_memory().unwrap();
+        // Forty memories close in meaning, none sharing a word with the query.
+        for i in 0..40 {
+            store(
+                &conn,
+                "project:x",
+                &format!("unrelated wording {i}"),
+                &[1.0, 0.0],
+            );
+        }
+        let fused = fused_recall(
+            &conn,
+            &FusedQuery {
+                limit: 40,
+                ..query("lease")
+            },
+            Some(&embedding(&[1.0, 0.0])),
+        )
+        .unwrap();
+        assert_eq!(fused.len(), 40);
+    }
+
+    #[test]
+    fn fused_recall_reports_whether_meaning_was_searched() {
+        let conn = crate::db::open_in_memory().unwrap();
+        store(&conn, "project:x", "lease expiry rules", &[1.0, 0.0]);
+        let late = QueryEmbedding {
+            deadline: Some(Instant::now() - Duration::from_secs(1)),
+            ..embedding(&[1.0, 0.0])
+        };
+        let ran = |embedding: Option<&QueryEmbedding>| {
+            fused_recall_reporting(&conn, &query("lease expiry"), embedding)
+                .unwrap()
+                .1
+        };
+        assert!(ran(Some(&embedding(&[1.0, 0.0]))));
+        assert!(!ran(Some(&late)));
+        assert!(!ran(None));
+    }
+
+    #[test]
+    fn a_global_fill_that_lost_its_semantic_leg_is_left_out() {
+        let conn = crate::db::open_in_memory().unwrap();
+        let project = store(&conn, "project:x", "lease expiry rules", &[1.0, 0.0]);
+        let global = store(&conn, "global", "lease etiquette everywhere", &[1.0, 0.0]);
+        // An unreadable vector fails the semantic leg in `global` alone.
+        conn.execute(
+            "UPDATE memory_embeddings SET embedding = x'010203' WHERE memory_id = ?1",
+            [&global.id],
+        )
+        .unwrap();
+        let (items, semantic) = search(
+            &conn,
+            &FusedQuery {
+                namespace: None,
+                ..query("lease")
+            },
+            Some("x"),
+            Some(&embedding(&[1.0, 0.0])),
+        )
+        .unwrap();
+        let ids: Vec<&str> = items.iter().map(|i| i.memory.id.as_str()).collect();
+        assert_eq!(ids, vec![project.id.as_str()]);
+        assert!(semantic);
     }
 }

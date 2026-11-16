@@ -2744,7 +2744,8 @@ fn cmd_search_fused(
         detected = resolve_command_namespace(None, s.context.auto_detect);
         Some(detected.as_str())
     };
-    let items = clio_core::fusion::search(conn, &base, scope, embedding.as_ref())?;
+    let (items, searched_meaning) =
+        clio_core::fusion::search(conn, &base, scope, embedding.as_ref())?;
     let result = RecallResult {
         archived_only: false,
         total: items.len() as u32,
@@ -2759,7 +2760,7 @@ fn cmd_search_fused(
     } else if result.items.is_empty() {
         println!("No matching memories found.");
     } else {
-        if embedding.is_none() {
+        if !searched_meaning {
             eprintln!("Semantic search was unavailable; these are keyword matches.");
         }
         println!("Search results ({} found):", result.count);

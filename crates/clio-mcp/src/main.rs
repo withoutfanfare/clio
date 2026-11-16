@@ -1760,8 +1760,9 @@ fn search_fused(
         ..Default::default()
     };
     let scope = (!params.global && !explicit).then_some(detected_ns.as_str());
-    let items = clio_core::fusion::search(&conn, &base, scope, embedding.as_ref())
-        .map_err(|e| format_clio_error(&e))?;
+    let (items, searched_meaning) =
+        clio_core::fusion::search(&conn, &base, scope, embedding.as_ref())
+            .map_err(|e| format_clio_error(&e))?;
 
     let len = items.len() as u32;
     let result = RecallResult {
@@ -1773,17 +1774,20 @@ fn search_fused(
         count: len,
     };
     let note = if len == 0 {
-        let mut note = String::from(
+        let mut note = String::from(if searched_meaning {
             "No memories match that query by meaning or by key words. Try memory_recall \
-             with one or two exact keywords",
-        );
+             with one or two exact keywords"
+        } else {
+            "Semantic search was unavailable and no memories match those key words. Try \
+             memory_recall with one or two exact keywords"
+        });
         if !params.global {
             note.push_str(", or `global: true` to search every project");
         }
         note.push('.');
         Some(note)
     } else {
-        embedding.is_none().then(|| {
+        (!searched_meaning).then(|| {
             "Semantic search was unavailable, so these are keyword matches only.".to_string()
         })
     };

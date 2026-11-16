@@ -1191,8 +1191,9 @@ fn resume_recall(
         return resume_eligible(conn, found, &recall_query, session, limit);
     };
     let mut items = Vec::new();
+    let mut fused_already = false;
     for (window, pool) in KNOWLEDGE_WINDOWS {
-        let found = crate::fusion::fused_recall(
+        let (found, searched_meaning) = crate::fusion::fused_recall_reporting(
             conn,
             &crate::fusion::FusedQuery {
                 query: text.clone(),
@@ -1207,6 +1208,12 @@ fn resume_recall(
             },
             embedding,
         )?;
+        // A wider window that lost its semantic leg to the deadline is
+        // any-word matches with the quiet rule off: keep the fused answer.
+        if fused_already && !searched_meaning {
+            break;
+        }
+        fused_already = searched_meaning;
         let found = found
             .into_iter()
             .map(|f| {
