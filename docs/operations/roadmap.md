@@ -34,6 +34,8 @@ The hook package on both Macs is at `~/.claude` commit `f34690d` (62 tests): bri
 
 The agent session ran every deploy and install command in this release.
 
+**16 November 2026:** Atlas alone moved to `31f37c4e730c453207800eb9bedaa19efe090a96`, which adds one change: the capture parser lower-cases the model's suggested namespace. There is no migration; the backup is `20261116T005144Z-31f37c4…`; the deploy kept existing MCP sessions (`CLIO_KEEP_MCP_SESSIONS=1`) and the operator ran it by hand. Given a stand-in endpoint answering `project:Scooda`, `clio capture --dry-run` on the new build reports `project:scooda` where the `88709ad` build reports `project:Scooda`. The Macs stay on `88709ad`: classification runs on Atlas, so they need no install for this change.
+
 ## Open work
 
 | ID | Priority | Status | Work | Trigger or next action | Finished when |
