@@ -1038,7 +1038,9 @@ Distillation keeps at most three knowledge items. Explicit commitments take
 priority and may extend this to five non-receipt items, plus one receipt.
 
 Session checkpoint distillation includes the earlier-title digest used by CLI
-checkpoints, preserving corrections while avoiding repeated knowledge.
+checkpoints, preserving corrections while avoiding repeated knowledge. Across
+all checkpoints, one session keeps at most five knowledge items; receipts and
+explicit commitments are not counted.
 
 Accept unstructured text, classify it via an LLM, and store it as a structured memory.
 
