@@ -165,6 +165,9 @@ pub fn store_checkpoint(
             SESSION_KNOWLEDGE_BUDGET.saturating_sub(prior_session_knowledge(conn, req)?);
 
         for (index, memory) in memories.iter().enumerate() {
+            if memory.is_work_record() {
+                continue; // receipts and status notes live in the project logs
+            }
             let explicit = memory.attention.as_ref().is_some_and(|a| a.is_explicit());
             if memory.kind != "receipt" && !explicit {
                 if knowledge_left == 0 {
@@ -682,14 +685,15 @@ mod tests {
             &settings,
         )
         .unwrap();
-        // Two knowledge slots were left; receipts and commitments never compete.
-        assert_eq!(second.stored_memory_ids.len(), 4);
+        // Two knowledge slots were left; commitments never compete, and the
+        // receipt is not stored at all: work records live in the project logs.
+        assert_eq!(second.stored_memory_ids.len(), 3);
 
         let third = store_checkpoint(&conn, &request(30), &[atom("c1")], &settings).unwrap();
         assert!(third.stored_memory_ids.is_empty());
 
         assert_eq!(stored(&conn, "fact"), SESSION_KNOWLEDGE_BUDGET as i64);
-        assert_eq!(stored(&conn, "receipt"), 1);
+        assert_eq!(stored(&conn, "receipt"), 0);
         assert_eq!(stored(&conn, "task"), 1);
     }
 
@@ -845,9 +849,11 @@ mod tests {
         let mut settings = Settings::default();
         settings.capture.review_threshold = Some(0.5);
 
+        // Only a status note that closes a follow-up is stored at all.
         let status = |content: &str, confidence: f64| DistilledMemory {
             lifetime: crate::capture::Lifetime::Status,
             confidence,
+            resolves: Some("0195-stable-id".into()),
             ..atom(content)
         };
         let result = store_checkpoint(
@@ -855,12 +861,14 @@ mod tests {
             &request(10),
             &[
                 atom("the queue is a spool directory"),
+                DistilledMemory { resolves: None, ..status("CI is green on develop", 1.0) },
                 status("PR 12 passed review today", 1.0),
                 status("staging is on revision abc", 0.1),
             ],
             &settings,
         )
         .unwrap();
+        assert_eq!(result.stored_memory_ids.len(), 2, "the plain status note is not stored");
 
         let get = |id: &str| crate::repository::get_raw(&conn, id).unwrap();
         assert_eq!(get(&result.stored_memory_ids[0]).valid_until, None);

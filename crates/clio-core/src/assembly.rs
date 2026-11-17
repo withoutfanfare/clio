@@ -991,23 +991,8 @@ fn build_resume(conn: &Connection, request: &ResumeRequest, record: bool) -> Res
         None => Vec::new(),
     };
 
-    // 6. Recent substantive activity (receipts).
-    let mut activity = resume_recall(
-        conn,
-        RecallQuery {
-            sort_by: Some(SortOrder::CreatedDesc),
-            ..resume_query(Some(&namespace), Some("receipt"), None, 3, &request.scoring)
-        },
-        "recent session receipt",
-        suppression_scope,
-        None,
-    )?
-    .into_iter()
-    .map(|mut item| {
-        item.state = "activity".into();
-        item
-    })
-    .collect::<Vec<_>>();
+    // Work done lives in the project and issue-pack logs, which the session-start
+    // hook already shows, so the brief carries no receipts (17 Nov 2026: 0% used).
 
     // A constraint that matches the task leads its section, so the section's
     // reserved slot funds it and not whichever constraint ranks first.
@@ -1021,9 +1006,6 @@ fn build_resume(conn: &Connection, request: &ResumeRequest, record: bool) -> Res
             .chain(constraints.iter())
             .any(|a| a.memory_id == k.memory_id)
     });
-    if !has_query {
-        activity.truncate(1);
-    }
     let ordered = if has_query {
         vec![
             ("Relevant knowledge", knowledge),
@@ -1031,11 +1013,9 @@ fn build_resume(conn: &Connection, request: &ResumeRequest, record: bool) -> Res
             ("Waiting on", waiting),
             ("Active constraints", constraints),
             ("Recent decisions", decisions),
-            ("Recent activity", activity),
         ]
     } else {
         vec![
-            ("Recent activity", activity),
             ("Needs attention", needs_attention),
             ("Waiting on", waiting),
             ("Active constraints", constraints),
@@ -1298,8 +1278,8 @@ fn allocate_resume_budget(
         .iter()
         .enumerate()
         .filter_map(|(i, (h, _))| {
-            (["Needs attention", "Waiting on", "Active constraints"].contains(h)
-                || (session_start && *h == "Recent activity"))
+            ["Needs attention", "Waiting on", "Active constraints"]
+                .contains(h)
                 .then_some(i)
         })
         .collect();
@@ -2119,10 +2099,10 @@ mod tests {
                 Some(&format!("2026-07-0{day}T00:00:00Z")),
             );
         }
-        let receipt = make_memory(&conn, ns, "receipt", "Latest session");
+        let decision = make_memory(&conn, ns, "decision", "Chose the spool");
         conn.execute(
             "UPDATE memories SET created_at = '2025-01-01T00:00:00Z' WHERE id = ?1",
-            [&receipt.id],
+            [&decision.id],
         )
         .unwrap();
         let mut request = resume_request(ns);
@@ -2135,10 +2115,9 @@ mod tests {
         assert_eq!(tasks.len(), 3);
         assert!(tasks[0].reason.contains("2026-07-01"));
         request.session_id = None;
-        request.max_items = 1;
         let brief = build_resume_brief(&conn, &request).unwrap();
-        let item = &brief.sections[0].items[0];
-        assert_eq!(item.memory_id, receipt.id);
+        let item = &section(&brief, "Recent decisions").unwrap().items[0];
+        assert_eq!(item.memory_id, decision.id);
         assert_eq!(item.created_at, "2025-01-01T00:00:00Z");
         assert!(item.updated_at.is_some());
     }

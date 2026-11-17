@@ -1042,6 +1042,10 @@ checkpoints, preserving corrections while avoiding repeated knowledge. Across
 all checkpoints, one session keeps at most five knowledge items; receipts and
 explicit commitments are not counted.
 
+Receipts and point-in-time status notes are not stored: the record of work done
+lives in the project and issue-pack logs. The one exception is an item that marks
+an open follow-up resolved, which is kept as evidence (`DistilledMemory::is_work_record`).
+
 Accept unstructured text, classify it via an LLM, and store it as a structured memory.
 
 ### Why it exists
@@ -1251,7 +1255,7 @@ Handoff and context briefs answer "what is this project?"; resume answers "what 
 ### Behaviour
 
 0. Relevant knowledge is fused retrieval (`scoring.fusion`, on by default): any-word keyword search and semantic search over the project namespace, merged by rank position. An item only the semantic side found carries the reason `similar in meaning to the task`; the rest keep `matches task terms`. With no embedding backend, a failed embedding or an overrun of `scoring.fusion_budget_ms`, the section is the keyword result alone and the call still succeeds. The section is empty when the most similar memory in the namespace is below `scoring.quiet_similarity` and no keyword match either shares three of the query's chosen terms (all of them, when it has fewer) or contains an identifier the query names: nothing there is about the task. That rule needs the semantic side: with `scoring.fusion` off, or when the call falls back to keywords (no backend, a failed embedding, the budget overrun), nothing is quietened
-1. Prompt briefs prioritise Relevant knowledge, then Needs attention, Waiting on, Active constraints, Recent decisions and Recent activity. Session starts put one recent receipt first, followed by attention, waiting, constraints and decisions.
+1. Prompt briefs prioritise Relevant knowledge, then Needs attention, Waiting on, Active constraints, and Recent decisions. Session starts show attention, waiting, constraints and decisions; recent work comes from the project log, which the session-start hook shows.
 2. Empty sections release capacity. Attention and waiting reserve slots; constraints also reserve a slot at session start. Small prompt budgets can omit constraints. On a prompt call (a `query` is given) Relevant knowledge is allocated its ten slots whether or not it fills them: the slots it leaves empty may go to Needs attention and Waiting on only, and constraints, decisions and activity get what they would have had beside a full section. A brief with nothing matched stays short instead of padding itself. Session start is unaffected.
 3. Items are deduplicated across sections by memory ID; archived, expired, resolved and cancelled records never appear. Within Relevant knowledge a near-copy of an item already chosen (stored embeddings from the same model at least `scoring.dedup_similarity` similar, or the same title where the two have no vectors to compare) is skipped and the next candidate takes its slot. Receipts are left out before either side's candidates are cut. Fused knowledge reads 50 merged candidates (30 from each side); if filtering and near-copy skipping leave slots empty after a full 50, it reads once more at 100 (60 from each side), and nothing beyond that is considered. If that wider read loses its semantic side to the time budget, the first read's items stand. Keyword-only knowledge reads one window of 50. Near-copy skipping applies to this section only, not to `memory_search` results
 4. A resume never counts as use for ranking: `access_count` and `last_accessed_at` stay unchanged. It is not write-free, though (see 5)

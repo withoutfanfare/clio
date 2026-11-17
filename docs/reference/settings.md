@@ -67,8 +67,9 @@ keeps at most 3 knowledge items, with explicit commitments extending the total
 to 5 items plus a receipt (`capture::MAX_KNOWLEDGE_ATOMS`); one session keeps
 at most 5 knowledge items across all its checkpoints, not counting receipts or
 explicit commitments (`checkpoint::SESSION_KNOWLEDGE_BUDGET`);
-and a memory the distiller marks as a point-in-time status is given a
-`valid_until` 30 days after it is stored (`capture::STATUS_LIFETIME_DAYS`).
+and a point-in-time status note is not stored unless it resolves a follow-up,
+in which case it is given a `valid_until` 30 days after it is stored
+(`capture::STATUS_LIFETIME_DAYS`). Receipts are not stored either.
 Only reads that exclude expired memories honour it; see the `memories`
 semantic rules in `schema.md` for which do.
 

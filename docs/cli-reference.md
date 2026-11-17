@@ -248,6 +248,9 @@ Distillation `--dry-run --metrics --json` reports pre-cap `knowledge_items_retur
 
 Distillation keeps at most three knowledge items. Explicit commitments take
 priority and may extend this to five non-receipt items, plus one receipt.
+Receipts and point-in-time status notes are not stored: the record of work done
+lives in the project and issue-pack logs. The one exception is an item that marks
+an open follow-up resolved, which is kept as evidence (`DistilledMemory::is_work_record`).
 
 `distill` sends a long body of text — typically a whole session transcript — to
 the LLM and extracts **zero or more** self-contained, durable memories
@@ -311,8 +314,8 @@ replays its stored result rather than creating duplicates.
 
 `clio resume` builds an untracked brief. Prompt requests prioritise task-matched
 knowledge, reserving one slot each for constraints, due follow-ups and blockers
-when present and the item budget permits. Session start (no query) includes
-exactly one newest receipt, then attention, constraints and decisions. Follow-ups
+when present and the item budget permits. Session start (no query) shows
+attention, constraints and decisions; recent work comes from the project log. Follow-ups
 are capped at three: dated items first, then explicit next-session reminders,
 then dormant backlog. Items include `created_at` and `updated_at` when different.
 

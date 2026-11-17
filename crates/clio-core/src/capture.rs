@@ -160,6 +160,13 @@ impl DistilledMemory {
     /// Record a status note's expiry in the metadata stored with it, where
     /// both direct storage and review approval read it — the same way an
     /// open loop's `attention` payload travels.
+    /// A record of work done rather than knowledge: a receipt or a point-in-time
+    /// status note. These belong in the project and issue-pack logs, so capture
+    /// does not store them, unless the item marks an open follow-up resolved.
+    pub fn is_work_record(&self) -> bool {
+        (self.kind == "receipt" || self.lifetime == Lifetime::Status) && self.resolves.is_none()
+    }
+
     pub(crate) fn stamp_expiry(&self, metadata: &mut serde_json::Map<String, serde_json::Value>) {
         if self.lifetime == Lifetime::Status {
             let until =
@@ -967,6 +974,9 @@ pub fn distill_and_store(
 
     let mut results = Vec::with_capacity(memories.len());
     for (index, memory) in memories.iter().enumerate() {
+        if memory.is_work_record() {
+            continue;
+        }
         let classification = ClassificationResult {
             kind: memory.kind.clone(),
             title: memory.title.clone(),
