@@ -56,7 +56,8 @@ SLOTS = 7  # task-matched slots a model gets today; rel@7 and nDCG@7 are cut her
 MATCHED_HEADING = "Relevant knowledge"  # the one resume section matched to the prompt
 MAX_FOLLOWUPS = 15  # later prompts of a session kept for the whole-session replay
 # Transcript user entries that never reach the UserPromptSubmit hook.
-NOT_PROMPTS = ("Stop hook feedback", "This session is being continued", "Another Claude session sent a message")
+NOT_PROMPTS = ("Stop hook feedback", "This session is being continued", "Another Claude session sent a message",
+               "[Request interrupted")
 UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 SECRETISH = re.compile(
     r"sk-[A-Za-z0-9_-]{20,}|BEGIN [A-Z ]*PRIVATE KEY|Bearer\s+[A-Za-z0-9._-]{20,}|"
@@ -352,11 +353,11 @@ def run_hook(arm, prompt, work):
     seen = {item["id"] for item in start_items}
 
     # Arms without `min_chars` keep the old first-prompt behaviour: every prompt in the set is asked.
-    min_chars = arm.get("min_chars", 0)
     query = prepare_query(arm, prompt["prompt"])
-    asked = substantive(prompt["prompt"], min_chars)
+    asked = substantive(prompt["prompt"], arm["min_chars"]) if "min_chars" in arm else True
+    # An unasked prompt has no latency: None keeps it out of the percentiles.
     brief, error, elapsed = (clio_json(base + ["--query", query] + arm.get("extra_args", []), work, 8)
-                             if asked else ({}, None, 0.0))
+                             if asked else ({}, None, None))
     text, items, matched_chars = render(brief or {}, seen)
     row = {
         "ok": error is None and start_error is None,
@@ -366,7 +367,7 @@ def run_hook(arm, prompt, work):
         "start_items": len(start_items), "start_chars": len(start_text),
     }
     if arm.get("session"):
-        row["turns"] = replay_followups(arm, prompt, work, base, seen | {i["id"] for i in items},
+        row["turns"], row["turn_errors"] = replay_followups(arm, prompt, work, base, seen | {i["id"] for i in items},
                                         {topic_hash(prompt["prompt"])} if asked and brief is not None else set())
     return row
 
@@ -374,19 +375,23 @@ def run_hook(arm, prompt, work):
 def replay_followups(arm, prompt, work, base, seen, topics):
     """The later prompts of the session, through the hook's gates: too short,
     same topic as before, or everything already shown means no injection."""
-    turns = []
+    turns, errors = [], 0
     for turn, later in enumerate(prompt.get("followups", []), 1):
-        if not substantive(later, arm.get("min_chars", 12)) or topic_hash(later) in topics:
+        # Interrupt markers and pasted secrets are skipped here as well as at
+        # collection, so turn numbers in follow-ups gathered earlier still match their labels.
+        if not substantive(later, arm.get("min_chars", 12)) or later.startswith(NOT_PROMPTS) \
+                or SECRETISH.search(later) or topic_hash(later) in topics:
             continue
         brief, _, _ = clio_json(base + ["--query", prepare_query(arm, later)] + arm.get("extra_args", []), work, 8)
         if brief is None:
-            continue  # a failed call leaves the topic unmarked, as the hook does
+            errors += 1  # reported under FAILED CALLS; the topic stays unmarked, as the hook does
+            continue
         topics.add(topic_hash(later))
         text, items, _ = render(brief, seen)
         seen |= {item["id"] for item in items}
         if items:
             turns.append({"turn": turn, "items": items, "chars": len(text)})
-    return turns
+    return turns, errors
 
 
 # --------------------------------------------------------------------------
@@ -610,6 +615,7 @@ def summarise(rows, scores, prompts):
     top = sum((scores[pid]["top"] for pid in rows), collections.Counter())
     injected, matched = sum(total.values()) or 1, sum(top.values()) or 1
     ndcgs = [scores[pid]["ndcg"] for pid in rows if scores[pid]["ndcg"] is not None]
+    timed = [rows[pid]["ms"] for pid in rows if rows[pid]["ms"] is not None]
     mean = lambda values: statistics.fmean(values) if values else 0.0  # noqa: E731
     return {
         "items": mean([len(rows[pid]["items"]) for pid in rows]),
@@ -626,9 +632,9 @@ def summarise(rows, scores, prompts):
         "chars start": mean([rows[pid]["start_chars"] for pid in rows]),
         "abstain": sum(scores[pid]["matched"] == 0 for pid in no_answer),
         "silent": sum(scores[pid]["matched"] == 0 for pid in answerable),
-        "p50 ms": statistics.median(rows[pid]["ms"] for pid in rows) if rows else 0.0,
-        "p95 ms": percentile([rows[pid]["ms"] for pid in rows], 0.95),
-        "failed": sum(not rows[pid]["ok"] for pid in rows),
+        "p50 ms": statistics.median(timed) if timed else 0.0,
+        "p95 ms": percentile(timed, 0.95),
+        "failed": sum((not rows[pid]["ok"]) + rows[pid].get("turn_errors", 0) for pid in rows),
         "_unjudged": total["unjudged"], "_no_answer": len(no_answer), "_answerable": len(answerable),
     }
 
@@ -722,7 +728,7 @@ def report(private, directory, dup_cosine):
                 prompt["namespace"].replace("project:", "")[:16], score["matched"], score["rel7"], score["part7"],
                 "-" if score["ndcg"] is None else f"{score['ndcg']:.2f}",
                 counts["irrelevant"], counts["stale"], counts["unjudged"], score["dups"],
-                row["matched_chars"], row["other_chars"], f"{row['ms']:.0f}",
+                row["matched_chars"], row["other_chars"], "-" if row["ms"] is None else f"{row['ms']:.0f}",
                 "" if row["ok"] else "FAILED " + (row["error"] or "")[:60],
             ])
         table(["prompt", "category", "namespace", "n", "rel7", "part7", "nDCG", "irr", "stale", "unj", "dup",
@@ -926,17 +932,21 @@ def cmd_label(args):
     path = os.path.join(private, "unjudged.jsonl")
     if not os.path.exists(path):
         die("no unjudged.jsonl; run `unjudged` first")
-    rows = load_jsonl(path)
+    known = load_labels(private)
+    # A row already in labels.jsonl is dropped; a hand-filled one is kept as it is.
+    rows = [r for r in load_jsonl(path) if (r["prompt_id"], r["memory_id"]) not in known]
     groups = collections.defaultdict(list)
     for row in rows:
-        groups[row["prompt_id"]].append(row)
+        if row.get("label") not in GAIN:
+            groups[row["prompt_id"]].append(row)
 
     def label_group(group):
         notes = "\n".join(f"N{i} [{r.get('kind')}, {(r.get('created_at') or '')[:10]}] {r.get('title')}: "
                           f"{' '.join((r.get('summary') or '').split())[:400]}" for i, r in enumerate(group, 1))
         verdicts, cost = judge.ask(LABEL_PROMPT.format(prompt=group[0]["prompt"], notes=notes), model=args.model)
         for i, row in enumerate(group, 1):
-            row["label"] = verdicts.get(f"N{i}", "")
+            verdict = verdicts.get(f"N{i}")
+            row["label"] = verdict if isinstance(verdict, str) else ""
             row["by"] = args.model
         return cost
 
@@ -956,7 +966,7 @@ def cmd_label(args):
     with open(os.path.join(private, "labels.jsonl"), "a") as handle:
         for row in done:
             handle.write(json.dumps({"prompt_id": row["prompt_id"], "memory_id": row["memory_id"],
-                                     "label": row["label"], "by": row["by"]}) + "\n")
+                                     "label": row["label"], "by": row.get("by")}) + "\n")
     with open(path, "w") as handle:
         for row in keep:
             handle.write(json.dumps(dict(row, label=""), ensure_ascii=False) + "\n")
@@ -992,6 +1002,12 @@ def transcript_prompts(session):
     return prompts
 
 
+def collectable_followups(prompts):
+    """Later prompts worth a follow-up slot: commands, command output and
+    anything that looks like a pasted secret are dropped before the cap."""
+    return [p for p in prompts if not p.startswith(("/", "!", "<")) and not SECRETISH.search(p)]
+
+
 def cmd_followups(args):
     """Add each prompt's later prompts from its session transcript to prompts.jsonl."""
     private = private_dir(args.private)
@@ -1009,7 +1025,7 @@ def cmd_followups(args):
         if index is None:
             missing += 1
             continue
-        prompt["followups"] = later[index + 1: index + 1 + MAX_FOLLOWUPS]
+        prompt["followups"] = collectable_followups(later[index + 1:])[:MAX_FOLLOWUPS]
     with open(path, "w") as handle:
         for prompt in prompts:
             handle.write(json.dumps(prompt, ensure_ascii=False) + "\n")
@@ -1144,6 +1160,9 @@ def cmd_selftest(_args):
     # Whole-session replay: the hook's gates, and later turns labelled under their own key.
     assert topic_hash("verify the release deployment pipeline please") == topic_hash("Please verify the deployment pipeline for the release")
     assert not substantive("Yes, remove it", 40) and substantive("Yes, remove it", 12) and not substantive("/help me out", 0)
+    later = ["/model opus", "<local-command-stdout>x</local-command-stdout>", "token: abcdef123456", "Fix the bug"]
+    assert collectable_followups(later) == ["Fix the bug"], collectable_followups(later)
+    assert "[Request interrupted by user for tool use]".startswith(NOT_PROMPTS)
     row = {"items": [{"id": "a"}], "turns": [{"turn": 3, "items": [{"id": "b"}], "chars": 10}], "text": "xx"}
     assert session_pairs(row, "p1") == [("p1", "a"), ("p1#3", "b")]
     whole = summarise_sessions({"p1": row}, {("p1", "a"): "relevant", ("p1#3", "b"): "irrelevant"})
