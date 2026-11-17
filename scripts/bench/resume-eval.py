@@ -113,8 +113,9 @@ def private_dir(path):
     return path
 
 
-def snapshot_dir(private):
-    snap = os.path.join(private, "snapshot")
+def snapshot_dir(private, snap=None):
+    """The default snapshot, or an arm's own `snapshot` directory (an altered copy of it)."""
+    snap = os.path.realpath(snap) if snap else os.path.join(private, "snapshot")
     db = os.path.join(snap, "memory.db")
     if not os.path.isfile(db):
         die(f"no snapshot at {db} (see README: take one with a read-only sqlite backup)")
@@ -170,10 +171,19 @@ def hide_own_session(work, session):
     in, every arm is handed the write-up of the very task it is being asked
     to do and looks far better than it is."""
     conn = sqlite3.connect(os.path.join(work, "memory.db"))
+    own = ("archived_at is null and (substr(source_ref, 1, length(?1)) = ?1 "
+           # a topic note (scripts/bench/topic-notes.py) built from that session's fragments
+           "or (source = 'clio-topic' and instr(metadata_json, ?1) > 0))")
     with conn:
-        hidden = conn.execute(
-            "update memories set archived_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') "
-            "where archived_at is null and substr(source_ref, 1, length(?1)) = ?1", (session,)).rowcount
+        # A note or a pruned cluster's survivor stood for other sessions' fragments
+        # too; hiding it must not take their knowledge with it, so those come back.
+        stood_for = [i for (meta,) in conn.execute(f"select metadata_json from memories where {own}", (session,))
+                     for i in (lambda m: m.get("fragments", []) + m.get("pruned", []))(json.loads(meta or "{}"))]
+        hidden = conn.execute(f"update memories set archived_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') where {own}",
+                              (session,)).rowcount
+        for memory_id in stood_for:
+            conn.execute("update memories set archived_at = null where id = ?1 "
+                         "and substr(coalesce(source_ref, ''), 1, length(?2)) != ?2", (memory_id, session))
     conn.close()
     return hidden
 
@@ -515,21 +525,30 @@ def cosine(a, b):
 class Corpus:
     """Read-only look-ups on the snapshot: titles for labelling, vectors for duplicates."""
 
-    def __init__(self, snap):
-        self.conn = sqlite3.connect(f"file:{os.path.join(snap, 'memory.db')}?immutable=1", uri=True)
+    def __init__(self, snap, extra=()):
+        """`extra`: arms' own snapshots, looked in after the default one."""
+        self.conns = [sqlite3.connect(f"file:{os.path.join(s, 'memory.db')}?immutable=1", uri=True)
+                      for s in (snap, *extra)]
         self.vectors, self.meta = {}, {}
+
+    def _one(self, sql, memory_id):
+        for conn in self.conns:
+            row = conn.execute(sql, (memory_id,)).fetchone()
+            if row:
+                return row
+        return None
 
     def vector(self, memory_id):
         if memory_id not in self.vectors:
-            row = self.conn.execute("select embedding from memory_embeddings where memory_id = ?", (memory_id,)).fetchone()
+            row = self._one("select embedding from memory_embeddings where memory_id = ?", memory_id)
             self.vectors[memory_id] = array.array("f", row[0]) if row else None
         return self.vectors[memory_id]
 
     def describe(self, memory_id):
         if memory_id not in self.meta:
-            row = self.conn.execute(
+            row = self._one(
                 "select kind, namespace, title, coalesce(nullif(summary, ''), substr(content, 1, 400)), created_at "
-                "from memories where id = ?", (memory_id,)).fetchone()
+                "from memories where id = ?", memory_id)
             self.meta[memory_id] = dict(zip(("kind", "namespace", "title", "summary", "created_at"), row)) if row else {}
         return self.meta[memory_id]
 
@@ -692,8 +711,8 @@ def load_results(directory):
 def report(private, directory, dup_cosine):
     prompts = load_prompts(private)
     labels = load_labels(private)
-    corpus = Corpus(snapshot_dir(private))
     meta, results = load_results(directory)
+    corpus = Corpus(snapshot_dir(private), arm_snapshots(private, meta["arms"]))
     by_id = {p["id"]: p for p in prompts}
 
     by_prompt = collections.defaultdict(list)
@@ -833,6 +852,10 @@ def report(private, directory, dup_cosine):
 # --------------------------------------------------------------------------
 
 
+def arm_snapshots(private, arms):
+    return sorted({snapshot_dir(private, arm["snapshot"]) for arm in arms if arm.get("snapshot")})
+
+
 def cmd_run(args):
     private = private_dir(args.private)
     snap = snapshot_dir(private)
@@ -860,6 +883,7 @@ def cmd_run(args):
     meta = {
         "started": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "runs": args.runs, "arms": arms,
         "snapshot_sha256": sha256(os.path.join(snap, "memory.db")),
+        "arm_snapshots": {s: sha256(os.path.join(s, "memory.db")) for s in arm_snapshots(private, arms)},
         "binaries": {b: sha256(b) for b in sorted({arm.get("clio") or arm.get("mcp") for arm in arms})},
         "prompts": len(prompts),
     }
@@ -868,7 +892,8 @@ def cmd_run(args):
             path = os.path.join(directory, f"{arm['name']}.run{run}.jsonl")
             with open(path, "w") as handle:
                 for index, prompt in enumerate(prompts, 1):
-                    work = work_copy(private, snap, arm.get("settings"))
+                    arm_snap = snapshot_dir(private, arm["snapshot"]) if arm.get("snapshot") else snap
+                    work = work_copy(private, arm_snap, arm.get("settings"))
                     try:
                         hidden = hide_own_session(work, prompt["session"]) if prompt.get("session") else 0
                         row = (run_hook if arm["kind"] == "hook" else run_mcp)(arm, prompt, work)
@@ -1038,14 +1063,18 @@ def cmd_unjudged(args):
     private = private_dir(args.private)
     prompts = {p["id"]: p for p in load_prompts(private)}
     labels = load_labels(private)
-    corpus = Corpus(snapshot_dir(private))
-    _, results = load_results(results_dir(private, args.results))
+    meta, results = load_results(results_dir(private, args.results))
+    corpus = Corpus(snapshot_dir(private), arm_snapshots(private, meta["arms"]))
     pending = collections.OrderedDict()
     for arm, runs in results.items():
         for run in runs:
             for prompt_id, row in run.items():
                 for key in session_pairs(row, prompt_id):
                     if key not in labels and prompt_id in prompts:
+                        _, _, turn = key[0].partition("#")
+                        if turn and int(turn) > len(prompts[prompt_id].get("followups", [])):
+                            print(f"skipped {key[0]}: prompts.jsonl no longer holds that follow-up", file=sys.stderr)
+                            continue
                         pending.setdefault(key, set()).add(arm)
     if not pending:
         print("nothing unjudged: every injected memory in these results has a label")

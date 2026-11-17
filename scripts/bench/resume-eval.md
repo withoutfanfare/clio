@@ -96,6 +96,7 @@ An arm is a binary plus how the query is prepared. `--arms` is a JSON list:
 | `settings` | Settings merged over the snapshot's `clio-settings.json` for this arm, e.g. `{"scoring": {"decay_lambda": 0.0}}`. |
 | `start_max_items` | `hook` arms: `--max-items` for the session-start call (default 12, as the hook). |
 | `session` | `hook` arms: `true` also replays each prompt's `followups` through the hook's gates (minimum length, same topic as before, already shown) and adds the whole-session table. |
+| `snapshot` | A directory holding an altered copy of the snapshot (`memory.db`, `clio-settings.json`) for this arm, to compare stores rather than builds; for example one built by `topic-notes.py build`. Labels and descriptions look there for memories the default snapshot lacks. |
 | `min_chars` | `hook` arms: the hook's minimum prompt length. 12 before 17 Nov 2026, 40 after. Applies to the first prompt too; omit it and every first prompt is asked. |
 
 ### Whole sessions
