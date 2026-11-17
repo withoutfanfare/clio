@@ -161,8 +161,18 @@ pub fn store_checkpoint(
 
         let mut stored_memory_ids = Vec::new();
         let mut queued_review_ids = Vec::new();
+        let mut knowledge_left =
+            SESSION_KNOWLEDGE_BUDGET.saturating_sub(prior_session_knowledge(conn, req)?);
 
         for (index, memory) in memories.iter().enumerate() {
+            let explicit = memory.attention.as_ref().is_some_and(|a| a.is_explicit());
+            if memory.kind != "receipt" && !explicit {
+                if knowledge_left == 0 {
+                    tracing::info!(session = %req.session_id, "session knowledge budget spent; item dropped");
+                    continue;
+                }
+                knowledge_left -= 1;
+            }
             let mut classification = crate::capture::ClassificationResult {
                 kind: memory.kind.clone(),
                 title: memory.title.clone(),
@@ -425,6 +435,39 @@ pub fn embed_checkpoint_memories(
     }
 }
 
+/// Most knowledge items one session may store across all its deltas.
+/// Receipts and explicit commitments are not counted. Each delta was capped
+/// at 3 on its own, so long sessions stored dozens: 27 of 47 sessions went
+/// over 3 between 16 and 17 Nov 2026, one with 42.
+pub const SESSION_KNOWLEDGE_BUDGET: usize = 5;
+
+/// Knowledge items already stored or awaiting review from this session's
+/// earlier deltas, archived ones included: they were spent even if later
+/// hidden. An approved review item is counted once, as its memory.
+fn prior_session_knowledge(conn: &Connection, req: &CheckpointRequest) -> Result<usize> {
+    let prefix_len = req.session_id.chars().count() + 2;
+    let count: i64 = conn.query_row(
+        "SELECT
+           (SELECT COUNT(*) FROM memories
+             WHERE source = ?1 AND source_ref >= ?2 AND source_ref < ?3
+               AND CAST(substr(source_ref, ?4) AS INTEGER) < ?5
+               AND kind != 'receipt'
+               AND COALESCE(json_extract(metadata_json, '$.attention.explicitness'), '') != 'explicit')
+         + (SELECT COUNT(*) FROM review_queue
+             WHERE status = 'pending' AND source_route = ?1 AND source_ref >= ?2 AND source_ref < ?3
+               AND CAST(substr(source_ref, ?4) AS INTEGER) < ?5)",
+        params![
+            req.source,
+            format!("{}@", req.session_id),
+            format!("{}A", req.session_id),
+            prefix_len,
+            req.cursor
+        ],
+        |row| row.get(0),
+    )?;
+    Ok(count as usize)
+}
+
 /// Most titles from earlier deltas of a session shown to the distiller.
 const PRIOR_TITLES_LIMIT: u32 = 20;
 /// Longest title shown. With the limit above, the added prompt text stays
@@ -605,6 +648,49 @@ mod tests {
         assert!(result.queued_review_ids.is_empty());
         assert_eq!(memory_count(&conn), 2);
         assert_eq!(checkpoint_count(&conn), 1);
+    }
+
+    #[test]
+    fn knowledge_is_capped_across_a_whole_session_not_per_slice() {
+        let conn = test_conn();
+        let settings = Settings::default();
+        let stored = |conn: &Connection, kind: &str| -> i64 {
+            conn.query_row(
+                "SELECT COUNT(*) FROM memories WHERE kind = ?1",
+                params![kind],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+
+        store_checkpoint(&conn, &request(10), &[atom("a1"), atom("a2"), atom("a3")], &settings)
+            .unwrap();
+
+        let receipt = DistilledMemory { kind: "receipt".into(), ..atom("did the work") };
+        let commitment = DistilledMemory {
+            kind: "task".into(),
+            attention: Some(crate::capture::DistilledAttention {
+                explicitness: "explicit".into(),
+                ..Default::default()
+            }),
+            ..atom("Danny will rotate the key")
+        };
+        let second = store_checkpoint(
+            &conn,
+            &request(20),
+            &[atom("b1"), atom("b2"), atom("b3"), receipt, commitment],
+            &settings,
+        )
+        .unwrap();
+        // Two knowledge slots were left; receipts and commitments never compete.
+        assert_eq!(second.stored_memory_ids.len(), 4);
+
+        let third = store_checkpoint(&conn, &request(30), &[atom("c1")], &settings).unwrap();
+        assert!(third.stored_memory_ids.is_empty());
+
+        assert_eq!(stored(&conn, "fact"), SESSION_KNOWLEDGE_BUDGET as i64);
+        assert_eq!(stored(&conn, "receipt"), 1);
+        assert_eq!(stored(&conn, "task"), 1);
     }
 
     #[test]
