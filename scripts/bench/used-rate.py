@@ -149,21 +149,30 @@ def read_session(path):
 
 
 def condense(events, numbering, budget=BUDGET):
-    """The session as one string under `budget`, with a marker where Clio injected."""
+    """The session as one string under about `budget`, with a marker where Clio
+    injected, and the labels whose marker made it in. A very long session loses
+    its end; memories injected there were never shown to the judge."""
     talk = [e for e in events if e[0] != "clio"]
     cap = max(150, budget // max(1, len(talk)))
-    out = []
+    out, kept, size = [], set(), 0
     for kind, payload in events:
         if kind == "clio":
             labels = [numbering[key] for key in payload if key in numbering]
-            if labels:
-                out.append(f"[[Clio injected {', '.join(labels)} here]]")
-            continue
-        text = " ".join(payload.split())
-        if len(text) > cap:
-            text = text[: cap // 2] + " … " + text[-cap // 2:]
-        out.append(f"{kind.upper()}: {text}")
-    return "\n".join(out)[: budget + 2000]
+            if not labels:
+                continue
+            line = f"[[Clio injected {', '.join(labels)} here]]"
+        else:
+            text = " ".join(payload.split())
+            if len(text) > cap:
+                text = text[: cap // 2] + " … " + text[-cap // 2:]
+            line = f"{kind.upper()}: {text}"
+        if size + len(line) > budget + 2000:
+            break
+        out.append(line)
+        size += len(line) + 1
+        if kind == "clio":
+            kept.update(labels)
+    return "\n".join(out), kept
 
 
 PROMPT = """You are auditing a memory system that injects notes into an AI coding \
@@ -204,11 +213,17 @@ def judge_session(path, model=judge.MODEL):
     notes = "\n".join(
         f"{numbering[k]} [{memories[k]['kind']}, {memories[k]['section'] or 'context'}] "
         f"{memories[k]['title']}: {memories[k]['body']}" for k in keys)
-    verdicts, cost = judge.ask(PROMPT.format(notes=notes, transcript=condense(events, numbering)), model=model)
+    transcript, shown = condense(events, numbering)
+    verdicts, cost = judge.ask(PROMPT.format(notes=notes, transcript=transcript), model=model)
     for key in keys:
         verdict = verdicts.get(numbering[key]) or {}
         label = verdict.get("label") if isinstance(verdict, dict) else verdict
-        memories[key]["label"] = label if label in LABELS else "unjudged"
+        if numbering[key] not in shown:
+            label = "unjudged"  # its injection fell past the cut, so use could not be seen
+        elif not isinstance(label, str) or label not in LABELS:
+            # Not cached, so the next run retries the session.
+            raise ValueError(f"judge gave no valid label for {numbering[key]}: {verdict!r}")
+        memories[key]["label"] = label
         memories[key]["evidence"] = (verdict.get("evidence") if isinstance(verdict, dict) else "") or ""
     return {"session": os.path.basename(path)[:-6], "date": meta.get("date"), "cwd": meta.get("cwd"),
             "chars": meta["chars"], "injections": meta["injections"], "cost": cost, "model": model,
@@ -222,10 +237,13 @@ def judge_session(path, model=judge.MODEL):
 
 def candidates(days, done):
     cutoff = time.time() - days * 86400
+    # A session written to in the last 6 hours may still be running; judging it
+    # now would be cached for good before the work that uses its memories.
+    settled = time.time() - 6 * 3600
     found = []
     for path in glob.glob(os.path.expanduser("~/.claude/projects/*/*.jsonl")):
         session = os.path.basename(path)[:-6]
-        if os.path.getmtime(path) < cutoff or session in done:
+        if not cutoff <= os.path.getmtime(path) <= settled or session in done:
             continue
         # Cheap pre-filter; read_session decides properly.
         with open(path, errors="replace") as handle:
@@ -332,6 +350,8 @@ def report(private):
     seen = collections.defaultdict(lambda: [0, 0, ""])
     for s in sessions:
         for m in s["memories"]:
+            if m["label"] not in LABELS:
+                continue  # never shown to the judge, so not evidence of disuse
             entry = seen[m["title"]]  # session start has no ids, so the title joins both sources
             entry[0] += 1
             entry[1] += m["label"] == "used"
@@ -366,8 +386,12 @@ def cmd_selftest(_args):
     assert items[0]["key"] == uid and items[0]["section"] == "Relevant knowledge", items
 
     events = [("clio", ["k1"]), ("user", "x" * 1000), ("assistant", "short")]
-    text = condense(events, {"k1": "M1"}, budget=300)
+    text, shown = condense(events, {"k1": "M1"}, budget=300)
     assert text.startswith("[[Clio injected M1 here]]\nUSER: ") and " … " in text and "ASSISTANT: short" in text, text
+    assert shown == {"M1"}, shown
+    long = [("user", "y" * 200)] * 20 + [("clio", ["k2"]), ("assistant", "late")]
+    text, shown = condense(long, {"k2": "M2"}, budget=100)
+    assert "M2" not in text and shown == set() and len(text) <= 2100, (len(text), shown)
 
     assert judge.parse_object('Sure:\n```json\n{"M1": {"label": "used"}}\n```') == {"M1": {"label": "used"}}
     print("selftest ok")
