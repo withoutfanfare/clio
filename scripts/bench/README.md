@@ -6,10 +6,34 @@ against a copy of a database and never modify live data.
 | Script | Answers |
 |---|---|
 | `link-invariants.sh` | Does auto-linking obey its design rules? |
-| [`resume-eval.py`](resume-eval.md) | Does the hook and MCP resume path surface task-relevant memories? |
+| [`resume-eval.py`](resume-eval.md) | Does the hook and MCP resume path surface task-relevant memories, on the first prompt and over a whole session? |
+| `used-rate.py` | In real sessions, did the model actually use what Clio injected? |
 | `recall-eval.py` | Does retrieval return the *right* memories? |
 | `dial-in.sh` | Which threshold and cap maximise retrieval quality? |
 | `capture-model/run.py` | Which capture model distils correctly, and at what cost? |
+
+## used-rate.py
+
+The outcome measure. resume-eval asks whether a memory was relevant to a
+prompt; this asks whether the work drew on it. It samples recent Claude Code
+sessions, collects every memory the hooks injected, condenses what happened
+afterwards, and a judge model (Sonnet, through Claude Code in safe mode, so no
+hooks fire and nothing is captured) labels each memory `used`, `on-task`
+(about the task, not needed), `background` (same project, not this task) or
+`irrelevant`. "Used" needs quoted evidence.
+
+```sh
+PRIV="$HOME/Development/Code/Project Support/Desktop Apps/Clio/used-rate"
+scripts/bench/used-rate.py run --private "$PRIV" --sample 40   # about $0.09 a session
+scripts/bench/used-rate.py report --private "$PRIV"
+```
+
+Judged sessions are cached and never re-judged, so a weekly `run` adds a fresh
+sample and the report shows the trend by the week each session started. The
+report also lists memories injected into three or more sampled sessions and
+never used: the first candidates to archive or demote. Haiku agreed with
+Sonnet on `used` (9 of 12) but labelled project background as on-task, which
+is why Sonnet is the default. Spot-check `used` evidence before acting.
 
 ## capture-model/run.py
 

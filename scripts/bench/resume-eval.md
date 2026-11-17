@@ -95,6 +95,21 @@ An arm is a binary plus how the query is prepared. `--arms` is a JSON list:
 | `args` | `mcp` arms: the tool arguments; `"{query}"` and `"{namespace}"` are filled in. Default `{"query": "{query}", "_clio_namespace": "{namespace}"}`, which is what the local bridge sends. |
 | `settings` | Settings merged over the snapshot's `clio-settings.json` for this arm, e.g. `{"scoring": {"decay_lambda": 0.0}}`. |
 | `start_max_items` | `hook` arms: `--max-items` for the session-start call (default 12, as the hook). |
+| `session` | `hook` arms: `true` also replays each prompt's `followups` through the hook's gates (minimum length, same topic as before, already shown) and adds the whole-session table. |
+| `min_chars` | `hook` arms: the hook's minimum prompt length. 12 before 17 Nov 2026, 40 after. Applies to the first prompt too; omit it and every first prompt is asked. |
+
+### Whole sessions
+
+Most injections come after the first prompt, so the first-prompt figures miss
+most of what a model is handed. `resume-eval.py followups --private "$PRIV"`
+adds to every prompt the later prompts of its session, read from the
+transcript (up to 15; Stop-hook feedback and continuation summaries are left
+out because the hook never sees them). An arm with `"session": true` then
+replays them. A later turn is labelled under its own key, `p07#3`, judged
+against the session's first prompt and that turn's prompt together.
+`resume-eval.py label --private "$PRIV"` fills `unjudged.jsonl` with a model
+judge (Sonnet by default, through Claude Code in safe mode) and appends the
+labels with a `"by"` field, so model labels can be told from earlier ones.
 
 ### How to run a new arm
 
