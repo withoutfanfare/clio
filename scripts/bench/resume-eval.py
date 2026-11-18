@@ -182,18 +182,19 @@ def hide_own_session(work, session):
         metas = [json.loads(meta) for (meta,) in conn.execute(f"select metadata_json from memories where {own}", (session,))]
         hidden = conn.execute(f"update memories set archived_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') where {own}",
                               (session,)).rowcount
-        restored = 0
+        restored = from_notes = 0
         for meta in metas:
-            # shortcut: no note can be rebuilt here, so a hidden note's fragments all come back (counted in the report)
+            # shortcut: no note can be rebuilt here, so a hidden note's fragments all come back;
+            # the paired comparison leaves such prompts out
             for memory_id in meta.get("fragments", []):
-                restored += conn.execute(restore, (memory_id, session)).rowcount
+                from_notes += conn.execute(restore, (memory_id, session)).rowcount
             # A faithful prune without the survivor keeps only the newest of the rest.
             for (memory_id,) in conn.execute(
                     f"select memories.id from memories, json_each(?1) where memories.id = json_each.value and {not_own} "
                     "order by created_at desc limit 1", (json.dumps(meta.get("pruned", [])), session)).fetchall():
                 restored += conn.execute(restore, (memory_id, session)).rowcount
     conn.close()
-    return hidden, restored
+    return hidden, restored + from_notes, from_notes
 
 
 def child_env(work):
@@ -778,7 +779,10 @@ def report(private, directory, dup_cosine):
     out.append("pruned survivor brought back. Restored fragments make that arm look like `current` on those topics.")
     table(["arm", "hidden", "restored"],
           [[arm, sum(r.get("hidden_own_session", 0) for r in runs[0].values()),
-            sum(r.get("restored_for_own_session", 0) for r in runs[0].values())] for arm, runs in results.items()], out)
+            # rows from before the field existed: unknown, not zero
+            sum(r["restored_for_own_session"] for r in runs[0].values())
+            if all("restored_for_own_session" in r for r in runs[0].values()) else "-"]
+           for arm, runs in results.items()], out)
     out.append("")
 
     sessions = {arm: summarise_sessions({pid: row for pid, row in runs[0].items() if pid in by_id}, labels)
@@ -826,12 +830,18 @@ def report(private, directory, dup_cosine):
         out.append(f"== against {reference}, prompt by prompt (run 1)")
         out.append("better / same / worse counts prompts; diff is the mean difference with a 95% interval from")
         out.append("resampling the prompts. An interval that includes 0 means the change has not been shown.")
+        # A hidden note replaced by its original fragments scores `current`, not notes, so its pair says nothing.
+        fallback = {pid for runs in results.values() for pid, row in runs[0].items() if row.get("restored_from_notes")}
+        if fallback:
+            out.append(f"Left out: {len(fallback)} prompts where hiding the own session put a note's fragments back.")
+        if any("restored_from_notes" not in row for runs in results.values() for row in runs[0].values()):
+            out.append("WARNING: rows from an older run lack restored_from_notes; prompts that fell back are not left out.")
         rows = []
         for arm in list(results)[1:]:
             cells = [arm]
             for key in ("ndcg", "rel7"):
                 pairs = [(scored[arm][0][pid][key], scored[reference][0][pid][key]) for pid in scored[reference][0]
-                         if pid in scored[arm][0] and scored[reference][0][pid][key] is not None
+                         if pid in scored[arm][0] and pid not in fallback and scored[reference][0][pid][key] is not None
                          and (key == "ndcg" or not by_id[pid].get("expect_nothing"))]
                 cells.append(f"{sum(a > b for a, b in pairs)} / {sum(a == b for a, b in pairs)} / {sum(a < b for a, b in pairs)}")
                 if pairs:
@@ -913,11 +923,13 @@ def cmd_run(args):
                     arm_snap = snapshot_dir(private, arm["snapshot"]) if arm.get("snapshot") else snap
                     work = work_copy(private, arm_snap, arm.get("settings"))
                     try:
-                        hidden, restored = hide_own_session(work, prompt["session"]) if prompt.get("session") else (0, 0)
+                        hidden, restored, from_notes = (hide_own_session(work, prompt["session"])
+                                                        if prompt.get("session") else (0, 0, 0))
                         row = (run_hook if arm["kind"] == "hook" else run_mcp)(arm, prompt, work)
                     finally:
                         shutil.rmtree(work, ignore_errors=True)
-                    row.update(prompt_id=prompt["id"], hidden_own_session=hidden, restored_for_own_session=restored)
+                    row.update(prompt_id=prompt["id"], hidden_own_session=hidden, restored_for_own_session=restored,
+                               restored_from_notes=from_notes)
                     handle.write(json.dumps(row) + "\n")
                     print(f"\rrun {run}/{args.runs}  {arm['name']}  {index}/{len(prompts)}", end="", file=sys.stderr)
             print(file=sys.stderr)

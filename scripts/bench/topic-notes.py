@@ -165,12 +165,24 @@ def cmd_build(args):
     out_db = os.path.join(args.out, "memory.db")
     if os.path.exists(out_db):
         die(f"{out_db} exists; remove it first")
-    os.makedirs(args.out, exist_ok=True)
     src = ro(snapshot_db(args.private))
+    settings_path = os.path.join(args.private, "snapshot", "clio-settings.json")
+    if args.mode == "notes":
+        # Checked before anything is written, so a failure leaves nothing to clean up. Backfill
+        # re-embeds every memory (archived too) lacking a vector from the configured model;
+        # only the notes may gain one, or the notes arm differs by more than its notes.
+        model = (json.load(open(settings_path)).get("embeddings") or {}).get("model", "all-MiniLM-L6-v2")
+        missing, sizes = src.execute(
+            "select (select count(*) from memories m where not exists (select 1 from memory_embeddings e "
+            "where e.memory_id = m.id and e.model = ?1)), "
+            "(select count(distinct dimensions) from memory_embeddings where model = ?1)", (model,)).fetchone()
+        if missing or sizes > 1:
+            die(f"{missing} memories without a {model} vector, {sizes} vector sizes for it; backfill would embed "
+                "more than the notes, so the notes arm would differ from the others by more than its notes")
+    os.makedirs(args.out, exist_ok=True)
     dst = sqlite3.connect(out_db)
     src.backup(dst)  # backup, never .dump: the full-text index is keyed on row number
-    shutil.copyfile(os.path.join(args.private, "snapshot", "clio-settings.json"),
-                    os.path.join(args.out, "clio-settings.json"))
+    shutil.copyfile(settings_path, os.path.join(args.out, "clio-settings.json"))
     clusters = {c["cid"]: c for c in json.load(open(os.path.join(args.private, "topics", "clusters.json")))}
     notes = {}
     if args.mode == "notes":
@@ -179,14 +191,6 @@ def cmd_build(args):
             notes[note["cid"]] = note
     stamp = "2026-11-15T00:00:00.000Z"  # the snapshot's date: archived before any prompt runs
     added = archived = dropped = 0
-    if args.mode == "notes":
-        # Backfill below embeds every memory without a current vector; only the notes may gain one.
-        models, missing = dst.execute(
-            "select count(distinct e.model || ':' || e.dimensions), count(*) - count(e.memory_id) "
-            "from memories m left join memory_embeddings e on e.memory_id = m.id where m.archived_at is null").fetchone()
-        if models > 1 or missing:
-            die(f"{missing} active memories without a vector, {models} embedding models; backfill would embed "
-                "more than the notes, so the notes arm would differ from the others by more than its notes")
     with dst:
         for cid, cluster in clusters.items():
             ids = cluster["ids"]
