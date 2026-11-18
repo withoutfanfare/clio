@@ -41,6 +41,7 @@ CAPTURED = ("claude-session", "codex-session", "claude-code-session")
 # Constraints, tasks and receipts carry their own lifecycle (attention items, session start); left alone.
 KINDS = ("fact", "decision", "observation", "summary", "note")
 SOURCE = "clio-topic"
+CUT = 500  # characters of each fragment's content the model sees
 
 PROMPT = """You maintain a memory store for an AI coding assistant. Each cluster below is a set of \
 notes captured automatically from past sessions in one project, oldest first. They overlap and \
@@ -118,7 +119,7 @@ def cmd_cluster(args):
 def fragment_text(conn, memory_id):
     kind, created, title, summary, content = conn.execute(
         "select kind, created_at, title, summary, content from memories where id = ?", (memory_id,)).fetchone()
-    body = " ".join((content or "").split())[:500]
+    body = " ".join((content or "").split())[:CUT]
     return f"[{created[:10]} {kind}] {title or ''}: {summary or ''} | {body}"
 
 
@@ -178,6 +179,14 @@ def cmd_build(args):
             notes[note["cid"]] = note
     stamp = "2026-11-15T00:00:00.000Z"  # the snapshot's date: archived before any prompt runs
     added = archived = dropped = 0
+    if args.mode == "notes":
+        # Backfill below embeds every memory without a current vector; only the notes may gain one.
+        models, missing = dst.execute(
+            "select count(distinct e.model || ':' || e.dimensions), count(*) - count(e.memory_id) "
+            "from memories m left join memory_embeddings e on e.memory_id = m.id where m.archived_at is null").fetchone()
+        if models > 1 or missing:
+            die(f"{missing} active memories without a vector, {models} embedding models; backfill would embed "
+                "more than the notes, so the notes arm would differ from the others by more than its notes")
     with dst:
         for cid, cluster in clusters.items():
             ids = cluster["ids"]
@@ -207,12 +216,19 @@ def cmd_build(args):
                 "insert into memories (id, namespace, kind, title, summary, content, tags_text, source, source_ref, "
                 "importance, metadata_json, created_at, updated_at, last_accessed_at, access_count) "
                 "values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (str(uuid.uuid5(uuid.NAMESPACE_URL, "clio-topic:" + ",".join(sorted(ids)))), cluster["namespace"], note.get("kind") if note.get("kind") in ("fact", "decision") else "fact",
+                # the text is in the ID so a rewritten note never inherits the old one's relevance labels
+                (str(uuid.uuid5(uuid.NAMESPACE_URL, "clio-topic:" + ",".join(sorted(ids)) + json.dumps(
+                    [note.get("title"), note.get("summary"), note.get("content")]))),
+                 cluster["namespace"], note.get("kind") if note.get("kind") in ("fact", "decision") else "fact",
                  (note.get("title") or "")[:240], (note.get("summary") or "")[:1000], note.get("content") or note.get("summary") or "",
                  " ".join(tags), SOURCE, f"topic:{cid}", importance,
                  json.dumps({"fragments": ids, "fragment_refs": refs}), created, updated, last, access))
             added += 1
-            archived += dst.execute(f"update memories set archived_at = ? where id in ({marks})", [stamp, *ids]).rowcount
+            # The model saw only the first CUT characters; a longer fragment stays active beside the note.
+            seen = [i for i, c in dst.execute(f"select id, content from memories where id in ({marks})", ids)
+                    if len(" ".join((c or "").split())) <= CUT]
+            archived += dst.execute(f"update memories set archived_at = ? where id in ({','.join('?' * len(seen))})",
+                                    [stamp, *seen]).rowcount
     dst.close()
     print(f"{args.mode}: {added} notes added, {archived} fragments archived, {dropped} archived as noise")
     if added:

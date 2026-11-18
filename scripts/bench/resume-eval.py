@@ -174,18 +174,26 @@ def hide_own_session(work, session):
     own = ("archived_at is null and (substr(source_ref, 1, length(?1)) = ?1 "
            # a topic note (scripts/bench/topic-notes.py) built from that session's fragments
            "or (source = 'clio-topic' and instr(metadata_json, ?1) > 0))")
+    not_own = "substr(coalesce(source_ref, ''), 1, length(?2)) != ?2"
+    restore = f"update memories set archived_at = null where id = ?1 and archived_at is not null and {not_own}"
     with conn:
         # A note or a pruned cluster's survivor stood for other sessions' fragments
-        # too; hiding it must not take their knowledge with it, so those come back.
-        stood_for = [i for (meta,) in conn.execute(f"select metadata_json from memories where {own}", (session,))
-                     for i in (lambda m: m.get("fragments", []) + m.get("pruned", []))(json.loads(meta or "{}"))]
+        # too; hiding it must not take their knowledge with it.
+        metas = [json.loads(meta) for (meta,) in conn.execute(f"select metadata_json from memories where {own}", (session,))]
         hidden = conn.execute(f"update memories set archived_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') where {own}",
                               (session,)).rowcount
-        for memory_id in stood_for:
-            conn.execute("update memories set archived_at = null where id = ?1 "
-                         "and substr(coalesce(source_ref, ''), 1, length(?2)) != ?2", (memory_id, session))
+        restored = 0
+        for meta in metas:
+            # shortcut: no note can be rebuilt here, so a hidden note's fragments all come back (counted in the report)
+            for memory_id in meta.get("fragments", []):
+                restored += conn.execute(restore, (memory_id, session)).rowcount
+            # A faithful prune without the survivor keeps only the newest of the rest.
+            for (memory_id,) in conn.execute(
+                    f"select memories.id from memories, json_each(?1) where memories.id = json_each.value and {not_own} "
+                    "order by created_at desc limit 1", (json.dumps(meta.get("pruned", [])), session)).fetchall():
+                restored += conn.execute(restore, (memory_id, session)).rowcount
     conn.close()
-    return hidden
+    return hidden, restored
 
 
 def child_env(work):
@@ -766,6 +774,12 @@ def report(private, directory, dup_cosine):
     out.append(f"silent: of {some['_answerable']} answerable prompts, how many got none (lower is better). ms: the timed call.")
     table(["arm"] + list(COST), [[arm] + [fmt(k, runs[0][k]) for k in COST] for arm, runs in summaries.items()], out)
     out.append("")
+    out.append("own session (run 1, totals): memories hidden, and other sessions' fragments a hidden note or")
+    out.append("pruned survivor brought back. Restored fragments make that arm look like `current` on those topics.")
+    table(["arm", "hidden", "restored"],
+          [[arm, sum(r.get("hidden_own_session", 0) for r in runs[0].values()),
+            sum(r.get("restored_for_own_session", 0) for r in runs[0].values())] for arm, runs in results.items()], out)
+    out.append("")
 
     sessions = {arm: summarise_sessions({pid: row for pid, row in runs[0].items() if pid in by_id}, labels)
                 for arm, runs in results.items()}
@@ -868,15 +882,19 @@ def cmd_run(args):
 
     # A `.dump` restore renumbers rows and silently misaligns the full-text
     # index. The check needs a writable handle, so it runs on a copy.
-    probe = work_copy(private, snap)
-    try:
-        conn = sqlite3.connect(os.path.join(probe, "memory.db"))
-        conn.execute("insert into memory_fts(memory_fts, rank) values('integrity-check', 1)")
-        conn.close()
-    except sqlite3.DatabaseError as exc:
-        die(f"snapshot's full-text index does not match its rows ({exc}); take a new snapshot with a sqlite backup")
-    finally:
-        shutil.rmtree(probe, ignore_errors=True)
+    for store in [snap, *arm_snapshots(private, arms)]:
+        probe = work_copy(private, store)
+        try:
+            conn = sqlite3.connect(os.path.join(probe, "memory.db"))
+            conn.execute("insert into memory_fts(memory_fts, rank) values('integrity-check', 1)")
+            conn.close()
+        except sqlite3.DatabaseError as exc:
+            die(f"{store}: full-text index does not match its rows ({exc}); rebuild it with a sqlite backup")
+        finally:
+            shutil.rmtree(probe, ignore_errors=True)
+    for arm in arms:
+        if arm.get("snapshot"):  # `report` may run later from another directory
+            arm["snapshot"] = os.path.realpath(arm["snapshot"])
 
     directory = os.path.join(private, "results", args.name or time.strftime("%Y%m%d-%H%M%S"))
     os.makedirs(directory, exist_ok=True)
@@ -895,11 +913,11 @@ def cmd_run(args):
                     arm_snap = snapshot_dir(private, arm["snapshot"]) if arm.get("snapshot") else snap
                     work = work_copy(private, arm_snap, arm.get("settings"))
                     try:
-                        hidden = hide_own_session(work, prompt["session"]) if prompt.get("session") else 0
+                        hidden, restored = hide_own_session(work, prompt["session"]) if prompt.get("session") else (0, 0)
                         row = (run_hook if arm["kind"] == "hook" else run_mcp)(arm, prompt, work)
                     finally:
                         shutil.rmtree(work, ignore_errors=True)
-                    row.update(prompt_id=prompt["id"], hidden_own_session=hidden)
+                    row.update(prompt_id=prompt["id"], hidden_own_session=hidden, restored_for_own_session=restored)
                     handle.write(json.dumps(row) + "\n")
                     print(f"\rrun {run}/{args.runs}  {arm['name']}  {index}/{len(prompts)}", end="", file=sys.stderr)
             print(file=sys.stderr)
